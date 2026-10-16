@@ -87,11 +87,13 @@ cd "$HOME"
 export TMPDIR="$HOME/.tmp"
 rm -rf "$TMPDIR" && mkdir -p "$TMPDIR"
 marker="$HOME/.local/share/decompnet/container-install-id"
-if [ ! -x "$HOME/.local/bin/decomp" ] || [ "$(cat "$marker" 2>/dev/null)" != "${DECOMP_INSTALL_ID:-}" ]; then
+bundled_version="$(sed -n 's/^VERSION="\([^"]*\)"/\1/p' /usr/local/share/decomp-wtf/install.sh)"
+install_id="${DECOMP_INSTALL_ID:-$bundled_version}"
+if [ ! -x "$HOME/.local/bin/decomp" ] || [ "$(cat "$marker" 2>/dev/null)" != "$install_id" ]; then
   echo "decomp.wtf: installing (the first start takes a few minutes)"
   bash /usr/local/share/decomp-wtf/install.sh --no-start
   mkdir -p "$(dirname "$marker")"
-  printf '%s' "${DECOMP_INSTALL_ID:-}" > "$marker"
+  printf '%s' "$install_id" > "$marker"
 fi
 exec "$HOME/.local/bin/decomp" --no-browser
 EOF

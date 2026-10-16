@@ -1,6 +1,6 @@
 [project]
 name = "decompnet"
-version = "0.10.6"
+version = "0.10.7"
 description = "decomp.wtf (What The Function): your AI agent decompiles games you own into C that compiles to the exact same bytes, with a live view. Runs locally."
 readme = "README.md"
 license = "MIT"
@@ -24,8 +24,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://decomp.wtf"
-Source = "https://github.com/i12bp8/decomp.wtf"
+Homepage = "https://github.com/SynapticDreams/decomp.wtf"
+Source = "https://github.com/SynapticDreams/decomp.wtf"
 
 [project.scripts]
 decompnet = "decompnet.cli:main"
