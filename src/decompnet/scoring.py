@@ -31,6 +31,8 @@ _CS = {
     ("ppc", True): (capstone.CS_ARCH_PPC, capstone.CS_MODE_32 | capstone.CS_MODE_BIG_ENDIAN),
     ("arm", False): (capstone.CS_ARCH_ARM, capstone.CS_MODE_ARM),
     ("thumb", False): (capstone.CS_ARCH_ARM, capstone.CS_MODE_THUMB),
+    # Sharp LR35902: capstone has no back end for it, so the fork decodes it itself (rom/sm83.py)
+    ("sm83", False): ("sm83", 0),
 }
 
 _REG = re.compile(
@@ -62,7 +64,11 @@ def percent_text(p: float | None) -> str:
 
 def disassemble(fn: FunctionObj) -> list[Insn]:
     arch, mode = _CS[(fn.arch, fn.big_endian)]
-    md = capstone.Cs(arch, mode)
+    if arch == "sm83":  # capstone has no back end for it: our own decoder, capstone-shaped (see rom/sm83.py)
+        from .rom import sm83
+        md = sm83.Decoder()
+    else:
+        md = capstone.Cs(arch, mode)
     md.detail = True
     md.skipdata = True
     code = mask_relocs(fn.code, fn.relocs, fn.arch, fn.big_endian)
