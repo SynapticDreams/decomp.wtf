@@ -426,6 +426,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
     ap.add_argument("--no-browser", action="store_true", help="don't open the browser")
     sub = ap.add_subparsers(dest="cmd")
+    mp = sub.add_parser("mapping", help="validate, import, or safely rescan a PS1 mapping profile")
+    mp.add_argument("action", choices=["validate", "create", "preview", "apply"])
+    mp.add_argument("profile", type=Path)
+    mp.add_argument("--image", type=Path, required=True, help="your own disc image or binary")
+    mp.add_argument("--workspace", type=Path, help="offline workspace; its server must be stopped")
+    mp.add_argument("--project", help="existing mapped project's slug, for preview/apply")
+    mp.add_argument("--own-copy", action="store_true", help="confirm that the input is your own legally obtained copy")
     sub.add_parser("setup", help="install the compilers and tools this computer needs")
     sub.add_parser("stop", help="stop the running app")
     sub.add_parser("shortcut", help="add decomp.wtf to your apps menu / desktop")
@@ -470,6 +477,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "mcp":
         from .bridge import main as bridge
         return bridge(args.name)
+    if args.cmd == "mapping":
+        from .mapping_cli import run as mapping_run
+        return mapping_run(args)
     return {"setup": setup, "stop": stop, "shortcut": shortcut, "connect": connect_agents, "share": share,
             "host": host, "join": join, "service": service_cmd, "url": url_cmd, "update": update_cmd,
             "install-info": install_info}.get(args.cmd, run)(args)

@@ -127,10 +127,10 @@ class RomNetwork(Network):
     def __init__(self, db_path: str | Path, workspace: Path, claim_ttl: int = 30 * 60):
         super().__init__(db_path, claim_ttl=claim_ttl)
         self.workspace = Path(workspace)
-        self._syms: dict[int, SymbolTable] = {}
+        self._syms: dict[int | tuple, SymbolTable] = {}
         self._sym_override: dict[int, SymbolTable] = {}
         self._roms: dict[int, tuple[bytes, list[split.Segment]]] = {}
-        self._xrefs: dict[int, dict] = {}
+        self._xrefs: dict[int | tuple, dict] = {}
         self._seed_lock = threading.Lock()
         self.links: dict = {}  # slug -> collab.Link, for projects joined from a friend's room
         self.rooms: dict = {}  # slug -> collab.Room, for projects this computer shares
@@ -144,6 +144,8 @@ class RomNetwork(Network):
         self.forks = ForkEngine(self)
         self.twins = Twins(self)
         self.permuter = Permuter(self)
+        from .mapping import MappingEngine
+        self.mapping = MappingEngine(self)
 
     # ------------------------------------------------------------------ basics
 
@@ -173,9 +175,23 @@ class RomNetwork(Network):
             raise NetworkError(f"{what} is for ROM projects. In a fork, the project's own headers and source files are "
                                "the shared context: use read_file, search_code and edit_file")
 
-    def symbols(self, project_id: int) -> SymbolTable:
+    def symbols(self, project_id: int, unit: str = "") -> SymbolTable:
+        from .mapping import scope
         if project_id in self._sym_override:
             return self._sym_override[project_id]
+        if project_id in self._syms:  # legacy projects keep their inexpensive shared-symbol cache
+            return self._syms[project_id]
+        proj = self.store.one("SELECT config FROM projects WHERE id=?", project_id)
+        cfg = self.cfg(proj)
+        units = scope(cfg, unit)
+        if units is not None:
+            key = (project_id, tuple(sorted(units)))
+            if key not in self._syms:
+                owners = cfg["mapping"]["symbol_units"]
+                rows = self.store.all("SELECT name,address,size,kind FROM symbols WHERE project_id=?", project_id)
+                self._syms[key] = SymbolTable([Symbol(r["name"], r["address"], r["size"], r["kind"])
+                                              for r in rows if owners.get(r["name"]) in units])
+            return self._syms[key]
         if project_id not in self._syms:
             rows = self.store.all("SELECT name, address, size, kind FROM symbols WHERE project_id=?", project_id)
             self._syms[project_id] = SymbolTable([Symbol(r["name"], r["address"], r["size"], r["kind"]) for r in rows])
@@ -189,11 +205,15 @@ class RomNetwork(Network):
             self._roms[proj["id"]] = (rom, segs)
         return self._roms[proj["id"]]
 
-    def reader(self, proj):
+    def reader(self, proj, unit: str = ""):
+        from .mapping import scope
+        units = scope(self.cfg(proj), unit)
         rom, segs = self._rom(proj)
 
         def read(addr: int, n: int) -> bytes | None:
             for seg in segs:
+                if units is not None and seg.name not in units:
+                    continue
                 if seg.contains(addr, n):
                     at = seg.rom_start + addr - seg.vram
                     return rom[at:at + n]
@@ -206,9 +226,12 @@ class RomNetwork(Network):
         m = _ADDRESS.match(name.strip()) if name else None
         if m:
             proj = self._project(project)
-            row = self.store.one("SELECT * FROM functions WHERE project_id=? AND vram=?", proj["id"], int(m.group(1), 16))
-            if row is not None:
-                return row
+            rows = self.store.all("SELECT * FROM functions WHERE project_id=? AND vram=?", proj["id"], int(m.group(1), 16))
+            if len(rows) > 1:
+                raise NetworkError("this address belongs to several overlays; use the full function name: "
+                                   + ", ".join(r["name"] for r in rows))
+            if rows:
+                return rows[0]
         try:
             return super()._function(name, project)
         except NetworkError as e:
@@ -303,7 +326,7 @@ class RomNetwork(Network):
             return super()._target_obj(fn, proj)
         if self.cfg(proj).get("platform") == "gba":
             return FunctionObj(fn["name"], "thumb", False, fn["target"], [])
-        return match.canonical_target(self._rom_target(fn), self.symbols(proj["id"]))
+        return match.canonical_target(self._rom_target(fn), self.symbols(proj["id"], fn["unit"]))
 
     def _evaluate(self, fn, proj, obj: bytes):
         if not self.is_rom(proj):
@@ -312,9 +335,9 @@ class RomNetwork(Network):
             from ..rom import match_arm
 
             res = match_arm.link(obj, fn["name"], match_arm.ArmTarget(fn["name"], fn["vram"], fn["target"]),
-                                 self.symbols(proj["id"]), self.reader(proj))
+                                 self.symbols(proj["id"], fn["unit"]), self.reader(proj, fn["unit"]))
             return res.candidate, res.exact if res.candidate is not None else None, res.problems
-        res = match.link(obj, fn["name"], self._rom_target(fn), self.symbols(proj["id"]), self.reader(proj))
+        res = match.link(obj, fn["name"], self._rom_target(fn), self.symbols(proj["id"], fn["unit"]), self.reader(proj, fn["unit"]))
         return res.candidate, res.exact if res.candidate is not None else None, res.problems
 
     def _twin_lines(self, proj, fn) -> list[str]:
@@ -332,15 +355,15 @@ class RomNetwork(Network):
             out += ["Its C with this function's names (try it first):", "```c", source.strip(), "```"]
         return out
 
-    def rename_tokens(self, proj, text: str) -> str:
+    def rename_tokens(self, proj, text: str, unit: str = "") -> str:
         """Show automatic names under their current names (func_80001234 -> deflate)."""
-        syms = self.symbols(proj["id"])
+        syms = self.symbols(proj["id"], unit)
         return _AUTO_TOKEN.sub(lambda m: syms.label(int(m.group(0)[-8:], 16)), text)
 
     def _asm_text(self, fn, proj) -> str:
         if not self.is_rom(proj):
             return super()._asm_text(fn, proj)
-        return self.rename_tokens(proj, fn["asm"])
+        return self.rename_tokens(proj, fn["asm"], fn["unit"])
 
     # ------------------------------------------------------------------ import
 
@@ -544,8 +567,8 @@ class RomNetwork(Network):
 
     def _jtbl_asm(self, proj, fn) -> list[str]:
         out = [".section .rodata"]
-        read = self.reader(proj)
-        syms = self.symbols(proj["id"])
+        read = self.reader(proj, fn["unit"])
+        syms = self.symbols(proj["id"], fn["unit"])
         for m in sorted(set(re.findall(r"jtbl_([0-9A-F]{8})", fn["asm"]))):
             addr = int(m, 16)
             sym = syms.by_addr.get(addr)
@@ -575,11 +598,16 @@ class RomNetwork(Network):
 
     # ------------------------------------------------------------------ cross references
 
-    def xrefs(self, proj) -> dict:
+    def xrefs(self, proj, unit: str = "") -> dict:
         """calls / called_by / uses / used_by, all keyed by address."""
-        if proj["id"] in self._xrefs:
-            return self._xrefs[proj["id"]]
-        funcs = self.store.all("SELECT name, vram, size, relocs FROM functions WHERE project_id=?", proj["id"])
+        from .mapping import scope
+        units = scope(self.cfg(proj), unit)
+        key = (proj["id"], tuple(sorted(units))) if units is not None else proj["id"]
+        if key in self._xrefs:
+            return self._xrefs[key]
+        funcs = self.store.all("SELECT name, vram, size, relocs, unit FROM functions WHERE project_id=?", proj["id"])
+        if units is not None:
+            funcs = [f for f in funcs if f["unit"] in units]
         starts = {f["vram"] for f in funcs}
         calls, called_by, uses, used_by = {}, {}, {}, {}
         for f in funcs:
@@ -592,14 +620,14 @@ class RomNetwork(Network):
                 elif rtype not in (match.R_MIPS_26, 10):  # 10: a Thumb call (GBA) to something not known as a function
                     uses.setdefault(f["vram"], set()).add(addr)
                     used_by.setdefault(addr, set()).add(f["vram"])
-        self._xrefs[proj["id"]] = {"calls": calls, "called_by": called_by, "uses": uses, "used_by": used_by}
-        return self._xrefs[proj["id"]]
+        self._xrefs[key] = {"calls": calls, "called_by": called_by, "uses": uses, "used_by": used_by}
+        return self._xrefs[key]
 
     def _extra_brief(self, fn, proj) -> list[str]:
         if not self.is_rom(proj):
             return []
-        syms = self.symbols(proj["id"])
-        x = self.xrefs(proj)
+        syms = self.symbols(proj["id"], fn["unit"])
+        x = self.xrefs(proj, fn["unit"])
         lines = ["", "### Where it lives",
                  f"address 0x{fn['vram']:08X}, ROM offset 0x{fn['rom_offset']:X}, segment {fn['unit']}"]
         calls = sorted(x["calls"].get(fn["vram"], ()))
@@ -706,16 +734,16 @@ class RomNetwork(Network):
                          + (f", best score {r['best_score']}" if r["best_score"] is not None else "")
                          + (f", claimed by {r['claimed_by']}" if r["claimed_by"] else "") for r in rows)
 
-    def read_data(self, project: str | None, what: str, length: int = 64) -> str:
+    def read_data(self, project: str | None, what: str, length: int = 64, unit: str = "") -> str:
         self._rom_only(project, "read_data")
         proj = self._project(project)
-        syms = self.symbols(proj["id"])
+        syms = self.symbols(proj["id"], unit)
         m = _ADDRESS.match(what.strip())
         addr = int(m.group(1), 16) if m else syms.resolve(what.strip())
         if addr is None:
             raise NetworkError(f"`{what}` is not an address or a known symbol")
         length = max(4, min(int(length), 512))
-        data = self.reader(proj)(addr, length)
+        data = self.reader(proj, unit)(addr, length)
         head = f"{syms.label(addr)} at 0x{addr:08X}"
         if data is None:
             sym = syms.by_addr.get(addr)
@@ -750,6 +778,8 @@ class RomNetwork(Network):
         proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
         if not self.is_rom(proj):
             raise NetworkError("split_function is for ROM projects")
+        if self.cfg(proj).get("mapping"):
+            raise NetworkError("mapped function boundaries belong to the profile; v1 preserves existing targets")
         if fn["status"] == "matched":
             raise NetworkError(f"{fn['name']} is matched; it can't be split")
         m = _ADDRESS.match(str(at).strip())
@@ -852,6 +882,8 @@ class RomNetwork(Network):
         proj = self._project(project)
         if not self.is_rom(proj):
             return super().rename_symbol(agent, project, old, new, message)
+        if self.cfg(proj).get("mapping"):
+            raise NetworkError("mapping v1 keeps profile symbol names stable; aliases will be supported in a later version")
         link = self._link(project)
         if link is not None:
             text = link.call("/collab/rename", agent, old=old, new=new, message=message)
@@ -1257,6 +1289,8 @@ class RomNetwork(Network):
         from ..rom.export_gba import export_gba
 
         proj = self._project(slug)
+        if self.cfg(proj).get("mapping"):
+            raise NetworkError("mapping v1 verifies individual functions; complete-disc export is not supported yet")
         export = export_gba if self.cfg(proj).get("platform") == "gba" else export_rom
         res = export(self, slug, Path(proj["root"]) / "source", log=log)
         with self.store.tx() as db:  # shown on the project page: what's in the tree and whether it rebuilds
@@ -1309,7 +1343,8 @@ class RomNetwork(Network):
             "context_version": self._context(proj["id"])["version"],
             "folder": proj["root"],
             "export": cfg.get("export"),
-            "exportable": cfg.get("platform", "n64") in ("n64", "psx", "ps2", "gba"),
+            "exportable": not cfg.get("mapping") and cfg.get("platform", "n64") in ("n64", "psx", "ps2", "gba"),
+            "mapping": {"version": 1, "regions": list(cfg["mapping"]["regions"])} if cfg.get("mapping") else None,
             "room": self._room_info(proj["slug"]),
         }
 
@@ -1614,8 +1649,8 @@ class RomNetwork(Network):
                                 "ORDER BY id DESC LIMIT 1", fn["id"])
         notes = self.store.all("SELECT n.text, n.created_at, a.name AS agent FROM notes n LEFT JOIN agents a "
                                "ON a.id=n.agent_id WHERE n.function_id=? ORDER BY n.id DESC LIMIT 10", fn["id"])
-        x = self.xrefs(proj)
-        syms = self.symbols(proj["id"])
+        x = self.xrefs(proj, fn["unit"])
+        syms = self.symbols(proj["id"], fn["unit"])
         if not (fn["matched_source"] or fn["best_source"] or latest) and fn["seed"] is None:
             with self._seed_lock:
                 self._seed_for(fn, proj)

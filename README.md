@@ -10,6 +10,11 @@ GitHub releases; branch installations follow their selected branch. See
 
 ---
 
+This fork includes a first [manual mapping milestone](docs/manual-mapping.md): PS1
+profiles, isolated overlay views and additive rescans, with a small SLUS-00614
+example derived independently from an owner's disc dump. It is available through
+the CLI and operator API; the mapping editor is planned for a later milestone.
+
 <p align="center">
   <a href="https://decomp.wtf">
     <picture>

@@ -53,6 +53,8 @@ class Room:
     def __init__(self, net, slug: str):
         self.net, self.slug = net, slug
         self.proj = net.project_row(slug)
+        if net.cfg(self.proj).get("mapping"):
+            raise NetworkError("mapping v1 supports local workers; room sharing needs an overlay-aware protocol")
         self.fork = bool(net.fork_slug(slug))  # a git source tree (forkroom.py)
         self._hits: dict[str, deque] = defaultdict(lambda: deque(maxlen=900))
         self._members: tuple[float, list] = (0.0, [])  # cached: every member polls, the list changes slowly
