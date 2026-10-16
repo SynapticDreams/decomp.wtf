@@ -744,6 +744,27 @@ def join_room(net, link: str, name: str, rom: bytes | Path, log=print, client: h
     return slug
 
 
+def _wait_to_be_let_in(http: httpx.Client, url: str, room: str, headers: dict, log, every: float = 2.0,
+                       patience: float = 1800.0) -> None:
+    """A room that approves its members lets them in by hand: the host's tree is only sent once they have."""
+    log("waiting for the host to let you in")
+    deadline = time.time() + patience
+    while True:
+        try:
+            r = http.get(f"{url}/collab/whoami", params={"room": room}, headers=headers)
+        except httpx.HTTPError:
+            raise NetworkError("can't reach that room: is the host's decomp.wtf open and sharing?") from None
+        if r.status_code == 200:
+            log("the host let you in")
+            return
+        err = r.json().get("error", "") if r.headers.get("content-type", "").startswith("application/json") else ""
+        if "waiting for the host" not in err:
+            raise NetworkError("the host didn't let you in" if "invalid API token" in err else err or "couldn't join")
+        if time.time() > deadline:
+            raise NetworkError("the host hasn't let you in yet: ask them to approve you, then join again")
+        time.sleep(every)
+
+
 def _join_fork(net, http: httpx.Client, url: str, code: str, hello: dict, name: str, game: bytes | Path, log,
                client: httpx.Client | None, start: bool) -> str:
     """Join a git project's room: the host's tree (forkroom.clone), the member's own copy of the game placed where
@@ -770,6 +791,8 @@ def _join_fork(net, http: httpx.Client, url: str, code: str, hello: dict, name: 
         if r.status_code != 200:
             raise NetworkError(joined.get("error", "couldn't join"))
         headers = {"authorization": f"Bearer {joined['token']}", "x-room": hello["room"]}
+        if joined.get("waiting"):
+            _wait_to_be_let_in(http, url, hello["room"], headers, log)
 
         def get_bundle(have: str) -> bytes:
             res = http.get(f"{url}/collab/bundle", params={"have": have, "room": hello["room"]}, headers=headers,
