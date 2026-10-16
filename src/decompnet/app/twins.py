@@ -120,18 +120,20 @@ def rom_print(fn, arch: str, big_endian: bool, label) -> Print:
                  [a for _, _, a in relocs])
 
 
-def rom_renames(syms, source: str, a: Print, b: Print, a_name: str, b_name: str) -> dict[str, str] | None:
+def rom_renames(syms, source: str, a: Print, b: Print, a_name: str, b_name: str,
+                destination=None) -> dict[str, str] | None:
     """renames() for a ROM project, where relocations are addresses: for each address a's code refers to, the
     name a's C writes for it (the nearest symbol at or below it that the C mentions: a struct whose field it is,
     an array whose element), and for b the same offset from b's address, by its name or its automatic one."""
     import bisect
 
     words = set(re.findall(r"\b[A-Za-z_]\w*\b", source))
+    destination = syms if destination is None else destination
     out: dict[str, str] = {}
     if a_name != b_name:
         out[a_name] = b_name
     for x, y in zip(a.addrs, b.addrs):
-        if x == y:
+        if x == y and destination is syms:
             continue
         i = bisect.bisect_right(syms._starts, x) - 1
         base = None
@@ -145,7 +147,7 @@ def rom_renames(syms, source: str, a: Print, b: Print, a_name: str, b_name: str)
         if base is None:
             continue  # the C doesn't name it (a literal, a string it defines): the judge compares the values
         to = y - (x - base.address)
-        other = syms.by_addr.get(to)
+        other = destination.by_addr.get(to)
         name = other.name if other is not None else f"D_{to:08X}"
         if out.setdefault(base.name, name) != name:
             return None
@@ -225,10 +227,11 @@ class Twins:
 
     def _rom_prints(self, proj) -> dict[int, Print]:
         cfg = self.net.cfg(proj)
-        syms = self.net.symbols(proj["id"])
         arch = "arm" if cfg.get("platform") == "gba" else proj["arch"] or "mips"
-        return {r["id"]: rom_print(r, arch, bool(cfg.get("big_endian", True)), syms.label) for r in self.net.store.all(
-            "SELECT id, target, relocs FROM functions WHERE project_id=? AND status!='asm'", proj["id"])}
+        rows = self.net.store.all("SELECT id, target, relocs, unit FROM functions WHERE project_id=? AND status!='asm'", proj["id"])
+        tables = {unit: self.net.symbols(proj["id"], unit) for unit in {r["unit"] for r in rows}}
+        return {r["id"]: rom_print(r, arch, bool(cfg.get("big_endian", True)),
+                                    tables[r["unit"]].label) for r in rows}
 
     def _fork_prints(self, proj) -> dict[int, Print]:
         from ..forks.project import ForkError, ForkProject, STATE
@@ -466,7 +469,10 @@ class Twins:
         source = a["matched_source"]
         if not source:
             return None
-        names = rom_renames(self.net.symbols(proj["id"]), source, pa, pb, a["name"], b["name"])
+        # The source and destination may be different overlays at the same address.
+        # rom_renames resolves the source's identifiers before mapping them to b's refs.
+        names = rom_renames(self.net.symbols(proj["id"], a["unit"]), source, pa, pb, a["name"], b["name"],
+                            destination=self.net.symbols(proj["id"], b["unit"]))
         if names is None:
             return None
         # what the header declares for a's names, declared for b's too (`extern Player g_player;` for D_80047000)

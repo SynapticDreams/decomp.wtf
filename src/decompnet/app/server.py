@@ -657,6 +657,49 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
     # ------------------------------------------------------------------ forks of public decomps
 
+    @mcp.custom_route("/api/mapping", methods=["POST"])
+    async def api_mapping(request: Request) -> Response:
+        """Operator-only profile API. No worker tool can change its own matching targets."""
+        if (bad := guard(request, write=True)):
+            return bad
+        data = await body(request)
+        action, slug = data.get("action"), str(data.get("slug") or "")
+        try:
+            if action in ("pause", "profile"):
+                proj = net.project_row(slug)
+                if action == "profile":
+                    profile = net.cfg(proj).get("mapping", {}).get("profile")
+                    if profile is None:
+                        raise ValueError("this project has no mapping profile")
+                    return JSONResponse(profile)
+                for s in list(manager.sessions.values()):
+                    if s.slug == slug:
+                        manager.stop(s.id)
+                net.stop_autopilot(slug)
+                net.permuter.stop(slug)
+                if (job := net.twins.jobs.get(slug)) and job.state == "running":
+                    job.stop.set()
+                return JSONResponse({"stop_requested": True, "slug": slug})
+            if action not in ("create", "preview", "apply"):
+                raise ValueError("mapping action must be create, preview, apply, pause or profile")
+            text = data.get("profile")
+            net.mapping._profile(text)  # schema errors are reported before starting a job
+            image = hostenv.local_path(str(data.get("image") or ""))
+            if not image.is_file():
+                raise ValueError("image must name your own local disc image or binary")
+
+            def work(log):
+                if action == "create":
+                    return net.mapping.create(image, text, confirmed=data.get("confirmed") is True, log=log)
+                if action == "apply" and any(s.slug == slug and s.state in ("starting", "working", "waiting")
+                                             for s in manager.sessions.values()):
+                    raise NetworkError("pause this project's workers before applying the mapping")
+                return net.mapping.rescan(slug, image, text, apply=action == "apply", log=log)
+
+            return JSONResponse({"job": jobs.start("mapping", work)})
+        except (NetworkError, ValueError, OSError) as e:
+            return fail(e)
+
     @mcp.custom_route("/api/catalog", methods=["GET"])
     async def api_catalog(request: Request) -> Response:
         """The public decomps decomp.dev listed, as this install downloaded them before it retired its directory."""

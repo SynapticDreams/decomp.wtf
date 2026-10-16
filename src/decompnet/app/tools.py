@@ -141,11 +141,16 @@ def _project_info(net: RomNetwork, slug: str) -> str:
         return net.forks.info(slug)
     ov = net.overview(slug)
     pct = 100 * ov["matched_bytes"] / (ov["bytes"] or 1)
-    return (f"{ov['title']} ({ov['rom']['game_code']}, {ov['rom']['region']})\n"
+    text = (f"{ov['title']} ({ov['rom']['game_code']}, {ov['rom']['region']})\n"
             f"compiler: {ov['compiler']['name']} {' '.join(ov['compiler']['flags'])}\n"
             f"progress: {ov['matched']}/{ov['functions']} functions matched ({pct:.1f}% of code), "
             f"{ov['attempts']} compiles so far, context.h v{ov['context_version']}\n"
             f"Next: claim_function(). Guides: guide().")
+    if ov.get("mapping"):
+        text += ("\nMapped banks: use full region__function names, get_context(function=...) and "
+                 "edit_context(function=...) for that function's header, and read_data(unit=...) for its memory view. "
+                 "Symbol names and boundaries belong to the profile; v1 does not support rename_symbol or split_function.")
+    return text
 
 
 # name -> handler(net, agent, slug, **args); every handler returns text for the model
@@ -185,8 +190,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "rename_symbol": lambda net, agent, slug, old, new, message="": net.rename_symbol(agent, slug, old, new, message),
     "split_function": lambda net, agent, slug, function, at, new_name="":
         net.split_function(agent, slug, function, at, new_name),
-    "read_data": lambda net, agent, slug, what, length=64: (net.forks.read_data(agent, slug, what, length)
-                                                            if net.fork_slug(slug) else net.read_data(slug, what, length)),
+    "read_data": lambda net, agent, slug, what, length=64, unit="": (net.forks.read_data(agent, slug, what, length)
+                                                            if net.fork_slug(slug) else net.read_data(slug, what, length, unit)),
     "list_functions": lambda net, agent, slug, status="open", limit=40: net.list_functions(slug, status, limit),
     "add_note": lambda net, agent, slug, text, function="": net.add_note(agent, slug, text, function or None),
     "search_notes": lambda net, agent, slug, query: net.search_notes(slug, query),
@@ -320,10 +325,11 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "split_function", function=function, at=at, new_name=new_name)
 
     @mcp.tool(meta=ALWAYS_LOAD)
-    async def read_data(ctx: Context, what: str, length: int = 64) -> str:
+    async def read_data(ctx: Context, what: str, length: int = 64, unit: str = "") -> str:
         """Hex dump of the original's data: an address or symbol (ROM projects), a data symbol such as
-        lbl_1_data_10 (forks); text, pointers and floats decoded."""
-        return await run(ctx, "read_data", what=what, length=length)
+        lbl_1_data_10 (forks); text, pointers and floats decoded. In a mapped project,
+        pass the function's unit/region to select the correct overlay memory view."""
+        return await run(ctx, "read_data", what=what, length=length, unit=unit)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def list_functions(ctx: Context, status: str = "open", limit: int = 40) -> str:
