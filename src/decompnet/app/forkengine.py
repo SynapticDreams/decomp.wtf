@@ -807,7 +807,7 @@ class ForkEngine:
             for module, mod in mods.items():
                 for f in dtksplits.Splits.parse(mod.splits.read_text(encoding="utf-8")).files:
                     if f.name == name:
-                        lines.append(f"{module} sections: " + ", ".join(f"{k} 0x{a:X}-0x{b:X}" for k, (a, b) in f.sections.items())
+                        lines.append(f"{module} sections: " + ", ".join(f"{s.name} 0x{s.start:X}-0x{s.end:X}" for s in f.sections)
                                      + " (split_file divides it)")
         except (NetworkError, OSError):
             pass
@@ -955,7 +955,7 @@ class ForkEngine:
                     saved.setdefault(sp_path, sp_path.read_text(encoding="utf-8"))
                     sp = dtksplits.Splits.parse(saved[sp_path])
                     for _, name, start, end, _n in items:
-                        sp.files.append(dtksplits.FileSplit(name, {".text": (start, end)}))
+                        sp.files.append(dtksplits.FileSplit(name, [dtksplits.SectionSplit(".text", start, end)]))
                         p = fp.root / src / name
                         p.parent.mkdir(parents=True, exist_ok=True)
                         common = '#include "common.h"\n' if (fp.root / "include" / "common.h").is_file() else ""
@@ -1024,10 +1024,13 @@ class ForkEngine:
         if fp.link_states().get(rel, ("",))[0] != "NonMatching":
             raise NetworkError(f"{rel} is linked (or not in configure.py): a linked file is finished, don't split it")
         f = next(x for x in sp.files if x.name == name)
-        if ".text" not in f.sections:
+        text_sections = [s for s in f.sections if s.name == ".text"]
+        if not text_sections:
             raise NetworkError(f"{rel} has no code to split")
+        if len(text_sections) != 1:
+            raise NetworkError(f"{rel} has several .text ranges: split_file needs one contiguous code range")
         syms = dtksplits.symbols(mod.symbols)
-        lo, hi = f.sections[".text"]
+        lo, hi = text_sections[0].start, text_sections[0].end
         where = at.strip()
         if where in syms and syms[where][0] == ".text":
             addr = syms[where][1]
@@ -1049,19 +1052,26 @@ class ForkEngine:
         if not fp.safe_path(f"{src}/{new}", write=True) or (fp.root / src / new).exists() or \
                 any(x.name == new for x in sp.files):
             raise NetworkError(f"{src}/{new} exists already: pick another new_name")
-        moved_sections = {".text": (addr, hi)}
-        kept = dict(f.sections, **{".text": (lo, addr)})
+        cuts = {".text": addr}
         for part in data.replace(",", " ").split():
             sec, _, start = part.partition(":")
-            if sec not in f.sections or sec == ".text":
-                raise NetworkError(f"{rel} has no {sec} part to split (it has {', '.join(f.sections)})")
-            a, b = f.sections[sec]
+            ranges = [s for s in f.sections if s.name == sec]
+            if not ranges or sec == ".text":
+                raise NetworkError(f"{rel} has no {sec} part to split (it has {', '.join(s.name for s in f.sections)})")
+            if len(ranges) != 1:
+                raise NetworkError(f"{rel} has several {sec} ranges: split_file needs one contiguous data range")
+            a, b = ranges[0].start, ranges[0].end
             cut = int(start, 16)
             if not a <= cut <= b:
                 raise NetworkError(f"{sec}:{start} is outside {rel}'s {sec} (0x{a:X}-0x{b:X})")
-            moved_sections[sec] = (cut, b)
-            kept[sec] = (a, cut)
-        kept = {k: v for k, v in kept.items() if v[1] > v[0]}
+            cuts[sec] = cut
+        kept, moved_sections = [], []
+        for sec in f.sections:
+            cut = cuts.get(sec.name, sec.end)
+            if cut > sec.start:
+                kept.append(dtksplits.SectionSplit(sec.name, sec.start, cut, sec.extra))
+            if cut < sec.end:
+                moved_sections.append(dtksplits.SectionSplit(sec.name, cut, sec.end, sec.extra))
 
         old_path, new_path = fp.root / src / name, fp.root / src / new
         conf = fp.root / "configure.py"

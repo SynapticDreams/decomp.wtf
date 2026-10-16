@@ -55,6 +55,44 @@ def test_splits_round_trip_and_owner():
     assert sp.owner(".text", 0x100).name == "REL/m656DLL/game.c" and sp.owner(".rodata", 0x300) is None
 
 
+CPP_SPLITS = """Sections:
+\t.text       type:code align:4
+\t.ctors      type:rodata align:4
+\t.dtors      type:rodata align:4
+\t.sdata      type:data align:4
+
+__init_cpp_exceptions.cpp:
+\t.text       start:0x8012EC58 end:0x8012ECC8
+\t.ctors      start:0x80200BA0 end:0x80200BA4 rename:.ctors$10
+\t.dtors      start:0x80200DC0 end:0x80200DC4 rename:.dtors$10
+\t.dtors      start:0x80200DC4 end:0x80200DC8 rename:.dtors$15
+\t.sdata      start:0x8044BE20 end:0x8044BE28
+"""
+
+
+def test_repeated_section_ranges_keep_their_linker_priorities():
+    sp = dtksplits.Splits.parse(CPP_SPLITS)
+    assert sp.render() == CPP_SPLITS
+    # Give code elsewhere a source file without changing the runtime's constructor/destructor layout.
+    sp.files.append(dtksplits.FileSplit("new.c", [dtksplits.SectionSplit(".text", 0x80130000, 0x80130100)]))
+    assert sp.render().startswith(CPP_SPLITS + "\nnew.c:\n")
+    assert dtksplits.Splits.parse(sp.render()).render() == sp.render()
+
+
+def test_owner_finds_every_repeated_section_range():
+    sp = dtksplits.Splits.parse(CPP_SPLITS)
+    for address in (0x80200DC0, 0x80200DC3, 0x80200DC4, 0x80200DC7):
+        assert sp.owner(".dtors", address).name == "__init_cpp_exceptions.cpp"
+    assert sp.owner(".dtors", 0x80200DC8) is None
+
+
+def test_each_range_keeps_its_own_attributes_and_position():
+    text = CPP_SPLITS.replace(
+        "\t.dtors      start:0x80200DC4 end:0x80200DC8 rename:.dtors$15\n", ""
+    ) + "\t.dtors      start:0x80200DC4 end:0x80200DC8\n"
+    assert dtksplits.Splits.parse(text).render() == text
+
+
 def test_libraries_and_their_files():
     libs = dtksplits.libs(CONFIGURE)
     assert [lib.name for lib in libs] == ["Runtime.PPCEABI.H", "m656DLL"]
