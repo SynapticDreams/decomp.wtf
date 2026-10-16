@@ -1,14 +1,12 @@
-## This project is discontinued
+# decomp.wtf — maintained fork
 
-I've decided to stop working on decomp.wtf and archive it.
+This repository continues decomp.wtf under the MIT license. Source, installers,
+and updates use [SynapticDreams/decomp.wtf](https://github.com/SynapticDreams/decomp.wtf).
+Original author and license credits are retained.
 
-Over the last few days I noticed that a lot of the decompilation community, the people who made the tools and projects all of this is built on, is against AI decompiling like this. I didn't make decomp.wtf to do any harm, but I respect their opinion, and that's why I'm stopping it here.
-
-The code stays up as it is, under the MIT license. If you want to fork it and keep going with it, you can. I won't fix issues, review pull requests or make new releases anymore. If you already have it installed it keeps working, it just won't get any updates. You can still install the last version (0.10.6) with the commands under [Install](#install).
-
-If you do use it or build on it, please only use it on games you own, don't share the game code it produces, and respect the rules of the projects you work with, because many of them don't want AI-made contributions.
-
-Thanks to everyone who tried it, reported bugs and sent fixes.
+The current source version is **0.10.7**. Stable installations follow published
+GitHub releases; branch installations follow their selected branch. See
+[the changelog](CHANGELOG.md) and [release instructions](RELEASING.md).
 
 ---
 
@@ -78,20 +76,19 @@ same script as on Linux. macOS isn't supported.
 **Linux**
 
 ```
-curl -fsSL https://decomp.wtf/install.sh | bash
+curl -fsSL https://github.com/SynapticDreams/decomp.wtf/releases/latest/download/install.sh | bash
 ```
 
-Can't reach decomp.wtf from your network? The same installer from GitHub (it then installs the release from GitHub
-too):
+To install directly from the current source branch:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/i12bp8/decomp.wtf/main/site/public/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/SynapticDreams/decomp.wtf/main/site/public/install.sh | DECOMP_BRANCH=main bash
 ```
 
-**Windows** (PowerShell; new and still unstable: problems are worth an [issue](https://github.com/i12bp8/decomp.wtf/issues))
+**Windows** (PowerShell; new and still unstable: problems are worth an [issue](https://github.com/SynapticDreams/decomp.wtf/issues))
 
 ```
-irm https://decomp.wtf/install.ps1 | iex
+irm https://github.com/SynapticDreams/decomp.wtf/releases/latest/download/install.ps1 | iex
 ```
 
 It turns on WSL 2 if it isn't yet (Windows asks for permission once, and may want a restart), makes decomp.wtf's
@@ -129,7 +126,7 @@ when needed; you can also add it yourself (`claude mcp add decomp -- decomp mcp`
 
 | Agent | Install it as a package instead |
 | :-- | :-- |
-| **Claude Code** | `/plugin marketplace add i12bp8/decomp.wtf`, then `/plugin install decomp-wtf@decomp-wtf` (adds a "decompile" skill) |
+| **Claude Code** | `/plugin marketplace add SynapticDreams/decomp.wtf`, then `/plugin install decomp-wtf@decomp-wtf` (adds a "decompile" skill) |
 | **Codex, Antigravity CLI, opencode** | `decomp connect codex`, `decomp connect antigravity`, `decomp connect opencode` |
 
 ## How it works
@@ -282,7 +279,7 @@ website: the people who decompile together host their room and decide who's in.
 **On a server** (or any always-on machine):
 
 ```
-curl -fsSL https://decomp.wtf/install.sh | bash
+curl -fsSL https://github.com/SynapticDreams/decomp.wtf/releases/latest/download/install.sh | bash
 decomp host mygame.z64 --own-copy --address http://my-server:6481 --service
 ```
 
@@ -328,7 +325,7 @@ full decomp you can port and mod:
 
 **Beta: PlayStation, PlayStation 2, Game Boy Advance and DS.** They work end to end and are tested on homemade
 games, much less on real ones so far. Expect rough edges, and please
-[report](https://github.com/i12bp8/decomp.wtf/issues) what you hit: the app's error panel copies everything an issue
+[report](https://github.com/SynapticDreams/decomp.wtf/issues) what you hit: the app's error panel copies everything an issue
 needs. Public decomps of any platform run in their own project's build, so their status is the project's.
 
 **From scratch.** splat and spimdisasm split MIPS games, decomp-toolkit analyses GameCube and Wii programs inside a
@@ -361,7 +358,7 @@ browser as usual, and the results are byte-identical to Linux. macOS isn't suppo
 
 **When something goes wrong.** A failed import stays on screen with the reason and what happened, and **Copy for a
 bug report** puts the version, the error and the log on your clipboard for an
-[issue](https://github.com/i12bp8/decomp.wtf/issues). The full log is `.decomp/logs/decomp.log` in your projects folder
+[issue](https://github.com/SynapticDreams/decomp.wtf/issues). The full log is `.decomp/logs/decomp.log` in your projects folder
 (`~/Decomp`), also at **The full log** in that panel.
 
 ## Development
@@ -398,13 +395,13 @@ and the installed app then follows the branch on GitHub (every new commit pushed
 app: one click installs it).
 
 ```
-git clone -b <branch> https://github.com/i12bp8/decomp.wtf && cd decomp.wtf
+git clone -b <branch> https://github.com/SynapticDreams/decomp.wtf && cd decomp.wtf
 powershell -ExecutionPolicy Bypass -File site\public\install.ps1      # Windows
 bash site/public/install.sh                                           # Linux
 ```
 
-Without a checkout: `$env:DECOMP_BRANCH = "<branch>"; irm https://raw.githubusercontent.com/i12bp8/decomp.wtf/<branch>/site/public/install.ps1 | iex`
-on Windows, `curl -fsSL https://raw.githubusercontent.com/i12bp8/decomp.wtf/<branch>/site/public/install.sh | DECOMP_BRANCH=<branch> bash`
+Without a checkout: `$env:DECOMP_BRANCH = "<branch>"; irm https://raw.githubusercontent.com/SynapticDreams/decomp.wtf/<branch>/site/public/install.ps1 | iex`
+on Windows, `curl -fsSL https://raw.githubusercontent.com/SynapticDreams/decomp.wtf/<branch>/site/public/install.sh | DECOMP_BRANCH=<branch> bash`
 on Linux. `decomp update` (or the app's Settings) installs the newest commit by hand.
 
 </details>
