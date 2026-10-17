@@ -231,13 +231,18 @@ def test_mgbdis_split_finds_code_and_covers_the_rom(tmp_path):
     from tests.test_gb import make_rom
 
     rom = bytearray(make_rom(size=0x8000))
-    rom[0x150:0x156] = bytes.fromhex("ea0021c9e0f2c9")     # a setter and an HRAM write
-    rom[0x200:0x204] = bytes.fromhex("af47c9")
+    # The entry (`jp $0150`) is a jump target, which mgbdis labels Jump_ and the split does not cut at; the code
+    # it calls is what becomes functions.
+    rom[0x150:0x154] = bytes.fromhex("cd0002c9")           # call $0200 · ret
+    rom[0x200:0x207] = bytes.fromhex("ea0021c9e0f2c9")     # a setter and an HRAM write
+    rom[0x210:0x213] = bytes.fromhex("af47c9")
+    rom[0x154:0x157] = bytes.fromhex("cd1002")             # call $0210
     path = tmp_path / "game.gb"
     path.write_bytes(bytes(rom))
     fns, meta = gb_mgbdis.split(path, tmp_path)
     assert meta["rebuilt_bytes"] == len(rom), "the whole ROM must be covered by the disassembly"
     assert meta["functions"] == len(fns) > 0
     by_flat = {f.rom: f for f in fns}
-    assert 0x150 in by_flat and by_flat[0x150].code[:3] == bytes.fromhex("ea0021")  # the setter's bytes
+    assert 0x200 in by_flat and by_flat[0x200].code[:3] == bytes.fromhex("ea0021")  # the setter's bytes
+    assert 0x210 in by_flat and by_flat[0x210].code[:3] == bytes.fromhex("af47c9")
     assert all(f.bank == 0 and f.vram == f.rom for f in fns if f.rom < 0x4000)
