@@ -25,7 +25,10 @@ without reaching the next function (graphics and tables after the last routine),
 ones SDCC never writes (ld b, b: a register to itself; rst $38, an FF byte). SDCC can't write any of those. Of real code: a routine that runs on into the next one (it ends without a return or
 a jump: hand-written code that shares its tail), one that reads the carry or zero flag before setting it (C passes
 nothing in the flags), one that sets the stack pointer to an address (start-up code), or one with halt or stop (C
-writes those only as inline assembly, which decomp.wtf doesn't take).
+writes those only as inline assembly, which decomp.wtf doesn't take). And what SDCC (GBDK-2020 4.5, SDCC 4.5.1) never
+writes, measured: a routine that reads h or l before setting them (it passes arguments in a, e, de and bc; hl never),
+a jr out of the function (its jr stays inside one; it reaches other functions with jp, conditional tail calls
+included), and a call followed by a ret no branch reaches (a call at the end becomes a jp).
 """
 
 from __future__ import annotations
@@ -300,11 +303,62 @@ def sm83_reason(code: bytes, base: int = 0, capped: bool = False) -> str | None:
             z = True
         elif _SM83_C.match(text):
             c = True
-    for addr, text, ln in insns:
+    if (early := _sm83_hl_first(insns)):
+        return f"reads {early} before setting it: SDCC passes arguments in a, e, de and bc, never in hl"
+    end = base + len(code)
+    targets = {int(m.group(1), 16) for _, text, _ in insns if (m := _SM83_JUMP_TO.match(text))}
+    for i, (addr, text, ln) in enumerate(insns):
         if text.startswith("ld sp, $"):
             return "sets the stack pointer to an address: start-up code, hand-written"
         if text == "halt" or text.startswith("stop"):
             return f"{text.split()[0]} at ${addr:04x}: C writes it only as inline assembly, which isn't taken"
+        if text.startswith("jr ") and not base <= (to := int(text.rsplit("$", 1)[1], 16)) < end:
+            return f"{text} leaves the function (to ${to:04x}): SDCC's jr stays inside one, other code it reaches with jp"
+        nxt = insns[i + 1] if i + 1 < len(insns) else None
+        if re.match(r"^call \$", text) and nxt and nxt[1] == "ret" and nxt[0] not in targets:
+            return f"{text} then ret (at ${addr:04x}): SDCC writes a call at the end as a jp"
+    return None
+
+
+_SM83_JUMP_TO = re.compile(r"^(?:jr|jp)\b.*\$([0-9a-f]{4})$")  # a branch with its target
+
+
+def _sm83_hl_first(insns: list) -> str | None:
+    """`h`, `l` or `hl` when the first block reads it before setting it (saving it with push doesn't count: an
+    interrupt handler does that), else None."""
+    known: set[str] = set()
+    for _, text, _ in insns:
+        op, _, rest = text.partition(" ")
+        args = [a.strip() for a in rest.split(",")] if rest else []
+        if op in ("call", "ret", "reti", "rst", "jr", "jp") and args != ["hl"]:
+            return None  # the first block ends
+        reads, writes = set(), set()
+        regs = lambda a: {"h", "l"} if re.search(r"\bhl\b", a) else {a} & {"h", "l"}  # noqa: E731
+        if op in ("ld", "ldh"):
+            dest = args[0] if args else ""
+            if dest.startswith("("):
+                reads |= regs(dest)
+            else:
+                writes |= regs(dest)
+            reads |= set().union(*(regs(a) for a in args[1:])) if len(args) > 1 else set()
+            if dest == "sp":
+                reads |= regs(args[1])
+        elif op == "pop":
+            writes |= regs(args[0])
+        elif op == "push":
+            pass
+        elif op in ("inc", "dec", "rlc", "rrc", "rl", "rr", "sla", "sra", "srl", "swap", "set", "res"):
+            reads |= regs(args[-1])
+            writes |= regs(args[-1]) if not args[-1].startswith("(") else set()
+        elif op == "add" and args and args[0] == "hl":
+            reads |= {"h", "l"} | regs(args[1])
+            writes |= {"h", "l"}
+        elif op in ("add", "adc", "sub", "sbc", "and", "xor", "or", "cp", "bit", "jp"):
+            reads |= set().union(*(regs(a) for a in args)) if args else set()
+        early = reads - known
+        if early:
+            return "hl" if early == {"h", "l"} else early.pop()
+        known |= writes
     return None
 
 
