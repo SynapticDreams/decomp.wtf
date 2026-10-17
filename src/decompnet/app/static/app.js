@@ -269,7 +269,7 @@ function parseRom(buf) {
 /* What the user dropped, from its first bytes (nothing is uploaded until they confirm). */
 const PLATFORM_NAME = { n64: "Nintendo 64", psx: "PlayStation", ps2: "PlayStation 2", playstation: "PlayStation 1 or 2",
   gc: "GameCube", wii: "Wii", gcwii: "GameCube or Wii", gba: "Game Boy Advance", gb: "Game Boy",
-  gbc: "Game Boy Color", sms: "Sega Master System", gg: "Sega Game Gear", nds: "Nintendo DS" };
+  gbc: "Game Boy Color", sms: "Sega Master System", gg: "Sega Game Gear", nes: "Nintendo Entertainment System", nds: "Nintendo DS" };
 const CW_PACK = {
   gcwii: { id: "mwcc", text: "Install CodeWarrior, the compilers GameCube and Wii games were built with (about 80 MB). It's proprietary software, kept by the decomp community: only if you accept that." },
   nds: { id: "mwccarm", text: "Install CodeWarrior for DS, the compilers DS games were built with (about 50 MB). It's proprietary software, kept by the decomp community: only if you accept that." },
@@ -309,6 +309,13 @@ function identifyHead(head, file) {
   const stem = file.name.replace(/\.[^.]*$/, "");
   const base = { title: stem, size: file.size };
   if (text(0, 8) === "PS-X EXE") return { ...base, platform: "psx", order: "PS-X EXE", entry: dv.getUint32(0x10, true) };
+  // NES: "NES" and 0x1A, then the PRG size in 16 KiB units. The mapper is split across bytes 6 and 7 (byte 7 is junk when
+  // bytes 12-15 are not zero and it is not NES 2.0). The same reading the server makes (rom/nes.py).
+  if (head.length >= 16 && head[0] === 0x4e && head[1] === 0x45 && head[2] === 0x53 && head[3] === 0x1a && head[4] > 0 && file.size >= 16 + 0x2000) {
+    const nes2 = (head[7] & 0x0c) === 0x08, dirty = !nes2 && head.slice(12, 16).some((b) => b);
+    const mapper = (head[6] >> 4) | (dirty ? 0 : head[7] & 0xf0) | (nes2 ? (head[8] & 0x0f) << 8 : 0);
+    return { ...base, platform: "nes", order: nes2 ? "iNES (NES 2.0)" : "iNES", code: "", mapper, prg: head[4] * 16 };
+  }
   // Game Boy / Game Boy Color: Nintendo logo at 0x104, header checksum over 0x134-0x14C, and a size
   // that is a power-of-two number of 16 KiB banks. The same three checks the server makes (rom/gb.py).
   if (head.length > 0x14d && head[0x104] === 0xce && head[0x105] === 0xed && head[0x106] === 0x66 && head[0x107] === 0x66) {
@@ -359,11 +366,12 @@ function identifyHead(head, file) {
 function notSupported(head, file) {
   const text = (a, b) => String.fromCharCode(...head.slice(a, b));
   const ext = (file.name.match(/\.([^.]+)$/) || [])[1]?.toLowerCase() || "";
-  if (text(0, 2) === "MZ") return "That's a Windows program. PC games aren't supported yet: decomp.wtf starts from N64, PlayStation 1 and 2, GameCube, Wii, Game Boy, Game Boy Color, Game Boy Advance and DS games.";
+  if (text(0, 2) === "MZ") return "That's a Windows program. PC games aren't supported yet: decomp.wtf starts from N64, PlayStation 1 and 2, GameCube, Wii, Game Boy, Game Boy Color, Game Boy Advance, NES, Master System, Game Gear and DS games.";
   if (text(0, 4) === "XEX2" || ext === "xex") return "That's an Xbox 360 program. Xbox 360 games aren't supported yet.";
   if (["nsp", "xci", "nso", "nro", "nca"].includes(ext) || text(0, 4) === "NSO0" || text(0, 4) === "PFS0") return "That's a Nintendo Switch file. Switch games aren't supported yet.";
   if (["sfc", "smc"].includes(ext)) return "That's a Super Nintendo ROM. SNES games were written in assembly, not compiled from C, so there's no C source to match.";
-  if (["nes", "md", "gen", "sms", "gg", "pce"].includes(ext)) return "Games for that console were written in assembly, not compiled from C, so there's no C source to match.";
+  if (ext === "nes") return "That NES file has no iNES header (it should start with \"NES\" and a 0x1A byte), so decomp.wtf can't tell how its banks are laid out. Dumps in the UNIF or FDS formats aren't supported yet.";
+  if (["md", "gen", "sms", "gg", "pce"].includes(ext)) return "Games for that console were written in assembly, not compiled from C, so there's no C source to match.";
   if (ext === "cue") return "That's the .cue sheet: pick the .bin file next to it (the track with the game's data, usually Track 1).";
   if (["zip", "7z", "rar"].includes(ext)) return "That's an archive: unpack it first, then drop the game file inside.";
   if (ext === "apk") return "Android apps aren't supported yet.";
@@ -395,6 +403,9 @@ async function pickFile(file) {
     ? [["Platform", PLATFORM_NAME[p]], ["Format", info.order], ["Size", MB(info.size)],
        ["Cartridge", (info.cgb & 0x80) ? (info.cgb === 0xc0 ? "Color only" : "Color enhanced") : "original Game Boy"],
        ["Project", "mgbdis"]]
+    : p === "nes"
+    ? [["Platform", PLATFORM_NAME[p]], ["Format", info.order], ["Size", MB(info.size)],
+       ["Mapper", `${info.mapper}, ${info.prg} KiB program`], ["Project", "decomp.wtf"]]
     : (p === "sms" || p === "gg")
     ? [["Platform", PLATFORM_NAME[p]], ["Format", info.order], ["Size", MB(info.size)],
        ["Header", info.header ? "TMR SEGA" : "none (named by its extension)"], ["Project", "decomp.wtf"]]
@@ -425,6 +436,10 @@ function setupCompilers(info) {
   else if (p === "gb" || p === "gbc") {
     $("compilerRow").hidden = true; note.hidden = false;
     note.textContent = "Game Boy and Game Boy Color games are split with mgbdis and rgbds and matched with the pinned GBDK-2020 (SDCC) toolchain. decomp.wtf installs whichever of them is missing when you import. If that fails, the game is imported read-only (every function disassembled and searchable, but not handed out for matching), and importing it again once they are installed sets it right.";
+  }
+  else if (p === "nes") {
+    $("compilerRow").hidden = true; note.hidden = false;
+    note.textContent = "NES games are matched with the pinned GBDK-2020 (SDCC) toolchain's 6502 back end. decomp.wtf installs it when you import. Most commercial NES games were written in assembly, so expect to read, search and name their functions more than match them; homebrew built with GBDK-2020 or SDCC can match. If the toolchain can't be installed the game is imported read-only, and importing it again once it is installed sets it right.";
   }
   else if (p === "sms" || p === "gg") {
     $("compilerRow").hidden = true; note.hidden = false;
@@ -1149,7 +1164,7 @@ async function installToolchain(id, proprietary) {
 
 /* ------------------------------------------------------------------ public decomps */
 const PLAT_ORDER = ["gc", "wii", "ps", "ps2", "n64", "gba", "nds", "switch", "win32", "xbox360", "3ds", "xbox", "psp"];
-const PLAT_SHORT = { gc: "GameCube", wii: "Wii", ps: "PS1", psx: "PS1", ps2: "PS2", n64: "N64", gba: "GBA", gb: "GB", gbc: "GBC", nds: "DS", switch: "Switch", win32: "PC", xbox360: "Xbox 360", "3ds": "3DS", xbox: "Xbox", psp: "PSP" };
+const PLAT_SHORT = { gc: "GameCube", wii: "Wii", ps: "PS1", psx: "PS1", ps2: "PS2", n64: "N64", gba: "GBA", gb: "GB", gbc: "GBC", nes: "NES", nds: "DS", switch: "Switch", win32: "PC", xbox360: "Xbox 360", "3ds": "3DS", xbox: "Xbox", psp: "PSP" };
 const cat = { list: null, downloaded: null, plat: "", q: "", done: false };
 
 /* The list decomp.dev had, as this install downloaded it before the directory was retired (none on a new one). */

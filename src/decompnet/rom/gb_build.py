@@ -1,5 +1,6 @@
-"""Game Boy / Game Boy Color and Master System / Game Gear C build lane: SDCC (via the pinned GBDK-2020 toolchain)
-to SM83 or Z80 bytes. (Written for the Game Boy; `arch="z80"` runs the same steps with SDCC's Z80 back end.)
+"""Game Boy / Game Boy Color, Master System / Game Gear and NES C build lane: SDCC (via the pinned GBDK-2020
+toolchain) to SM83, Z80 or 6502 bytes. (Written for the Game Boy; `arch="z80"` and `arch="mos6502"` run the same
+steps with SDCC's Z80 and 6502 back ends.)
 
 The fork's other lanes compile a C file to an ELF object and read the function out of it with
 `elfobj`. SM83 has no ELF toolchain in this pipeline, so this module runs the same conceptual steps
@@ -39,10 +40,15 @@ PAYLOAD_MAGIC = b"GBOBJ1\n"
 TOOLCHAIN = "gbdk-2020"
 
 #: SDCC's flag and assembler for each architecture this lane builds. Both ship in the same GBDK-2020 archive.
-ARCHS = {"sm83": ("-msm83", "sdasgb"), "z80": ("-mz80", "sdasz80")}
+ARCHS = {"sm83": ("-msm83", "sdasgb"), "z80": ("-mz80", "sdasz80"), "mos6502": ("-mmos6502", "sdas6500")}
+
+#: SDCC's 6502 code refers to its own zero-page registers by name; the linker places them, so a candidate cannot
+#: resolve them by itself. These are the addresses GBDK-2020's NES startup code gives them, which holds for every game
+#: built with GBDK (the one kind of NES game this lane can match), and a name the project's symbols define wins.
+MOS6502_REGISTERS = {"DPTR": 0x32, "REGTEMP": 0x34, **{f"___SDCC_m6502_ret{i}": 0x3C + i for i in range(8)}}
 
 _LABEL = re.compile(r"^\s*([0-9A-Fa-f]{8})\s+\d+\s+([._A-Za-z][\w.$]*):{1,2}\s*$")
-_LINE = re.compile(r"^\s*([0-9A-Fa-f]{8})\s+((?:[0-9A-Fa-f]{2}\s+)+)\s*\[\s*\d+\]\s+\d+\s+(.*)$")
+_LINE = re.compile(r"^\s*(?:[A-Za-z]{1,2}\s+)?([0-9A-Fa-f]{8})\s+((?:[0-9A-Fa-f]{2}\s+)+)\s*\[\s*\d+\]\s+\d+\s+(.*)$")
 _SYM_FIX = re.compile(r"^([._A-Za-z][\w.$]*)$")
 
 
@@ -134,9 +140,47 @@ def _equates(symbols: dict[str, int] | None, defined: set[str] | None = None) ->
 # A line that leaves the function for good: `ret`, `reti`, `jp hl`, or an unconditional `jp`/`jr`. A conditional
 # return or jump (`ret nc`, `jr nz, label`: there is a comma or a condition) falls through, so code follows it.
 _TERMINATOR = re.compile(r"^(ret|reti|jp\s+hl|jp\s+[^,\s][^,]*|jr\s+[^,\s][^,]*)$", re.I)
+# the 6502's: a return, or an unconditional jump (a branch is conditional, so code follows it)
+_TERMINATOR_6502 = re.compile(r"^(rts|rti|jmp\s+.*)$", re.I)
 
 
-def parse_listing(text: str) -> dict[str, BuiltFunction]:
+#: `/* pin add3_PARM_3 = 0x0375 */` in a candidate's source says where the ROM keeps a variable the compiler allocates by
+#: itself (see _pin_data): the build then uses that address. A comment, so it passes the source policy untouched.
+_PIN = re.compile(r"/\*\s*pin\s+([A-Za-z_][\w$]*)\s*=\s*(0[xX][0-9A-Fa-f]+|\d+)\s*\*/")
+
+
+def pins_in(source: str) -> dict[str, int]:
+    return {m.group(1): int(m.group(2), 0) for m in _PIN.finditer(source)}
+
+
+_DATA_LABEL = re.compile(r"^(_[\w.$]+)::?[ \t]*\n[ \t]*\.ds[ \t]+\d+[ \t]*$", re.M)
+_SUFFIX = re.compile(r"(_\d+)+$")
+
+
+def _pin_data(asm_text: str, symbols: dict[str, int]) -> tuple[str, dict[str, int], list[str]]:
+    """SDCC's 6502 back end keeps a function's extra parameters and locals in static memory (`_f_PARM_2:`, `.ds 1`),
+    which the linker places. The candidate cannot know where, so the assembler counts from zero and every access to
+    one differs from the ROM's. When the project's symbols (or a `pin` comment) name such a variable, its definition is
+    dropped and an `.equ` gives every access the ROM's own address. A name matches whole, or without the numbers the
+    compiler appends (`fill_v` for `_fill_v_10000_6`), which change with the code around it.
+
+    Returns the assembly, {label: address} for what was pinned, and the labels left at zero."""
+    pinned: dict[str, int] = {}
+    left: list[str] = []
+
+    def drop(m: re.Match) -> str:
+        label = m.group(1)
+        for key in (label[1:], label, _SUFFIX.sub("", label[1:])):
+            if key in symbols:
+                pinned[label] = int(symbols[key]) & 0xFFFF
+                return ""
+        left.append(label[1:])
+        return m.group(0)
+
+    return _DATA_LABEL.sub(drop, asm_text), pinned, left
+
+
+def parse_listing(text: str, arch: str = "sm83") -> dict[str, BuiltFunction]:
     """Functions out of an `sdasgb -l` listing: each global label starts a function, its instructions run to
     the next one (local labels such as `00102$` stay inside), trimmed after the last instruction that leaves the
     function for good so trailing padding or the next function's bytes never leak in. A conditional return
@@ -148,7 +192,8 @@ def parse_listing(text: str) -> dict[str, BuiltFunction]:
     def flush() -> None:
         nonlocal current, lines
         if current is not None and lines:
-            end = max((i for i, (_, asm) in enumerate(lines) if _TERMINATOR.match(asm.split(";", 1)[0].strip())),
+            terminator = _TERMINATOR_6502 if arch == "mos6502" else _TERMINATOR
+            end = max((i for i, (_, asm) in enumerate(lines) if terminator.match(asm.split(";", 1)[0].strip())),
                       default=len(lines) - 1)
             kept = lines[:end + 1]
             built = BuiltFunction(name=current, code=b"".join(b for b, _ in kept), asm="\n".join(a for _, a in kept))
@@ -175,7 +220,7 @@ def parse_listing(text: str) -> dict[str, BuiltFunction]:
 
 def build_source(source: str, *, context_header: str = "", include_dirs: tuple[str, ...] = (),
                  symbols: dict[str, int] | None = None, opt: str | list[str] = "--fsigned-char",
-                 timeout: float = 120.0, arch: str = "sm83") -> dict[str, BuiltFunction]:
+                 timeout: float = 120.0, arch: str = "sm83", notes: list[str] | None = None) -> dict[str, BuiltFunction]:
     """Compile candidate C and return every function it defines, with its exact SM83 (or Z80) bytes.
 
     Raises RomError with the compiler/assembler output when the source cannot be built — a build
@@ -183,7 +228,7 @@ def build_source(source: str, *, context_header: str = "", include_dirs: tuple[s
     cpu_flag, assembler = ARCHS[arch]
     sdcc, sdasgb = toolchain_bin("sdcc"), toolchain_bin(assembler)
     if sdcc is None or sdasgb is None:
-        raise RomError(f"the Game Boy / Master System C toolchain ({TOOLCHAIN}) is not installed (the app installs it when a game is imported; Setup lists it)")
+        raise RomError(f"the Game Boy / Master System / NES C toolchain ({TOOLCHAIN}) is not installed (the app installs it when a game is imported; Setup lists it)")
     # The same source policy every other lane applies (compiler.check_source): matches must come from C,
     # so inline assembly, `__naked`, pragmas and system includes are refused here too. Without this the
     # Game Boy lane would be a loophole: `__asm("nop")` reproduces any single-instruction target.
@@ -219,8 +264,22 @@ def build_source(source: str, *, context_header: str = "", include_dirs: tuple[s
 
         # inject the ROM's addresses, then assemble to a listing (label offsets + instruction bytes)
         asm_text = (work / "func.asm").read_text(encoding="utf-8", errors="replace")
-        defined = set(re.findall(r"^\s*(_[\w.$]+)::", asm_text, re.M))  # labels this candidate defines
-        equates = _equates(symbols, defined)
+        pinned: dict[str, int] = {}
+        if arch == "mos6502":
+            symbols = {**(symbols or {}), **pins_in(source), **pins_in(context_header)}
+            asm_text, pinned, left = _pin_data(asm_text, symbols)
+            if left and notes is not None:
+                notes.append("the build placed these static variables at address 0, which is not where the ROM keeps them, "
+                             "so any access to one differs from the target: " + ", ".join(left[:8])
+                             + ". Read each one's address off the target assembly and pin it with "
+                               "`/* pin <name> = 0xADDR */` (a name without its trailing numbers matches too).")
+        defined = set(re.findall(r"^\s*(_[\w.$]+)::?", asm_text, re.M)) | set(pinned)  # labels this candidate defines
+        equates = "\n".join(filter(None, [_equates(symbols, defined)] + [f"\t.equ {n}, 0x{a:04X}" for n, a in pinned.items()]))
+        if arch == "mos6502":  # the compiler's own zero-page registers, wherever the asm names them
+            known = {n for n in (symbols or {})}
+            regs = [f"\t.equ {n}, 0x{a:04X}" for n, a in MOS6502_REGISTERS.items()
+                    if n not in known and re.search(rf"(?<![\w.$]){re.escape(n)}(?![\w.$])", asm_text)]
+            equates = "\n".join(filter(None, [equates, *regs]))
         if equates:
             lines = asm_text.splitlines()
             for i, line in enumerate(lines):
@@ -232,7 +291,9 @@ def build_source(source: str, *, context_header: str = "", include_dirs: tuple[s
             asm_text = "\n".join(lines) + "\n"
         (work / "func.asm").write_text(asm_text, encoding="utf-8", newline="\n")
 
-        rc, log = _run([sdasgb, "-l", "-o", "func.rel", "func.asm"], work, timeout)
+        # The 6502 assembler counts a symbol it has no value for as an error; -g makes it a reference to be resolved
+        # (and reported by name below), like the other assemblers do by default.
+        rc, log = _run([sdasgb, *(["-g"] if arch == "mos6502" else []), "-l", "-o", "func.rel", "func.asm"], work, timeout)
         lst = work / "func.lst"
         if rc != 0 or not lst.exists():
             raise RomError(f"{assembler} could not assemble the candidate: {log.strip()[-600:]}")
@@ -247,7 +308,7 @@ def build_source(source: str, *, context_header: str = "", include_dirs: tuple[s
             if unresolved:
                 raise RomError("the candidate calls symbols this build does not know: "
                                + ", ".join(unresolved) + " (pass their addresses in `symbols`)")
-        funcs = parse_listing(lst.read_text(encoding="utf-8", errors="replace"))
+        funcs = parse_listing(lst.read_text(encoding="utf-8", errors="replace"), arch)
         if not funcs:
             raise RomError("the candidate compiled but defined no function (nothing to compare)")
         return funcs

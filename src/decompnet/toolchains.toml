@@ -510,11 +510,11 @@ pip_extra = ["setuptools<70"]
 
 ["gbdk-2020"]
 name = "GBDK-2020 (SDCC for the Game Boy)"
-platform = "Game Boy / Game Boy Color / Master System / Game Gear"
+platform = "Game Boy / Game Boy Color / Master System / Game Gear / NES"
 arch = "sm83"
 license = "MIT (GBDK-2020) + GPL-2.0 (SDCC)"
 source = "gbdk-2020/gbdk-2020 4.5.0 (SDCC 4.5.1 + sdasgb + sdldgb + makebin + libraries)"
-description = "The C toolchain for Game Boy, Game Boy Color, Master System and Game Gear: SDCC's Sharp SM83 and Zilog Z80 back ends with their assemblers, linker and libraries. Candidates are compiled through decompnet.rom.gb_build (sdcc -S, sdasgb -l, then the listing's instruction bytes), because SM83 has no ELF object format in this pipeline and capstone has no SM83 decoder (rom/sm83.py provides one). Pass the project's symbol table to gb_build and external references resolve to the ROM's own addresses."
+description = "The C toolchain for Game Boy, Game Boy Color, Master System, Game Gear and NES: SDCC's Sharp SM83, Zilog Z80 and MOS 6502 back ends with their assemblers, linker and libraries. Candidates are compiled through decompnet.rom.gb_build (sdcc -S, sdasgb -l, then the listing's instruction bytes), because these CPUs have no ELF object format in this pipeline (and capstone has no SM83 or Z80 decoder: rom/sm83.py, rom/z80.py and rom/mos6502.py provide them). Pass the project's symbol table to gb_build and external references resolve to the ROM's own addresses."
 # The release tarball nests everything under gbdk/, which is how the installer lays it out.
 cc = ["{tc}/gbdk/bin/sdcc", "-msm83", "-c", "-I{include}"]
 # what GBDK's own lcc runs sdcc with: char is signed, and no optimization flag

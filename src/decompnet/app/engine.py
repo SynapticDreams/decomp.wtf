@@ -38,7 +38,7 @@ DEFAULT_TOOLCHAIN = {"KMC": "gcc-2.7.2-kmc", "IDO": "ido-7.1", "PSYQ": "gcc-2.7.
 # beta: works and is tested on homemade games, less so on real ones yet.
 PLATFORM_STATUS = {"gc": "recommended", "wii": "recommended", "n64": "recommended",
                    "psx": "beta", "ps2": "beta", "gba": "beta", "gb": "beta", "gbc": "beta", "sms": "beta", "gg": "beta",
-                   "nds": "beta"}
+                   "nes": "beta", "nds": "beta"}
 COMPILERS = {
     "gcc-2.7.2-kmc": "many third-party N64 games",
     "ido-7.1": "most later first-party N64 games",
@@ -79,13 +79,13 @@ TOOLS = {
 BATCH_INSNS = 48
 PLATFORM_COMPILERS = {"n64": ["gcc-2.7.2-kmc", "ido-7.1", "ido-5.3"], "psx": ["gcc-2.7.2-psx", "gcc-2.8.1-psx"],
                       "ps2": ["ee-gcc-2.96"], "gba": ["agbcc"], "gb": ["gbdk-2020"], "gbc": ["gbdk-2020"],
-                      "sms": ["gbdk-2020"], "gg": ["gbdk-2020"]}
-# Platforms whose functions live in 16 KiB banks and are matched with SDCC (rom/gb_build.py), by the CPU they run.
-BANKED_PLATFORMS = ("gb", "gbc", "sms", "gg")
-BANKED_ARCHS = ("sm83", "z80")
+                      "sms": ["gbdk-2020"], "gg": ["gbdk-2020"], "nes": ["gbdk-2020"]}
+# Platforms whose functions live in banks and are matched with SDCC (rom/gb_build.py), by the CPU they run.
+BANKED_PLATFORMS = ("gb", "gbc", "sms", "gg", "nes")
+BANKED_ARCHS = ("sm83", "z80", "mos6502")
 # What a banked platform's import needs, by CPU: the C toolchain, and for the Game Boy the two tools that split a ROM.
 # All free and pinned; the import installs whichever is missing.
-BANKED_TOOLS = {"sm83": ("gbdk-2020", "rgbds", "mgbdis"), "z80": ("gbdk-2020",)}
+BANKED_TOOLS = {"sm83": ("gbdk-2020", "rgbds", "mgbdis"), "z80": ("gbdk-2020",), "mos6502": ("gbdk-2020",)}
 _AUTO_TOKEN = re.compile(r"\b(?:func|D|B|jtbl|RO|STR|FLT|DBL)_[0-9A-F]{8}\b")
 _ADDRESS = re.compile(r"^(?:0x)?([0-9A-Fa-f]{8})$")
 
@@ -635,12 +635,13 @@ class RomNetwork(Network):
         (agents compile through rom/gb_build) and the profile names it. Without it the project stays readable-only
         (the functions are shown as assembly), which is the honest state rather than handing out work nobody can
         judge."""
-        from ..rom import gb, gb_build, sms
+        from ..rom import gb, gb_build, nes, sms
 
         info = picked.info
         sega = picked.platform in ("sms", "gg")
-        lane, arch = (sms, "z80") if sega else (gb, "sm83")
-        label = "Master System / Game Gear" if sega else "Game Boy"
+        famicom = picked.platform == "nes"
+        lane, arch = (sms, "z80") if sega else (nes, "mos6502") if famicom else (gb, "sm83")
+        label = "Master System / Game Gear" if sega else "NES" if famicom else "Game Boy"
         self._ensure_tools(BANKED_TOOLS[arch], log)
         report: dict = {}
         fns = lane.split(workdir / picked.filename, workdir, log=log, report=report)
@@ -650,11 +651,12 @@ class RomNetwork(Network):
                     "provenance": "explicit" if matchable else "unavailable",
                     "note": ("SDCC/GBDK-2020 through decompnet.rom.gb_build (absolute symbol mode)" if matchable else
                              f"the {label} C toolchain (GBDK-2020) is not installed: install it from Setup, or import the game again")}
-        # One segment per 16 KiB bank, at the CPU address the bank is shown at (see rom/gb.py and rom/sms.py).
-        segments = [{"name": f"bank{b:03d}", "rom_start": b * lane.BANK_SIZE,
-                     "rom_end": min((b + 1) * lane.BANK_SIZE, info["size"]),
-                     "vram": sms.segment_vram(b, info["size"]) if sega else (0 if b == 0 else 0x4000)}
-                    for b in range(max(1, -(-info["size"] // lane.BANK_SIZE)))]
+        # One segment per bank, at the CPU address the bank is shown at (see rom/gb.py, rom/sms.py and rom/nes.py).
+        segments = nes.segments(info) if famicom else [
+            {"name": f"bank{b:03d}", "rom_start": b * lane.BANK_SIZE,
+             "rom_end": min((b + 1) * lane.BANK_SIZE, info["size"]),
+             "vram": sms.segment_vram(b, info["size"]) if sega else (0 if b == 0 else 0x4000)}
+            for b in range(max(1, -(-info["size"] // lane.BANK_SIZE)))]
         cfg = {
             "kind": "rom", "platform": info["platform"], "big_endian": False, "gp": 0, "arch": arch,
             "splitter": report.get("splitter", "built-in"),  # what found the functions: "built-in" is approximate for the Game Boy
@@ -666,7 +668,7 @@ class RomNetwork(Network):
                       "confirmed_at": time.time()},
             "context": {"file": None},
         }
-        mode = info["region"] if sega else info["cgb"]["mode"]
+        mode = info["region"] if sega or famicom else info["cgb"]["mode"]
         now = time.time()
         with self.store.tx() as db:
             pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
@@ -714,13 +716,14 @@ class RomNetwork(Network):
             cfg = self.cfg(proj)
             inc = tuple(str((Path(proj["root"]) / p).resolve()) for p in (cfg.get("compiler") or {}).get("include_dirs", []))
             flags = (cfg.get("compiler") or {}).get("flags")  # the project's own, as set in Setup or set_compiler
+            notes: list[str] = []  # what the build wants the agent to know (shown with the diff)
             try:
                 payload = gb_build.build_payload(source, context_header=header, symbols=symbols,
-                                                 include_dirs=inc, arch=arch,
+                                                 include_dirs=inc, arch=arch, notes=notes,
                                                  **({} if flags is None else {"opt": list(flags)}))
             except Exception as e:  # a build failure is a compile failure, reported like any other
                 return CompileResult(False, None, f"{type(e).__name__}: {e}")
-            return CompileResult(True, payload, "")
+            return CompileResult(True, payload, "\n".join(notes))
         return super()._compile(proj, header, source)
 
     def _community_layout(self, data: bytes | Path, name: str = "") -> Path | None:
@@ -860,6 +863,33 @@ class RomNetwork(Network):
         "are rejected by the source policy, exactly as on every other platform.",
     )
 
+    NES_NOTES = (
+        "### NES (SDCC 6502 via GBDK-2020)",
+        "- **Define the function with its own name** (e.g. `void func_001_c200(void) { }`): the compiled "
+        "object must contain the symbol the app is judging, or the compile is reported as an error.",
+        "- Calling convention: the first byte argument arrives in A and the second in X; a 16-bit first argument is A (low) "
+        "and X (high). Further arguments are static variables named `<function>_PARM_<n>` (the third byte argument of "
+        "`add3` is `add3_PARM_3`). A byte result leaves in A, a 16-bit result in A (low) and X (high). Write C and let "
+        "the target assembly tell you which registers it used.",
+        "- **Static memory.** SDCC keeps those parameters, and the locals it cannot hold in registers, in RAM named "
+        "`_<function>_PARM_<n>` and `_<function>_<variable>_<n>_<n>`. The assembler counts them from zero, so a function "
+        "that uses one cannot match until the build knows the ROM's address for it: write a comment "
+        "`/* pin add3_PARM_3 = 0x0375 */` anywhere in your source (`/* pin fill_v = 0x0378 */` also matches a local "
+        "`v` of `fill`, whose compiler-added numbers change). Read the address off the target assembly; the compile "
+        "output lists what is still at address 0.",
+        "- Hardware registers and any absolute memory are **volatile pointers**: `*(volatile u8 *)0x2000 = v;` compiles "
+        "to `sta $2000`, `return *(volatile u8 *)0x2002;` to `lda $2002`. A file-scope `__at(0x0365) u8 table[16];` "
+        "puts a global at that address.",
+        "- To call another function, declare it and call it by name (`void func_001_c357(void);` … `func_001_c357();`) — "
+        "the ROM's own address is substituted, so the call is byte-exact. SDCC turns a call in tail position into `jmp`.",
+        "- The compiler's zero-page registers (`DPTR`, `REGTEMP`, the return slots) are at the addresses GBDK-2020's "
+        "startup code gives them ($32, $34 and $3C onward). A game not built with GBDK may keep them elsewhere.",
+        "- There is no m2c draft for the 6502: the target assembly is the specification. Most NES games were written in "
+        "assembly, so many functions will not have a C form that matches.",
+        "- **Matches must come from C**: inline assembly (`__asm`), `__naked`, pragmas and `#include <…>` "
+        "are rejected by the source policy, exactly as on every other platform.",
+    )
+
     SMS_NOTES = (
         "### Master System / Game Gear (SDCC via GBDK-2020, Z80)",
         "- **Define the function with its own name** (e.g. `void func_000_0200(void) { }`): the compiled "
@@ -890,6 +920,8 @@ class RomNetwork(Network):
             return self._gb_brief(fn, proj) + shared
         if arch == "z80":
             return ["", *self.SMS_NOTES] + shared
+        if arch == "mos6502":
+            return ["", *self.NES_NOTES] + shared
         return shared
 
     def _gb_brief(self, fn, proj) -> list[str]:
