@@ -1491,7 +1491,7 @@ $("stopAll").onclick = async () => {
 };
 
 /* ------------------------------------------------------------------ the launcher: agent, model, how many */
-const LZ = { kind: null, model: "", count: 1, per: null };
+const LZ = { kind: null, model: "", effort: "", count: 1, per: null };
 function launcherInit() {
   if (LZ.kind || !S.st) return;
   const l = S.st.settings.launcher || {};
@@ -1499,6 +1499,7 @@ function launcherInit() {
   const known = S.st.agents.find((a) => a.id === l.kind && (a.installed || a.id === "api"));
   LZ.kind = known ? known.id : (ready[0] ? ready[0].id : "api");
   LZ.model = known ? (l.model || "") : "";
+  LZ.effort = known ? (l.effort || "") : "";
   LZ.count = l.count || 1;
   const eps = S.st.settings.endpoints || [];
   LZ.eps = (l.endpoints || []).filter((id) => eps.some((e) => e.id === id));
@@ -1510,6 +1511,15 @@ function modelOptions(a) {
   for (const m of a.models || []) opts.push(m);
   for (const r of recent) if (!opts.some((o) => o.id === r)) opts.push({ id: r, name: r, note: "used before" });
   return opts;
+}
+/* Codex: the reasoning efforts the chosen model supports (its default model's when none is chosen; every model's when
+   the name was typed in), with what "Default" means: the user's own setting, else the model's. */
+function effortOptions(a) {
+  const models = a.models || [];
+  const m = models.find((x) => x.id === (LZ.model || a.default_model)) || (LZ.model ? null : models[0]);
+  const efforts = m ? m.efforts || [] : [...new Set(models.flatMap((x) => x.efforts || []))];
+  const base = a.default_effort || (m && m.effort) || "";
+  return [{ id: "", name: base ? `Default · ${base}` : "Default" }, ...efforts.map((e) => ({ id: e, name: e }))];
 }
 function modelName(a, model) {
   if (!model) return "";
@@ -1530,9 +1540,10 @@ async function startAgents(a, model, count, btn, extra = {}) {
   try {
     const options = { ...extra };
     if (model && a.id !== "api") options.model = model;
+    if (a.id === "codex" && LZ.effort) options.effort = LZ.effort;
     if (LZ.per) options.per_session = LZ.per;
     await api("/api/agents/start", { method: "POST", body: { kind: a.id, slug: S.slug, count, options } });
-    S.st.settings.launcher = { kind: a.id, model: model || "", count };
+    S.st.settings.launcher = { kind: a.id, model: model || "", count, ...(a.id === "codex" && LZ.effort ? { effort: LZ.effort } : {}) };
     if (model && a.id !== "api") {
       const rec = (S.st.settings.recent_models ||= {});
       rec[a.id] = [model, ...(rec[a.id] || []).filter((m) => m !== model)].slice(0, 8);
@@ -1572,6 +1583,11 @@ function renderLauncher(box, compact = false) {
     body = `<label class="field"><span>Model</span><select data-f="model">${opts.map((o) => `<option value="${esc(o.id)}" ${known && o.id === LZ.model ? "selected" : ""}>${esc(o.name)}${o.note ? ` — ${esc(o.note)}` : ""}</option>`).join("")}
         <option value="__other" ${known ? "" : "selected"}>Another model…</option></select></label>
       <input data-f="custom" class="mono lz-custom" placeholder="model name, as ${esc(a.name)} calls it" value="${known ? "" : esc(LZ.model)}" ${known ? "hidden" : ""}>`;
+    if (a.id === "codex") {
+      const efforts = effortOptions(a);
+      if (!efforts.some((o) => o.id === LZ.effort)) LZ.effort = "";
+      body += `<label class="field"><span>Effort</span><select data-f="effort">${efforts.map((o) => `<option value="${esc(o.id)}" ${o.id === LZ.effort ? "selected" : ""}>${esc(o.name)}</option>`).join("")}</select></label>`;
+    }
   }
   const ready = a.installed;
   box.innerHTML = `<div class="lz-kinds">${kinds}</div>
@@ -1585,11 +1601,13 @@ function renderLauncher(box, compact = false) {
     </div>`;
   wireCopies(box);
   const rerender = () => { renderLauncher(box, compact); if (box !== $("launcher") && S.tab === "agents") renderLauncher($("launcher")); };
-  box.querySelectorAll(".lz-kind").forEach((b) => { b.onclick = () => { LZ.kind = b.dataset.k; LZ.model = (S.st.settings.launcher || {}).kind === LZ.kind ? S.st.settings.launcher.model || "" : ""; rerender(); }; });
+  box.querySelectorAll(".lz-kind").forEach((b) => { b.onclick = () => { LZ.kind = b.dataset.k; const saved = (S.st.settings.launcher || {}).kind === LZ.kind ? S.st.settings.launcher : {}; LZ.model = saved.model || ""; LZ.effort = saved.effort || ""; rerender(); }; });
   const sel = box.querySelector('select[data-f="model"]'), custom = box.querySelector('[data-f="custom"]');
   const label = () => { const btn = box.querySelector('[data-act="start"]'); if (btn) btn.textContent = launchLabel(a, LZ.model, LZ.count); };
-  if (sel) sel.onchange = () => { if (sel.value === "__other") { custom.hidden = false; custom.focus(); LZ.model = custom.value.trim(); } else { custom.hidden = true; LZ.model = sel.value; } label(); };
+  if (sel) sel.onchange = () => { if (sel.value === "__other") { custom.hidden = false; custom.focus(); LZ.model = custom.value.trim(); } else { custom.hidden = true; LZ.model = sel.value; } label(); if (a.id === "codex") rerender(); };
   if (custom) custom.oninput = () => { LZ.model = custom.value.trim(); label(); };
+  const effort = box.querySelector('select[data-f="effort"]');
+  if (effort) effort.onchange = () => { LZ.effort = effort.value; };
   box.querySelectorAll("[data-step]").forEach((b) => { b.onclick = () => { LZ.count = Math.max(1, Math.min(8, LZ.count + Number(b.dataset.step))); box.querySelector(".stepper output").textContent = LZ.count; label(); }; });
   const per = box.querySelector('[data-f="per"]');
   if (per) per.onchange = () => { LZ.per = Math.max(1, Math.min(20, Number(per.value) || 4)); };
@@ -2433,7 +2451,7 @@ function renderAgentsPage() {
   $("agList").innerHTML = rows.map((a) => `<div class="agent-row">
       <div class="ar-head"><b>${esc(a.name)}</b><span class="muted small">${esc(a.vendor)}</span><span class="grow"></span>
         ${a.installed ? `<span class="ok-mark">installed</span>` : `<button class="primary small-btn" data-inst="${esc(a.id)}" type="button" ${a.needs ? "disabled" : ""}>Install</button>`}</div>
-      ${a.installed ? `<dl class="facts"><div><dt>Version</dt><dd>${esc(a.version || "?")}</dd></div><div><dt>Default model</dt><dd>${esc(a.default_model || "the app's own")}</dd></div><div><dt>Models offered</dt><dd>${(a.models || []).length ? (a.models || []).length : "any you type"}</dd></div></dl>
+      ${a.installed ? `<dl class="facts"><div><dt>Version</dt><dd>${esc(a.version || "?")}</dd></div><div><dt>Default model</dt><dd>${esc(a.default_model || "the app's own")}</dd></div><div><dt>Models offered</dt><dd>${(a.models || []).length ? (a.models || []).length : "any you type"}</dd></div>${a.id === "codex" ? `<div><dt>Default effort</dt><dd>${esc(a.default_effort || "the model's own")}</dd></div>` : ""}</dl>
         ${(a.models || []).length ? `<div class="model-chips">${a.models.slice(0, 12).map((m) => `<span class="chip-s mono" title="${esc(m.note || "")}">${esc(m.name)}</span>`).join("")}${a.models.length > 12 ? `<span class="muted small">+${a.models.length - 12} more</span>` : ""}</div>` : ""}
         <p class="muted small">${esc(a.signin)}</p>`
       : `<p class="muted small">${a.needs ? `Needs ${esc(a.needs)} first. ` : ""}Or install it yourself:</p>${cmdBox(a.install)}`}
