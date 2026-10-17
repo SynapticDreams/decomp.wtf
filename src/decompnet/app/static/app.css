@@ -120,6 +120,8 @@ a.ghost, a.primary { text-decoration: none; }
 .nav-proj:hover { background: var(--bg-alt); }
 .nav-proj.on { background: var(--panel); border-color: var(--line); }
 .np-top { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.np-remove { flex: none; font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--miss); cursor: pointer; }
+.np-remove:hover { background: var(--bg-alt); }
 .np-name { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .np-room { font-size: 7px; letter-spacing: -1px; color: var(--move); }
 .np-meta { display: flex; font: 500 11px/1 var(--mono); color: var(--muted); gap: 6px; }

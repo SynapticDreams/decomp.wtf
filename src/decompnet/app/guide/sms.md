@@ -20,7 +20,7 @@ encoding. Both consoles use the same mapper and the same compiler, so everything
 ## The matching lane
 
 Matching uses the pinned **GBDK-2020** toolchain: `sdcc -mz80` for C, `sdasz80` for assembly, the same
-archive as the Game Boy. `decomp setup` installs it. The ROM's call and jump addresses are absolute, so the
+archive as the Game Boy. The app installs it when a game is imported. The ROM's call and jump addresses are absolute, so the
 build pins every symbol to the ROM's own address and compares bytes directly, with nothing masked.
 
 Until the toolchain is installed a `.sms`/`.gg` project is imported **read-only**: disassembled and

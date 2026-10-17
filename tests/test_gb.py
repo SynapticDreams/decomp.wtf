@@ -277,7 +277,7 @@ def test_import_creates_a_readable_project(tmp_path):
 
     assert cfg["platform"] == "gb" and cfg["arch"] == "sm83"
     lane = gb_build.available()
-    assert cfg["compiler"]["toolchain"] == (gb_build.TOOLCHAIN if lane else "")
+    assert cfg["compiler"]["toolchain"] == gb_build.TOOLCHAIN  # named even when not installed: the overview reads it
     assert cfg["compiler"]["provenance"] == ("explicit" if lane else "unavailable")
     fns = net.store.all("SELECT * FROM functions WHERE project_id=?", proj["id"])
     assert len(fns) > 3

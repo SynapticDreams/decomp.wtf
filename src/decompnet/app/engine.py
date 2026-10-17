@@ -18,6 +18,7 @@ import json
 import logging
 import re
 import secrets
+import shutil
 import struct
 import threading
 import time
@@ -71,6 +72,8 @@ TOOLS = {
     "mwcc": "CodeWarrior, the compilers of GameCube and Wii games (proprietary)",
     "mwccarm": "CodeWarrior for DS, the compilers of DS games (proprietary)",
     "dsd": "ds-decomp: analyses DS ROMs and rebuilds them",
+    "mgbdis": "Game Boy and Game Boy Color: splits a ROM into its functions",
+    "rgbds": "Game Boy and Game Boy Color: rebuilds the split to prove it is faithful",
 }
 # Functions this small are handed out in batches (claim_function count): agents match most on the first try.
 BATCH_INSNS = 48
@@ -80,6 +83,9 @@ PLATFORM_COMPILERS = {"n64": ["gcc-2.7.2-kmc", "ido-7.1", "ido-5.3"], "psx": ["g
 # Platforms whose functions live in 16 KiB banks and are matched with SDCC (rom/gb_build.py), by the CPU they run.
 BANKED_PLATFORMS = ("gb", "gbc", "sms", "gg")
 BANKED_ARCHS = ("sm83", "z80")
+# What a banked platform's import needs, by CPU: the C toolchain, and for the Game Boy the two tools that split a ROM.
+# All free and pinned; the import installs whichever is missing.
+BANKED_TOOLS = {"sm83": ("gbdk-2020", "rgbds", "mgbdis"), "z80": ("gbdk-2020",)}
 _AUTO_TOKEN = re.compile(r"\b(?:func|D|B|jtbl|RO|STR|FLT|DBL)_[0-9A-F]{8}\b")
 _ADDRESS = re.compile(r"^(?:0x)?([0-9A-Fa-f]{8})$")
 
@@ -399,8 +405,10 @@ class RomNetwork(Network):
             return self.forks.create_scratch(project_file, compiler=compiler, log=log)
         picked = detect.identify(data, name)
         rom, info = picked.data, picked.info
-        for p in self.store.all("SELECT slug, config FROM projects"):
+        for p in self.store.all("SELECT slug, config, root FROM projects"):
             if json.loads(p["config"]).get("rom", {}).get("sha1") == info["sha1"]:
+                if self._import_again(p, log):  # it was imported when it could not work: it has been removed
+                    break
                 log(f"already imported as {p['slug']}")
                 return p["slug"]
         base = _slugify(info["title"])
@@ -526,6 +534,99 @@ class RomNetwork(Network):
         log(f"ready: {len(fns)} functions to decompile")
         return slug
 
+    #: Importing a Game Boy or Master System ROM installs the free tools it needs when they are missing. Tests that must
+    #: not download set this to False.
+    auto_install_tools = True
+
+    def _ensure_tools(self, ids, log) -> None:
+        """Install whichever of these toolchains is missing; a failure is said and the import goes on without it."""
+        if not self.auto_install_tools:
+            return
+        for tid in ids:
+            try:
+                tc = toolchains.get(tid)
+            except toolchains.ToolchainError:
+                continue
+            if toolchains.installed(tid) is not None or not tc.supported:
+                continue
+            log(f"installing {tc.name} (needed for this game)")
+            try:
+                toolchains.install(tid, log=lambda line: log(f"  {line}"))
+            except Exception as e:  # offline, a bad download...: the import still works, with less
+                log(f"couldn't install {tc.name}: {e}")
+
+    def _untouched(self, project_id: int) -> bool:
+        """Nothing in the project that removing it would lose: no attempt, note or match, and no function claimed."""
+        n = self.store.one(
+            "SELECT (SELECT COUNT(*) FROM attempts t JOIN functions f ON f.id=t.function_id WHERE f.project_id=?) "
+            "+ (SELECT COUNT(*) FROM notes WHERE project_id=?) "
+            "+ (SELECT COUNT(*) FROM functions WHERE project_id=? AND status='matched') "
+            "+ (SELECT COUNT(*) FROM claims c JOIN functions f ON f.id=c.function_id WHERE f.project_id=?) AS n",
+            project_id, project_id, project_id, project_id)["n"]
+        return n == 0
+
+    def _import_again(self, p, log) -> bool:
+        """A game imported once is not imported twice, except when the earlier import could not work: it cannot be
+        opened (an older version saved Game Boy projects that way when the C toolchain was missing), it was made
+        read-only before the toolchain was installed, or it was split without mgbdis and rgbds, which are now
+        installed. Returns True when the project was removed so the import goes ahead afresh. One that has work in it
+        (an attempt, a note, a match) is never removed: its compiler is repaired in place and its functions opened."""
+        cfg = json.loads(p["config"])
+        arch = (cfg.get("arch") or "").lower()
+        if arch not in BANKED_ARCHS:
+            return False
+        from ..rom import gb_build, gb_mgbdis
+
+        try:
+            self.overview(p["slug"])
+            readable = True
+        except Exception:
+            readable = False
+        compiler = cfg.get("compiler") or {}
+        if not readable:
+            why = "it could not be opened"
+        elif compiler.get("provenance") == "unavailable" and gb_build.available(arch):
+            why = "it was imported before the C toolchain was installed"
+        elif arch == "sm83" and cfg.get("splitter") == "built-in" and gb_mgbdis.available():
+            why = "it was split without mgbdis and rgbds, which are installed now"
+        else:
+            return False
+        proj = self._project(p["slug"])
+        if not self._untouched(proj["id"]):
+            if why != "it was split without mgbdis and rgbds, which are installed now":
+                self._reopen_banked(proj, arch, log)
+                log(f"{p['slug']} was imported when it could not be matched ({why}); it has work in it, so it was kept "
+                    "and repaired in place")
+            else:
+                log(f"already imported as {p['slug']} (split without mgbdis; it has work in it, so it was kept: remove "
+                    "the project and import again for the accurate split)")
+            return False
+        log(f"importing {p['slug']} again: {why}")
+        self.remove_project(p["slug"])
+        root = Path(p["root"]).resolve()
+        if root != self.workspace.resolve() and root.is_relative_to(self.workspace.resolve()):
+            shutil.rmtree(root, ignore_errors=True)  # only the copy of the ROM and what was made from it
+        return True
+
+    def _reopen_banked(self, proj, arch: str, log) -> None:
+        """Repair a banked project's compiler profile in place, and open its functions once the toolchain is there."""
+        from ..rom import gb_build
+
+        cfg = self.cfg(proj)
+        compiler = dict(cfg.get("compiler") or {})
+        compiler["toolchain"] = compiler.get("toolchain") or gb_build.TOOLCHAIN
+        compiler.setdefault("flags", ["--fsigned-char"])
+        matchable = gb_build.available(arch)
+        compiler["provenance"] = "explicit" if matchable else "unavailable"
+        cfg["compiler"] = compiler
+        with self.store.tx() as db:
+            db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
+            if matchable:  # read-only only for want of the toolchain: every function is set aside, none by hand
+                total = db.execute("SELECT COUNT(*) FROM functions WHERE project_id=?", (proj["id"],)).fetchone()[0]
+                aside = db.execute("SELECT COUNT(*) FROM functions WHERE project_id=? AND status='asm'", (proj["id"],)).fetchone()[0]
+                if total and total == aside:
+                    db.execute("UPDATE functions SET status='open' WHERE project_id=? AND status='asm'", (proj["id"],))
+
     def _import_banked(self, picked, slug: str, workdir: Path, log) -> str:
         """Game Boy / Game Boy Color (SM83) and Master System / Game Gear (Z80): functions found by the fork's own
         disassemblers (mgbdis and rgbs for the Game Boy when installed), banks included.
@@ -540,13 +641,15 @@ class RomNetwork(Network):
         sega = picked.platform in ("sms", "gg")
         lane, arch = (sms, "z80") if sega else (gb, "sm83")
         label = "Master System / Game Gear" if sega else "Game Boy"
-        fns = lane.split(workdir / picked.filename, workdir, log=log)
+        self._ensure_tools(BANKED_TOOLS[arch], log)
+        report: dict = {}
+        fns = lane.split(workdir / picked.filename, workdir, log=log, report=report)
         matchable = gb_build.available(arch)
         # The toolchain is named even when it is not installed: the project's overview reads it (and says it is missing).
         compiler = {"toolchain": gb_build.TOOLCHAIN, "flags": ["--fsigned-char"], "timeout": 120, "wrapper": "cc",
                     "provenance": "explicit" if matchable else "unavailable",
                     "note": ("SDCC/GBDK-2020 through decompnet.rom.gb_build (absolute symbol mode)" if matchable else
-                             f"the {label} C toolchain (GBDK-2020) is not installed: run `decomp setup`")}
+                             f"the {label} C toolchain (GBDK-2020) is not installed: install it from Setup, or import the game again")}
         # One segment per 16 KiB bank, at the CPU address the bank is shown at (see rom/gb.py and rom/sms.py).
         segments = [{"name": f"bank{b:03d}", "rom_start": b * lane.BANK_SIZE,
                      "rom_end": min((b + 1) * lane.BANK_SIZE, info["size"]),
@@ -554,6 +657,7 @@ class RomNetwork(Network):
                     for b in range(max(1, -(-info["size"] // lane.BANK_SIZE)))]
         cfg = {
             "kind": "rom", "platform": info["platform"], "big_endian": False, "gp": 0, "arch": arch,
+            "splitter": report.get("splitter", "built-in"),  # what found the functions: "built-in" is approximate for the Game Boy
             "rom": {**info, "file": picked.filename, "program": picked.filename},
             "segments": segments,
             "compiler": compiler,
@@ -568,7 +672,9 @@ class RomNetwork(Network):
             pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
                              (slug, info["title"],
                               f"{info['cartridge']} · {mode} · {len(fns)} functions · "
-                              + ("matched with SDCC/GBDK-2020" if matchable else "reading lane only (no C toolchain yet)"),
+                              + ("matched with SDCC/GBDK-2020" if matchable else "reading lane only (no C toolchain yet)")
+                              + (" · approximate split (mgbdis and rgbds not installed)"
+                                 if arch == "sm83" and report.get("splitter") == "built-in" else ""),
                               arch, 0, str(workdir), json.dumps(cfg))).lastrowid
             names: set[str] = set()
             for f in fns:

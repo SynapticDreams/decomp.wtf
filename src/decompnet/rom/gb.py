@@ -232,6 +232,8 @@ def functions(data: bytes, log=lambda *_: None) -> list[GbFunction]:
     found = candidates(data)
     if not found:
         raise RomError("no code found in this Game Boy ROM: every candidate address pointed outside it")
+    if len(found) >= 4000:
+        log("the built-in sweep stopped at its limit of 4000 candidates, so functions after that point are missing")
     out: list[GbFunction] = []
     for i, (addr, _how) in enumerate(found):
         nxt = found[i + 1][0] if i + 1 < len(found) else min(addr + 0x400, len(data))
@@ -249,12 +251,14 @@ def functions(data: bytes, log=lambda *_: None) -> list[GbFunction]:
     return out
 
 
-def split(path: Path, workdir: Path, log=lambda *_: None, prefer_mgbdis: bool = True) -> list[GbFunction]:
+def split(path: Path, workdir: Path, log=lambda *_: None, prefer_mgbdis: bool = True,
+          report: dict | None = None) -> list[GbFunction]:
     """A ROM file's functions.
 
     Preferred: **mgbdis + rgbds** (rom/gb_mgbdis), a real disassembler with code/data separation whose
     output reassembles the ROM byte for byte — the check that the split is faithful. Falls back to the
-    built-in call-graph sweep when those tools are not installed, or when asked not to use them."""
+    built-in call-graph sweep when those tools are not installed, or when asked not to use them. `report`, if given,
+    gets {"splitter": "mgbdis" | "built-in"}: the sweep is approximate, and the caller records that."""
     data = Path(path).read_bytes()
     if not is_gb(data):
         raise RomError("this isn't a Game Boy or Game Boy Color ROM")
@@ -268,6 +272,8 @@ def split(path: Path, workdir: Path, log=lambda *_: None, prefer_mgbdis: bool = 
                 fns, meta = gb_mgbdis.split(path, workdir, log=log)
                 if meta["faithful"]:
                     log(f"split by mgbdis: {meta['functions']} functions, reassembly byte-identical")
+                    if report is not None:
+                        report["splitter"] = "mgbdis"
                     return fns
                 log(f"mgbdis split did NOT rebuild the ROM byte for byte ({meta['rebuilt_bytes']} vs "
                     f"{meta['original_bytes']} bytes): using the built-in split instead")
@@ -275,4 +281,9 @@ def split(path: Path, workdir: Path, log=lambda *_: None, prefer_mgbdis: bool = 
                 log(f"mgbdis split unavailable ({type(e).__name__}: {e}): using the built-in split")
         else:
             log("mgbdis/rgbds are not installed: using the built-in call-graph split")
+    if report is not None:
+        report["splitter"] = "built-in"
+    log("WARNING: this ROM was split with the built-in sweep, which is approximate. On one real 1 MiB game about half of "
+        "the functions it found were real and a quarter of the real ones were missing. Install mgbdis and rgbds "
+        "(Setup lists them), then import the game again for the accurate split.")
     return functions(data, log=log)

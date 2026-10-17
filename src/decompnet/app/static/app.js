@@ -160,15 +160,22 @@ function renderNav() {
     const short = PLAT_SHORT[p.platform] || (p.platform_name || "").replace("Nintendo ", "") || "?";
     const state = p.working ? `<span class="dot on" title="${p.working} agent${p.working === 1 ? "" : "s"} working"></span>`
       : p.autopilot === "running" ? `<span class="dot work" title="autopilot running"></span>` : "";
-    if (p.broken) return `<a class="nav-proj broken" href="#/p/${esc(p.slug)}" data-slug="${esc(p.slug)}" title="${esc(p.broken)}">
-      <span class="np-top"><span class="np-name">${esc(p.title)}</span></span>
-      <span class="np-meta"><span>can't be opened: hover for why</span></span></a>`;
+    if (p.broken) return `<div class="nav-proj broken" data-slug="${esc(p.slug)}" title="${esc(p.broken)}">
+      <span class="np-top"><span class="np-name">${esc(p.title)}</span><button class="np-remove" type="button" data-remove="${esc(p.slug)}" title="Remove this project, then import the game again">Remove</button></span>
+      <span class="np-meta"><span>can't be opened: hover for why</span></span></div>`;
     return `<a class="nav-proj" href="#/p/${esc(p.slug)}" data-slug="${esc(p.slug)}" title="${esc(p.title)}">
       <span class="np-top"><span class="np-name">${esc(p.title)}</span>${state}${p.room ? `<span class="np-room" title="${p.room === "host" ? "you share this project" : "in a team room"}">●●</span>` : ""}</span>
       <span class="np-meta"><span>${esc(short)}</span><span class="grow"></span><span>${p.kind === "fork" && !p.ready ? "set up" : pctNum(pct) + "%"}</span></span>
       <span class="np-bar"><i data-w="${pct.toFixed(2)}"></i></span></a>`;
   }).join("");
   setWidths(box);
+  box.querySelectorAll("[data-remove]").forEach((b) => {
+    b.onclick = (e) => {
+      e.preventDefault(); e.stopPropagation();
+      const p = S.projects.find((x) => x.slug === b.dataset.remove);
+      askRemove(b.dataset.remove, p ? p.title : b.dataset.remove, p && p.broken);
+    };
+  });
   markNav();
 }
 setInterval(loadNav, 5000);
@@ -417,11 +424,11 @@ function setupCompilers(info) {
   else if (p === "gba") fillCompilers(select, "agbcc", "GBA");
   else if (p === "gb" || p === "gbc") {
     $("compilerRow").hidden = true; note.hidden = false;
-    note.textContent = "Game Boy and Game Boy Color games are matched with the pinned GBDK-2020 (SDCC) toolchain. Until it is installed (Setup), the game is imported read-only: every function is disassembled, searchable and briefable, but not handed out for matching.";
+    note.textContent = "Game Boy and Game Boy Color games are split with mgbdis and rgbds and matched with the pinned GBDK-2020 (SDCC) toolchain. decomp.wtf installs whichever of them is missing when you import. If that fails, the game is imported read-only (every function disassembled and searchable, but not handed out for matching), and importing it again once they are installed sets it right.";
   }
   else if (p === "sms" || p === "gg") {
     $("compilerRow").hidden = true; note.hidden = false;
-    note.textContent = "Master System and Game Gear games are matched with the pinned GBDK-2020 (SDCC) toolchain. Until it is installed (Setup), the game is imported read-only: every function is disassembled, searchable and briefable, but not handed out for matching.";
+    note.textContent = "Master System and Game Gear games are matched with the pinned GBDK-2020 (SDCC) toolchain. decomp.wtf installs it when you import. If that fails, the game is imported read-only (every function disassembled and searchable, but not handed out for matching), and importing it again once it is installed sets it right.";
   }
   else if (p === "playstation") {
     $("compilerRow").hidden = true; note.hidden = false;
@@ -2539,20 +2546,25 @@ $("setTcSave").onclick = async () => {
   } catch (e) { toast(esc(e.message), "err"); }
 };
 $("folderBtn").onclick = () => openFolder();
-$("deleteBtn").onclick = () => {
-  dialog("Remove project", `<p>Remove <b>${esc(S.ov.title)}</b> from decomp.wtf? Matched functions and notes are deleted.</p>
-    <label class="check"><input type="checkbox" id="delFiles"><span>Also delete the project folder (your ROM copy and exported sources in it)</span></label>
+/* Remove a project: from its own page, or from the sidebar for one that can't be opened (`broken` says why) and so has no
+   page to remove it from. */
+function askRemove(slug, title, broken) {
+  dialog("Remove project", `<p>${broken
+      ? `<b>${esc(title)}</b> can't be opened (${esc(broken)}). Remove it, then import the game again.`
+      : `Remove <b>${esc(title)}</b> from decomp.wtf? Matched functions and notes are deleted.`}</p>
+    <label class="check"><input type="checkbox" id="delFiles" ${broken ? "checked" : ""}><span>Also delete the project folder (your ROM copy and exported sources in it)</span></label>
     <div class="row"><button class="primary" id="delGo" type="button">Remove</button><button class="ghost" data-close type="button">Cancel</button></div>`);
   $("delGo").onclick = async () => {
     try {
-      await api("/api/delete", { method: "POST", body: { slug: S.slug, files: $("delFiles").checked } });
+      await api("/api/delete", { method: "POST", body: { slug, files: $("delFiles").checked } });
       $("dialog").hidden = true;
       document.body.classList.remove("locked");
       loadNav();
-      location.hash = "#/";
+      if (slug === S.slug) location.hash = "#/";
     } catch (e) { toast(esc(e.message), "err"); }
   };
-};
+}
+$("deleteBtn").onclick = () => askRemove(S.slug, S.ov.title);
 
 /* ------------------------------------------------------------------ agents & models page */
 async function showAgentsPage() {
