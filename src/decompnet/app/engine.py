@@ -138,6 +138,7 @@ class RomNetwork(Network):
         self._ops: dict[int, dict] = {}  # project id -> look-alike index
         self._diffs: dict[tuple, dict] = {}  # (function, source, context, compiler) -> diff for the GUI
         self.autopilots: dict[str, dict] = {}  # slug -> progress of trying every function's machine draft
+        self.starred_only: dict[int, float] = {}  # helper agent id -> when its session began (★ Next in line only)
         from .forkengine import ForkEngine  # forks build on this class's claims, attempts and live view
         from .permute import Permuter
         from .twins import Twins
@@ -1367,7 +1368,16 @@ class RomNetwork(Network):
                                                  k: getattr(twins, k) for k in ("state", "pairs", "tried", "matched", "asm")},
                                              "helper_matches": helpers,
                                              "spend": cfg.get("spend"), "instructions": cfg.get("instructions") or "",
-                                             "priority": cfg.get("priority", [])}
+                                             "priority": self._open_priority(proj, cfg.get("priority", []))}
+
+    def _open_priority(self, proj, names: list[str]) -> list[str]:
+        """The ★ Next in line functions still to do (a match takes one off the list; this hides any done another way)."""
+        if not names:
+            return []
+        done = {r["name"] for r in self.store.all(
+            f"SELECT name FROM functions WHERE project_id=? AND status='matched' AND name IN ({','.join('?' * len(names))})",
+            proj["id"], *names)}
+        return [n for n in names if n not in done]
 
     def _overview(self, slug: str, proj) -> dict:
         if (fork := self.fork_slug(slug)):
@@ -1474,16 +1484,32 @@ class RomNetwork(Network):
             cfg["priority"] = ([fn["name"]] + items) if on else items
         return self._update_cfg(slug, change)["priority"]
 
+    def released_since(self, agent_id: int, project_id: int, names: list[str], since: float) -> set[str]:
+        """Which of `names` this agent gave back (release_function) since `since`: it found them not worth doing."""
+        return {n for n in names if self.store.one(
+            "SELECT 1 FROM events WHERE project_id=? AND agent_id=? AND kind='release' AND detail=? AND created_at>=?",
+            project_id, agent_id, n, since)}
+
     def claim_row(self, agent: Agent, project: str | None = None, function: str | None = None, strategy: str = "easiest"):
-        if function is None and project and not self.fork_slug(project):
+        if project and not self.fork_slug(project):
             proj = self._project(project)
-            for name in self.cfg(proj).get("priority", []):
-                row = self.store.one("SELECT f.id, f.status FROM functions f WHERE f.project_id=? AND f.name=?", proj["id"], name)
-                held = self.store.one("SELECT 1 FROM claims WHERE agent_id=?", agent.id)
-                if row and row["status"] == "open" and not held and not self.store.one(
-                        "SELECT 1 FROM claims WHERE function_id=?", row["id"]):
-                    function = name
-                    break
+            names = self.cfg(proj).get("priority", [])
+            held = self.store.one("SELECT 1 FROM claims WHERE agent_id=?", agent.id)
+            only = agent.id in self.starred_only
+            if only and function is not None and function not in names and not held:
+                raise NetworkError(f"{function} isn't marked ★ Next in line: this helper works only on the starred ones")
+            if function is None:
+                # a starred-only helper that released a star (data, not code...) doesn't get it handed back again
+                given_up = self.released_since(agent.id, proj["id"], names, self.starred_only[agent.id]) if only else set()
+                for name in names:
+                    row = self.store.one("SELECT f.id, f.status FROM functions f WHERE f.project_id=? AND f.name=?", proj["id"], name)
+                    if row and row["status"] == "open" and name not in given_up and not held and not self.store.one(
+                            "SELECT 1 FROM claims WHERE function_id=?", row["id"]):
+                        function = name
+                        break
+                if only and function is None and not held:
+                    raise NetworkError("no ★ Next in line function is left for you: the rest are done, released by you "
+                                       "or being worked on by others. Stop here: this session ends by itself.")
         self._yield_autopilot(function, project)
         return Network.claim_row(self, agent, project, function, strategy)
 
@@ -1581,9 +1607,13 @@ class RomNetwork(Network):
 
     def on_match(self, proj, function_id: int, agent: Agent | None = None) -> None:
         """Its twins get its code, at once. (Not for the full twins pass's own matches while it runs: it tries
-        those twins itself.)"""
+        those twins itself.) A match also takes the function off ★ Next in line."""
         if proj is None:
             return
+        name = self.store.one("SELECT name FROM functions WHERE id=?", function_id)
+        if name and name["name"] in self.cfg(self._project(proj["slug"])).get("priority", []):
+            self._update_cfg(proj["slug"], lambda cfg: cfg.__setitem__(
+                "priority", [n for n in cfg.get("priority", []) if n != name["name"]]))
         if agent is not None and agent.name == "autopilot" and self.twins._full_running(proj["slug"]):
             return
         self.twins.after_match(proj, function_id)
