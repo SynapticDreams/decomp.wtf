@@ -2200,7 +2200,7 @@ class RomNetwork(Network):
         hourly = [0.0] * 24
         for t, g in gains:
             if now - t < 86400:
-                hourly[23 - min(23, int((now - t) // 3600))] += 100 * g / weight
+                hourly[23 - min(23, max(0, int((now - t) // 3600)))] += 100 * g / weight  # (one made since `now`: this hour)
         out = {"points": points, "closer": list(closer.values())[::-1][:12],
                "closeness": {"now": 100 * (agg["got"] or 0) / weight, "per_hour": [round(x, 2) for x in hourly],
                              "today": round(sum(hourly), 2)},

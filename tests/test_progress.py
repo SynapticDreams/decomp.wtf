@@ -79,6 +79,23 @@ def test_progress_shows_who_got_functions_closer_and_which_setup(tmp_path):
     assert by["codex"]["stages"]["structural"] == {"attempts": 1, "per_attempt": 50.0}
 
 
+def test_an_attempt_made_while_stats_are_counted_is_this_hours(tmp_path):
+    """Agents keep compiling while the overview asks: an attempt newer than the request's `now` counts as this hour,
+    and doesn't fail the request (it did: an hour index past the end)."""
+    import time
+
+    net = RomNetwork(tmp_path / "d.db", tmp_path)
+    slug = _project(net)
+    pid = net.project_row(slug)["id"]
+    fid = _fn(net, pid, "a", insns=10)["id"]
+    agent, _ = net.local_agent("codex-1")
+    _try(net, agent, fid, 500)
+    with net.store.tx() as db:
+        db.execute("UPDATE attempts SET created_at=?", (time.time() + 5,))  # saved just after the request began
+    st = net.stats(slug)
+    assert st["closeness"]["per_hour"][-1] == 50.0 and st["closeness"]["today"] == 50.0
+
+
 def test_the_helper_running_as_an_agent_is_what_its_attempts_say(tmp_path):
     net = RomNetwork(tmp_path / "d.db", tmp_path)
     manager = Manager(net, tmp_path, "http://127.0.0.1:1/mcp")
