@@ -505,7 +505,8 @@ def host_app(net, rooms: dict[str, Room], tunnel: bool = False) -> Starlette:
         if room.fork:
             return {"room": room.slug, **forkroom.hello(net, room.slug), **common}
         return {"room": room.slug, "kind": "rom", "title": cfg["rom"]["title"], "game_code": cfg["rom"]["game_code"],
-                "region": cfg["rom"]["region"], "sha1": cfg["rom"]["sha1"], "compiler": cfg["compiler"], **common}
+                "region": cfg["rom"]["region"], "sha1": cfg["rom"]["sha1"], "compiler": cfg["compiler"],
+                "platform": cfg.get("platform") or "", **common}
 
     def ping(room, member, q):
         """The room shows it holds its key: a signature over where it is and the asker's nonce (identity.identify).

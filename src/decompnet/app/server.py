@@ -1345,6 +1345,73 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         slug, link = str(data.get("slug", "")), str(data.get("link", ""))
         return JSONResponse({"job": jobs.start("reconnect", lambda log: {"slug": collab.reconnect(net, slug, link, log=log)})})
 
+    rooms_list: dict = {"at": 0.0, "rooms": [], "error": ""}
+
+    def listed_rooms(fresh: bool = False) -> dict:
+        """The public room list (roomlist.py), read from GitHub at most every ten minutes, with what this computer
+        knows about each room: the game is here (its title, which the list never holds), it's joined, it's hosted."""
+        from . import forkroom, identity, roomlist
+
+        if fresh or time.time() - rooms_list["at"] > 600:
+            try:
+                rooms_list.update(rooms=roomlist.fetch(), error="")
+            except NetworkError as e:
+                rooms_list["error"] = str(e)
+            rooms_list["at"] = time.time()
+        games, joined, hosted = {}, {}, {}
+        for p in net.store.all("SELECT slug, name, config FROM projects"):
+            cfg = json.loads(p["config"])
+            if (sha1 := forkroom.project_identity(cfg)):
+                games.setdefault(sha1, (p["slug"], p["name"]))
+            if (key := (cfg.get("link") or {}).get("key")):
+                joined[key] = p["slug"]
+            if (secret := (cfg.get("collab") or {}).get("key")):
+                hosted[identity.public_key(secret)] = p["slug"]
+        rooms = [r | {"have": games.get(r["sha1"], (None, None))[0], "title": games.get(r["sha1"], (None, None))[1],
+                      "joined": joined.get(r["key"]), "hosted": hosted.get(r["key"])} for r in rooms_list["rooms"]]
+        return {"rooms": rooms, "error": rooms_list["error"], "at": rooms_list["at"], "repo": roomlist.ROOMS_REPO}
+
+    @mcp.custom_route("/api/rooms", methods=["GET"])
+    async def api_rooms(request: Request) -> Response:
+        if (bad := guard(request)):
+            return bad
+        return JSONResponse(await anyio.to_thread.run_sync(lambda: listed_rooms(request.query_params.get("fresh") == "1")))
+
+    @mcp.custom_route("/api/rooms/link", methods=["POST"])
+    async def api_rooms_link(request: Request) -> Response:
+        """A listed room's link, where it is now (from its host's gist, signed by the room)."""
+        from . import roomlist
+
+        if (bad := guard(request, write=True)):
+            return bad
+        key = str((await body(request)).get("key", ""))
+        entry = next((r for r in rooms_list["rooms"] if r["key"] == key), None)
+        if entry is None:
+            return fail(ValueError("that room isn't on the list any more"))
+        try:
+            return JSONResponse({"link": await anyio.to_thread.run_sync(roomlist.link, entry)})
+        except NetworkError as e:
+            return fail(e)
+
+    @mcp.custom_route("/api/collab/listing", methods=["POST"])
+    async def api_collab_listing(request: Request) -> Response:
+        """List (or unlist) a room this computer hosts: the signed listing, and the list's issue form filled in with
+        it, which the host submits on GitHub."""
+        from . import roomlist
+
+        if (bad := guard(request, write=True)):
+            return bad
+        data = await body(request)
+        room = net.rooms.get(str(data.get("slug", "")))
+        if room is None:
+            return fail(ValueError("share the room first"))
+        action = "unlist" if data.get("action") == "unlist" else "list"
+        try:
+            blob = await anyio.to_thread.run_sync(lambda: roomlist.listing(net, room, action, str(data.get("note", ""))))
+        except NetworkError as e:
+            return fail(e)
+        return JSONResponse({"listing": blob, "url": roomlist.issue_url(blob, action), "repo": roomlist.ROOMS_REPO})
+
     @mcp.custom_route("/api/github", methods=["POST", "DELETE"])
     async def api_github(request: Request) -> Response:
         """Connect GitHub (a classic token with only the gist scope), so rooms shared through a quick tunnel can say

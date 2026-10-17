@@ -90,7 +90,7 @@ const S = {
   scores: new Map(), claims: [], flash: new Map(), timer: null, statsTimer: null, lastMapFetch: 0, fn: null, stats: null,
   projects: [],
 };
-const VIEWS = ["home", "catalog", "project", "agentsPage", "toolsPage", "settingsPage"];
+const VIEWS = ["home", "catalog", "rooms", "project", "agentsPage", "toolsPage", "settingsPage"];
 const TABS = ["overview", "functions", "agents", "activity", "team", "source", "settings"];
 
 /* The project folder in the computer's file manager (decomp.wtf in Docker says where it is instead). */
@@ -115,6 +115,7 @@ function route() {
   } else {
     leaveProject();
     if (h === "#/catalog") showCatalog();
+    else if (h === "#/rooms") showRooms();
     else if (h === "#/agents") showAgentsPage();
     else if (h === "#/tools") showToolsPage();
     else if (h === "#/settings") showSettingsPage();
@@ -993,7 +994,7 @@ async function renderTeam() {
     box.innerHTML = `<h2 class="pane-title">Decompile together</h2>
       <p class="muted">Set the project up first (Overview): then friends who own the game can join it from their own decomp.wtf.</p>
       <div class="row"><button class="ghost" id="tmJoin" type="button">Join a team's room</button></div>`;
-    $("tmJoin").onclick = openJoin;
+    $("tmJoin").onclick = () => openJoin();
     return;
   }
   if (!box.firstElementChild) box.innerHTML = `<p class="muted">Looking at this computer's network…</p>`;
@@ -1103,6 +1104,11 @@ function renderHost(box, info) {
     ${waiting ? `<div class="setup-group"><h3>Waiting to join</h3>${waiting}</div>` : ""}
     <div class="setup-group"><h3>In the room · ${members.length} member${members.length === 1 ? "" : "s"}, ${online} online</h3>${people || `<p class="muted small">Nobody yet.</p>`}</div>
     ${opts(info)}
+    ${info.settings.visibility === "public" ? `<div class="setup-group"><h3>On the public room list</h3>
+      <p class="muted small">Anyone can find a listed room in <b>Open rooms</b>: its platform, product code, progress and members, never the game's title. Listing opens an issue on GitHub for you to submit (signed in); the list checks the room and adds it within a few minutes, and takes it off when it stays away for a week.${info.mode !== "address" ? " A room on a quick tunnel needs GitHub connected above, so the list can find it when its address changes." : ""}</p>
+      <label class="field"><span>A line about the room (optional)</span><input id="listNote" maxlength="200" placeholder="e.g. starting with the menus; matches by hand welcome"></label>
+      <div class="row"><button class="primary small-btn" id="listGo" type="button">List it</button><button class="ghost small-btn" id="unlistGo" type="button">Take it off the list</button></div>
+      <div id="listOut"></div></div>` : ""}
     <div class="setup-group"><h3>Keep it open</h3><div class="row" id="svcRow"><span class="muted small">Checking…</span></div></div>
     <div class="row"><button class="ghost" id="rotate" type="button">New invite link</button><button class="ghost danger" id="stopShare" type="button">Stop sharing</button></div>`;
   wireCopies(box);
@@ -1119,6 +1125,18 @@ function renderHost(box, info) {
   const find = box.querySelector("#findChk");
   if (find) find.onchange = (e) => manage({ action: "settings", findable: e.target.checked });
   wireGithub(box, async () => renderHost(box, await api(`/api/collab?slug=${S.slug}`)));
+  for (const [id, action] of [["listGo", "list"], ["unlistGo", "unlist"]]) {
+    const b = box.querySelector(`#${id}`);
+    if (b) b.onclick = async () => {
+      try {
+        const r = await api("/api/collab/listing", { method: "POST", body: { slug: S.slug, action, note: box.querySelector("#listNote").value } });
+        box.querySelector("#listOut").innerHTML = `<p class="small">${action === "list" ? "Submit this issue on GitHub to list the room" : "Submit this issue on GitHub to take the room off the list"} (it's filled in with a listing signed by the room's key):</p>
+          <div class="row"><a class="primary small-btn as-btn" href="${esc(r.url)}" target="_blank" rel="noopener">Open the issue on GitHub</a></div>
+          <p class="muted small">Or open a new issue in ${esc(r.repo)} and paste this:</p>${cmdBox(r.listing)}`;
+        wireCopies(box.querySelector("#listOut"));
+      } catch (e) { toast(esc(e.message), "err"); }
+    };
+  }
   box.querySelector("#rotate").onclick = () => { if (confirm("Make a new invite link? The old one stops working for people who haven't joined yet; members stay in.")) manage({ action: "rotate" }); };
   box.querySelector("#stopShare").onclick = async () => {
     await api("/api/collab/stop", { method: "POST", body: { slug: S.slug } });
@@ -1179,9 +1197,10 @@ function openReconnect() {
   };
 }
 
-function openJoin() {
-  const body = dialog("Join a team's room", `<p class="muted">Paste the invite link (or a public room's address), then pick <b>your own copy</b> of the same game. decomp.wtf checks it's identical to the host's; your copy itself is never sent.</p>
-    <label class="field"><span>Invite link</span><input id="jLink" class="mono" placeholder="https://….trycloudflare.com/join/…"></label>
+function openJoin(prefill = "", about = "") {
+  const body = dialog("Join a team's room", `<p class="muted">Paste the invite link (or a public room's address), then pick <b>your own copy</b> of the same game. decomp.wtf checks it's identical to the host's; your copy itself is never sent.${prefill ? "" : ` Or find one in <a href="#/rooms" data-close>Open rooms</a>.`}</p>
+    ${about ? `<p class="small">${about}</p>` : ""}
+    <label class="field"><span>Invite link</span><input id="jLink" class="mono" placeholder="https://….trycloudflare.com/join/…" value="${esc(prefill)}"></label>
     <label class="field"><span>Your name in the room</span><input id="jName" maxlength="24" placeholder="e.g. alex"></label>
     <label class="field"><span>Your copy of the game</span><input id="jRom" type="file"></label>
     <label class="field"><span>…or its path on this computer (best for a GameCube or Wii disc: it's read where it is)</span><input id="jPath" class="mono" placeholder="${S.st && S.st.host_os === "windows" ? "C:\\Games\\game.rvz" : "/home/you/games/game.iso"}"></label>
@@ -1221,6 +1240,70 @@ async function installToolchain(id, proprietary) {
     if (!$("toolsPage").hidden) renderTools();
   } catch (e) { toast(esc(e.message), "err"); }
 }
+
+/* ------------------------------------------------------------------ open rooms (roomlist.py) */
+const rooms = { data: null, plat: "", q: "", mine: false };
+const KIND = { rom: "from the game itself", fork: "a public decomp's fork", scratch: "started from scratch" };
+
+async function showRooms(fresh = false) {
+  show("rooms");
+  if (!rooms.data || fresh) {
+    $("roomsGrid").innerHTML = `<p class="muted">Reading the list…</p>`;
+    try { rooms.data = await api(`/api/rooms${fresh ? "?fresh=1" : ""}`); } catch (e) { rooms.data = { rooms: [], error: e.message, repo: "" }; }
+  }
+  const repo = rooms.data.repo || "";
+  $("roomsRepo").textContent = repo;
+  $("roomsRepo").href = repo ? `https://github.com/${repo}` : "#";
+  renderRooms();
+}
+
+function renderRooms() {
+  const all = rooms.data?.rooms || [];
+  const counts = {};
+  for (const r of all) counts[r.platform] = (counts[r.platform] || 0) + 1;
+  const plats = PLAT_ORDER.filter((k) => counts[k]).concat(Object.keys(counts).filter((k) => !PLAT_ORDER.includes(k)));
+  $("roomsChips").hidden = $("roomsTools").hidden = !all.length;
+  $("roomsChips").innerHTML = [`<button class="chip ${rooms.plat ? "" : "on"}" data-plat="" type="button">All <span>${all.length}</span></button>`]
+    .concat(plats.map((k) => `<button class="chip ${rooms.plat === k ? "on" : ""}" data-plat="${esc(k)}" type="button">${esc(PLAT_SHORT[k] || k.toUpperCase())} <span>${counts[k]}</span></button>`)).join("");
+  $("roomsChips").querySelectorAll(".chip").forEach((b) => { b.onclick = () => { rooms.plat = b.dataset.plat; renderRooms(); }; });
+  const q = rooms.q.toLowerCase();
+  const rows = all.filter((r) => (!rooms.plat || r.platform === rooms.plat) && (!rooms.mine || r.have)
+    && (!q || `${r.code} ${r.note} ${r.title || ""}`.toLowerCase().includes(q)))
+    .sort((a, b) => (!!b.have - !!a.have) || (b.seen - a.seen));
+  const err = rooms.data?.error;
+  $("roomsNote").textContent = err ? err : all.length
+    ? `${rows.length} of ${all.length} rooms. Each was checked by the list on GitHub in the last hours; its host may still be away when you look.`
+    : "";
+  $("roomsGrid").innerHTML = rows.map((r) => {
+    const pct = r.functions ? Math.min(100, (100 * r.matched) / r.functions) : 0;
+    const badge = r.hosted ? `<span class="badge matched">yours</span>` : r.joined ? `<span class="badge matched">joined</span>`
+      : r.have ? `<span class="badge matched">you have it</span>` : "";
+    return `<button class="cat-card" type="button" data-key="${esc(r.key)}">
+      <div class="cc-top"><span class="plat">${esc(PLAT_SHORT[r.platform] || r.platform.toUpperCase())}</span>${badge}${r.approve ? `<span class="badge">host lets people in</span>` : ""}${r.kind === "scratch" ? `<span class="badge">trust the host</span>` : ""}</div>
+      <h4>${esc(r.title || r.code || "a game")}</h4>
+      <p class="meta">${esc(r.code || "no product code")} · ${esc(KIND[r.kind] || r.kind)}${r.repo ? " · " + esc(r.repo.replace(/^https:\/\/(www\.)?github\.com\//, "")) : ""}</p>
+      <div class="meter"><i data-w="${pct}"></i></div>
+      <p class="meta"><b>${r.matched.toLocaleString()}</b> / ${r.functions.toLocaleString()} functions · ${r.members} member${r.members === 1 ? "" : "s"}${r.limit ? ` (at most ${r.limit})` : ""} · seen ${ago(new Date(r.seen * 1000).toISOString())}</p>
+      ${r.note ? `<p class="meta">${esc(r.note)}</p>` : ""}
+    </button>`;
+  }).join("") || (all.length ? `<p class="muted">Nothing matches.</p>` : err ? "" : `<p class="muted">No rooms are listed yet. A host lists a public room from its Team tab.</p>`);
+  requestAnimationFrame(() => setWidths($("roomsGrid")));
+  $("roomsGrid").querySelectorAll(".cat-card").forEach((b) => {
+    b.onclick = async () => {
+      const r = all.find((x) => x.key === b.dataset.key);
+      if (r.hosted || r.joined) { location.hash = `#/p/${r.hosted || r.joined}`; return; }
+      b.disabled = true;
+      try {
+        const { link } = await api("/api/rooms/link", { method: "POST", body: { key: r.key } });
+        openJoin(link, `${r.have ? `You have this game here (<b>${esc(r.title)}</b>): pick that copy.` : `You need your own copy of <b>${esc(r.code || "its game")}</b>, exactly the host's version.`}${r.kind === "scratch" ? " Its build setup comes from the host: tick “I trust the host” only if you do." : ""}`);
+      } catch (e) { toast(esc(e.message), "err"); }
+      b.disabled = false;
+    };
+  });
+}
+$("roomsSearch").addEventListener("input", () => { rooms.q = $("roomsSearch").value; renderRooms(); });
+$("roomsMine").addEventListener("change", () => { rooms.mine = $("roomsMine").checked; renderRooms(); });
+$("roomsRefresh").onclick = () => showRooms(true);
 
 /* ------------------------------------------------------------------ public decomps */
 const PLAT_ORDER = ["gc", "wii", "ps", "ps2", "n64", "gba", "nds", "switch", "win32", "xbox360", "3ds", "xbox", "psp"];
@@ -2390,7 +2473,7 @@ function dialog(title, html) {
   return $("dialogBody");
 }
 
-$("joinBtn").onclick = openJoin;
+$("joinBtn").onclick = () => openJoin();
 $("askBtn").onclick = openConnect;
 $("talkBtn").onclick = openConnect;
 $("connectBtn").onclick = openConnect;
