@@ -43,5 +43,15 @@ def test_other_forbidden_patterns_still_rejected():
             check_source(source)
 
 
+def test_sdccs_naked_is_rejected():
+    """SDCC's `__naked` leaves out the return: `void f(void) __naked { x = 0; }` compiles to the store alone, which
+    matched pieces of hand-written routines (an unrolled copy's ldi run) that no C function is."""
+    with pytest.raises(SourceRejected, match="__naked"):
+        check_source("void f(void) __naked { x = 0; }")
+    with pytest.raises(SourceRejected, match="__naked"):
+        check_source("u8 g(void) __naked\n{ return 4; }")
+    check_source("void f(void) { /* __naked */ x = 0; } int not_naked; int __naked_count;")  # comments, other names
+
+
 def test_ordinary_source_unaffected():
     check_source('void f(void){ u32 t = 1; t += 2; *(u8 *)0x1F8003D3 = t; }')

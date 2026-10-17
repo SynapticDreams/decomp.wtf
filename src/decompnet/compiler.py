@@ -24,11 +24,16 @@ LIMITS = ["--as=2147483648", "--cpu=30", "--fsize=67108864"]
 _SLOTS = threading.BoundedSemaphore(max(2, (os.cpu_count() or 4) - 1))
 
 _COMMENTS_AND_STRINGS = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', re.S)
+# SDCC's own spelling (Game Boy, Master System, NES): it leaves out the function's return, so its body alone
+# reproduces a piece of a hand-written routine that no C function is
+NAKED = re.compile(r"\b__naked\b")
 _FORBIDDEN = [
     (re.compile(r"\b(__)?asm(__)?\b"), "inline assembly is not allowed: matches must come from C"),
     (re.compile(r"\b(GLOBAL_ASM|INCLUDE_ASM|INCLUDE_RODATA|NON_MATCHING)\b"), "asm-include macros are not allowed"),
     (re.compile(r"\.incbin\b"), ".incbin is not allowed"),
     (re.compile(r"__attribute__\s*\(\(\s*(section|naked)\b"), "section/naked attributes are not allowed"),
+    (NAKED, "__naked is not allowed: it leaves out the function's return, and a match must be a whole function "
+            "from C"),
     (re.compile(r"(#\s*pragma|\b_Pragma)\b"), "pragmas are not allowed (ask the project admin to whitelist one)"),
     (re.compile(r"#\s*include\s*<"), "system includes are not allowed; everything you need is in context.h"),
 ]
@@ -57,6 +62,11 @@ def check_includes(text: str) -> None:
     for inc in _INCLUDE.findall(text):
         if inc.startswith("/") or re.match(r"^[A-Za-z]:", inc) or ".." in re.split(r"[/\\]", inc):
             raise SourceRejected(f"include path not allowed: {inc}")
+
+
+def uses_naked(source: str) -> bool:
+    """`__naked` in the code itself (not in a comment or a string)."""
+    return NAKED.search(_COMMENTS_AND_STRINGS.sub(" ", source or "")) is not None
 
 
 def check_source(source: str) -> None:

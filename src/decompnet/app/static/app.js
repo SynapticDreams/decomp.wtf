@@ -691,7 +691,7 @@ async function poll(first) {
     const matches = [];
     for (const ev of live.events) {
       S.e = Math.max(S.e, ev.id);
-      if (["match", "split", "rename"].includes(ev.kind)) mapDirty = true;
+      if (["match", "split", "rename", "reopen"].includes(ev.kind)) mapDirty = true;
       if (!fresh(ev)) continue;
       if (ev.kind === "match") {
         S.flash.set(ev.detail, performance.now());
@@ -2022,7 +2022,7 @@ function eventHtml(ev) {
     case "files": return `${who ? who + " " : ""}gave code without a source file one: ${esc(d)}`;
     case "import": return `ROM analysed: ${esc(d)}`;
     case "compiler": return `compiler set to ${esc(d)}`;
-    case "collab": return esc(d);
+    case "collab": case "reopen": return esc(d);
     default: return `${who} ${esc(ev.kind)} ${esc(d)}`;
   }
 }

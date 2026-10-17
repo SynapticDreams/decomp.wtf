@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import policy, scoring
-from .compiler import SourceRejected, check_includes, compile_source
+from .compiler import SourceRejected, check_includes, compile_source, uses_naked
 from .elfobj import FunctionObj, Reloc, extract_function
 from .project import compiler_config
 from .store import Store
@@ -94,6 +94,36 @@ class Network:
         # agent id -> {"kind", "model", "effort"} of the app's own helper running as that agent (None: not one of its
         # helpers): stamped on each attempt. The app's agent manager sets it.
         self.run_info = lambda agent_id: None
+        self._reopen_naked()
+
+    def _reopen_naked(self) -> None:
+        """SDCC's `__naked` got past the source check (only GCC's spelling was refused). It leaves out the function's
+        return, so what it matched were pieces of hand-written routines, not C: those functions are open again, once,
+        each with its best attempt that didn't use it (still matched if one of those matched too)."""
+        if self.store.one("SELECT 1 FROM settings WHERE key='naked_reopened'") is not None:
+            return
+        reopened: dict[int, int] = {}
+        with self.store.tx() as db:
+            for fn in db.execute("SELECT id, project_id, matched_source FROM functions WHERE status='matched' "
+                                 "AND matched_source LIKE '%naked%'").fetchall():
+                if not uses_naked(fn["matched_source"]):
+                    continue
+                best = next((a for a in db.execute("SELECT * FROM attempts WHERE function_id=? AND score IS NOT NULL "
+                                                   "ORDER BY score, id", (fn["id"],)) if not uses_naked(a["source"])), None)
+                if best is not None and best["score"] == 0:
+                    db.execute("UPDATE functions SET matched_source=?, matched_agent_id=?, matched_at=?, best_source=?, "
+                               "best_agent_id=? WHERE id=?", (best["source"], best["agent_id"], best["created_at"],
+                                                              best["source"], best["agent_id"], fn["id"]))
+                    continue
+                db.execute("UPDATE functions SET status='open', matched_source=NULL, matched_agent_id=NULL, matched_at=NULL, "
+                           "best_score=?, best_source=?, best_agent_id=? WHERE id=?",
+                           (*((best["score"], best["source"], best["agent_id"]) if best else (None, None, None)), fn["id"]))
+                reopened[fn["project_id"]] = reopened.get(fn["project_id"], 0) + 1
+            for pid, n in reopened.items():
+                self._event(db, pid, None, "reopen", f"{n} match{'es' if n != 1 else ''} made with __naked {'are' if n != 1 else 'is'} "
+                            "open again: it leaves out the function's return, so they were pieces of hand-written "
+                            "routines, not C")
+            db.execute("INSERT INTO settings(key, value) VALUES('naked_reopened', '1')")
 
     # ------------------------------------------------------------------ agents
 
