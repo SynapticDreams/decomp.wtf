@@ -164,3 +164,61 @@ def test_antigravity_helpers_say_when_it_isnt_connected(tmp_path, monkeypatch):
     s.runs = 1
     with pytest.raises(agents.Fatal, match="decomp connect antigravity"):
         m._run_cli(s, "tok", tmp_path)
+
+
+CODEX_CATALOG = {"models": [
+    {"slug": "gpt-b", "display_name": "GPT-B", "description": "second", "visibility": "list", "priority": 2,
+     "default_reasoning_level": "medium", "supported_reasoning_levels": [{"effort": "low"}, {"effort": "medium"}]},
+    {"slug": "gpt-hidden", "display_name": "Hidden", "visibility": "hide", "priority": 1},
+    {"slug": "gpt-a", "display_name": "GPT-A", "description": "first", "visibility": "list", "priority": 1,
+     "default_reasoning_level": "low", "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}]}]}
+
+
+def _fake_codex(tmp_path, catalog=CODEX_CATALOG, bundled=None):
+    """A `codex` whose `debug models` prints the catalog (`--bundled`: the other one, or a failure)."""
+    exe = tmp_path / "codex"
+    data = tmp_path / "catalog.json"
+    data.write_text(json.dumps(catalog))
+    bundled_data = tmp_path / "bundled.json"
+    bundled_data.write_text(json.dumps(bundled))
+    exe.write_text('#!/bin/sh\n[ "$1 $2" = "debug models" ] || exit 2\n'
+                   + (f'if [ "$3" = "--bundled" ]; then cat {bundled_data}; exit 0; fi\n' if bundled is not None else
+                      'if [ "$3" = "--bundled" ]; then exit 1; fi\n')
+                   + (f"cat {data}\n" if catalog is not None else "exit 1\n"))
+    exe.chmod(0o755)
+    return str(exe)
+
+
+def test_codex_models_are_the_ones_its_own_picker_lists(tmp_path, monkeypatch):
+    monkeypatch.setattr(agents, "_models", {})
+    got = agents.models("codex", _fake_codex(tmp_path))
+    assert [m["id"] for m in got] == ["gpt-a", "gpt-b"]  # hidden ones left out, best first
+    assert got[0] == {"id": "gpt-a", "name": "GPT-A", "note": "first", "efforts": ["low", "high"], "effort": "low"}
+    assert got[1]["efforts"] == ["low", "medium"] and got[1]["effort"] == "medium"
+
+
+def test_codex_models_fall_back_to_the_catalog_bundled_with_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(agents, "_models", {})
+    assert [m["id"] for m in agents.models("codex", _fake_codex(tmp_path, catalog=None, bundled=CODEX_CATALOG))] == ["gpt-a", "gpt-b"]
+    monkeypatch.setattr(agents, "_models", {})
+    assert agents.models("codex", _fake_codex(tmp_path, catalog=None)) == []  # nothing to offer: models can still be typed
+
+
+def test_codex_effort_is_passed_on_only_when_chosen(tmp_path, monkeypatch):
+    monkeypatch.setattr(agents, "_codex_config", lambda: {})
+    for effort, expected in (("high", ['model_reasoning_effort="high"']), ("", []), ('x"; rm -rf /', [])):
+        m = _manager(tmp_path, monkeypatch, "codex")
+        s = agents.Session("codex-1", "codex", "c", "demo", "codex-1", {"model": "gpt-a", "effort": effort})
+        work = tmp_path / f"cx-{len(effort)}"
+        work.mkdir()
+        cmd, _, _ = m._command(s, "tok", work)
+        assert [a for a in cmd if a.startswith("model_reasoning_effort")] == expected, effort
+        assert cmd[cmd.index("-m") + 1] == "gpt-a"
+
+
+def test_codex_default_effort_is_the_users_own_setting(monkeypatch):
+    monkeypatch.setattr(agents, "_codex_config", lambda: {"model": "gpt-a", "model_reasoning_effort": "xhigh"})
+    assert agents._config_effort("codex") == "xhigh" and agents._config_model("codex") == "gpt-a"
+    assert agents._config_effort("claude") is None
+    monkeypatch.setattr(agents, "_codex_config", lambda: {})
+    assert agents._config_effort("codex") is None

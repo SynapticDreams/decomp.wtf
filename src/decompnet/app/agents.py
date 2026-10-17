@@ -204,16 +204,49 @@ def _config_model(kind: str) -> str | None:
     return None
 
 
+def _config_effort(kind: str) -> str | None:
+    """The reasoning effort the user set as default in the agent's own settings, if any (Codex)."""
+    if kind == "codex":
+        return _codex_config().get("model_reasoning_effort") or None
+    return None
+
+
+def _codex_models(path: str) -> list[dict]:
+    """Codex's model catalog (`codex debug models`): the models its own picker lists, best first, each with the
+    reasoning efforts it supports and the one it uses unless told otherwise. Falls back to the catalog bundled with
+    the binary when the refresh fails (offline)."""
+    for extra in ([], ["--bundled"]):
+        try:
+            res = subprocess.run(argv([path, "debug", "models", *extra]), capture_output=True, text=True, encoding="utf-8",
+                                 errors="replace", stdin=subprocess.DEVNULL, timeout=30)
+            rows = json.loads(res.stdout).get("models") or []
+        except (OSError, subprocess.TimeoutExpired, ValueError, AttributeError):
+            continue
+        out = []
+        for m in sorted((r for r in rows if isinstance(r, dict) and r.get("visibility") == "list" and r.get("slug")),
+                        key=lambda r: r.get("priority") or 0):
+            levels = [lv.get("effort") if isinstance(lv, dict) else lv for lv in m.get("supported_reasoning_levels") or []]
+            out.append({"id": m["slug"], "name": m.get("display_name") or m["slug"], "note": m.get("description") or "",
+                        "efforts": [e for e in levels if isinstance(e, str)], "effort": m.get("default_reasoning_level") or ""})
+        if out:
+            return out
+    return []
+
+
 def models(kind: str, path: str | None) -> list[dict]:
     """Models to offer for this agent: [{"id", "name", "note"}]. Claude Code's aliases; opencode's and Antigravity's
-    own lists (what the user's sign-in offers); for Codex the user's default plus any model name they type."""
+    own lists (what the user's sign-in offers); Codex's catalog, with each model's efforts."""
     if kind == "claude":
         return [{"id": i, "name": n, "note": note} for i, n, note in CLAUDE_MODELS]
-    if kind not in ("opencode", "antigravity") or not path:
+    if kind not in ("opencode", "antigravity", "codex") or not path:
         return []
     cached = _models.get(kind)
     if cached and time.time() - cached[0] < 600:
         return cached[1]
+    if kind == "codex":
+        out = _codex_models(path)
+        _models[kind] = (time.time(), out)
+        return out
     try:
         res = subprocess.run(argv([path, "models"]), capture_output=True, text=True, encoding="utf-8", errors="replace",
                              stdin=subprocess.DEVNULL, timeout=30)
@@ -322,7 +355,7 @@ def detect() -> list[dict]:
                 _versions[k.id] = (time.time(), version)
             row.update(installed=path is not None, path=path, version=_versions.get(k.id, (0, None))[1] if path else None)
             if path:
-                row.update(models=models(k.id, path), default_model=_config_model(k.id))
+                row.update(models=models(k.id, path), default_model=_config_model(k.id), default_effort=_config_effort(k.id))
         if row["install"].startswith("npm ") and not row["installed"] and not shutil.which("npm", path=search_path()):
             row["needs"] = "Node.js (https://nodejs.org) for npm"
         elif k.id == "claude" and WIN and not shutil.which("git", path=search_path()):
@@ -525,7 +558,8 @@ class Session:
     def snapshot(self, since: int = 0) -> dict:
         return {"id": self.id, "kind": self.kind, "label": self.label, "slug": self.slug, "agent": self.agent_name,
                 "state": self.state, "runs": self.runs, "error": self.error, "started_at": self.started_at,
-                "model": self.options.get("model") or "", "usd": round(self.usd, 4), "tokens": self.tokens,
+                "model": self.options.get("model") or "", "effort": self.options.get("effort") or "",
+                "usd": round(self.usd, 4), "tokens": self.tokens,
                 "feed": [f for f in self.feed if f["seq"] > since]}
 
 
@@ -546,6 +580,7 @@ class Manager:
         if kind_id(kind) != kind:
             kind = kind_id(kind)
             options.pop("model", None)  # a Gemini CLI model name may mean nothing to Antigravity: use its default
+            options.pop("effort", None)
         if kind not in KINDS:
             raise ValueError(f"unknown agent kind {kind!r}")
         ids = []
@@ -818,6 +853,9 @@ class Manager:
                     "-c", 'approval_policy="never"']
             if model:
                 cmd += ["-m", model]
+            effort = str(s.options.get("effort") or "")
+            if re.fullmatch(r"[a-z]{2,16}", effort):  # else Codex's own: the user's config, then the model's default
+                cmd += ["-c", f'model_reasoning_effort="{effort}"']
             cmd.append("-")  # the prompt comes from stdin
         elif s.kind == "antigravity":
             # the workspace's own MCP config; tool permission comes from the user's rule for decomp's tools (AGY_ALLOW)
