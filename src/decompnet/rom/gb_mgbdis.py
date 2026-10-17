@@ -179,6 +179,45 @@ def _trim_padding(code: bytes) -> bytes:
     return code[:end] if end else code
 
 
+def _disassemble(rom_path: Path, tmp: Path, log=lambda *_: None) -> tuple[Path, list[tuple[int, int, str]], bool, bytes]:
+    """mgbdis's disassembly of a ROM in `tmp`, assembled and linked with RGBDS: (its folder, its labels as
+    (bank, address, name), whether it rebuilds the ROM byte for byte, the rebuilt bytes). Raises RomError."""
+    ts = tools()
+    if ts is None:
+        raise RomError("mgbdis and rgbds are not installed (Setup lists them; the app installs them when a game is imported)")
+    data = Path(rom_path).read_bytes()
+    out = tmp / "out"
+    # No `-I`: mgbdis imports its sibling modules from its own directory (the script dir must stay on
+    # sys.path), and running it with the script path does exactly that.
+    rc, log_text = _run([ts.python, ts.mgbdis, rom_path, "--output-dir", out], tmp)
+    if rc != 0 or not (out / "game.asm").exists():
+        raise RomError(f"mgbdis could not disassemble the ROM: {log_text.strip()[-400:]}")
+    log(f"mgbdis: disassembled {len(list(out.glob('bank_*.asm')))} banks")
+    rc, log_text = _run([ts.rgbasm, "-o", "game.o", "game.asm"], out)
+    if rc != 0 or not (out / "game.o").exists():
+        raise RomError(f"rgbasm could not assemble the disassembly: {log_text.strip()[-400:]}")
+    rc, log_text = _run([ts.rgblink, "-n", "game.sym", "-o", "game.gbc", "game.o"], out)
+    if rc != 0 or not (out / "game.sym").exists():
+        raise RomError(f"rgblink could not link the disassembly: {log_text.strip()[-400:]}")
+    if ts.rgbfix.exists():
+        _run([ts.rgbfix, "-v", "-p", "255", "game.gbc"], out)
+    rebuilt = (out / "game.gbc").read_bytes() if (out / "game.gbc").exists() else b""
+    faithful = rebuilt == data
+    symbols = parse_sym((out / "game.sym").read_text(encoding="utf-8", errors="replace"))
+    log(f"mgbdis: {len(symbols)} labels, reassembly {'byte-identical' if faithful else 'DIFFERS'}")
+    return out, symbols, faithful, rebuilt
+
+
+def labels(rom_path: Path, log=lambda *_: None) -> set[tuple[int, int]]:
+    """The (bank, address) of every label in mgbdis's own disassembly of a ROM: where it decodes code from, so
+    where a name of the project's can go (at any other address, mgbdis would be mid-instruction). Raises RomError."""
+    with tempfile.TemporaryDirectory(prefix="gb-mgbdis-") as tmp:
+        tmp = Path(tmp)
+        shutil.copyfile(rom_path, tmp / f"rom{Path(rom_path).suffix}")  # alone: a .sym beside it would steer mgbdis
+        _, symbols, _, _ = _disassemble(tmp / f"rom{Path(rom_path).suffix}", tmp, log)
+    return {(bank, addr) for bank, addr, _ in symbols}
+
+
 # ------------------------------------------------------------------ the split
 
 def split(rom_path: Path, workdir: Path, log=lambda *_: None) -> tuple[list[gb.GbFunction], dict]:
@@ -186,33 +225,12 @@ def split(rom_path: Path, workdir: Path, log=lambda *_: None) -> tuple[list[gb.G
 
     Raises RomError when the tools are missing or the disassembler/assembler fails. The returned dict is
     `{"faithful": bool, "labels": n, "functions": n, "rebuilt_bytes": n}`."""
-    ts = tools()
-    if ts is None:
-        raise RomError("mgbdis and rgbds are not installed (Setup lists them; the app installs them when a game is imported)")
     rom_path = Path(rom_path)
     data = rom_path.read_bytes()
     if not gb.is_gb(data):
         raise RomError("this isn't a Game Boy or Game Boy Color ROM")
     with tempfile.TemporaryDirectory(prefix="gb-mgbdis-") as tmp:
-        out = Path(tmp) / "out"
-        # No `-I`: mgbdis imports its sibling modules from its own directory (the script dir must stay on
-        # sys.path), and running it with the script path does exactly that.
-        rc, log_text = _run([ts.python, ts.mgbdis, rom_path, "--output-dir", out], Path(tmp))
-        if rc != 0 or not (out / "game.asm").exists():
-            raise RomError(f"mgbdis could not disassemble the ROM: {log_text.strip()[-400:]}")
-        log(f"mgbdis: disassembled {len(list(out.glob('bank_*.asm')))} banks")
-        rc, log_text = _run([ts.rgbasm, "-o", "game.o", "game.asm"], out)
-        if rc != 0 or not (out / "game.o").exists():
-            raise RomError(f"rgbasm could not assemble the disassembly: {log_text.strip()[-400:]}")
-        rc, log_text = _run([ts.rgblink, "-n", "game.sym", "-o", "game.gbc", "game.o"], out)
-        if rc != 0 or not (out / "game.sym").exists():
-            raise RomError(f"rgblink could not link the disassembly: {log_text.strip()[-400:]}")
-        if ts.rgbfix.exists():
-            _run([ts.rgbfix, "-v", "-p", "255", "game.gbc"], out)
-        rebuilt = (out / "game.gbc").read_bytes() if (out / "game.gbc").exists() else b""
-        faithful = rebuilt == data
-        symbols = parse_sym((out / "game.sym").read_text(encoding="utf-8", errors="replace"))
-        log(f"mgbdis: {len(symbols)} labels, reassembly {'byte-identical' if faithful else 'DIFFERS'}")
+        out, symbols, faithful, rebuilt = _disassemble(rom_path, Path(tmp), log)
 
         # asm blocks, per bank file, so the brief can show the real disassembly
         asm_blocks: dict[str, str] = {}
