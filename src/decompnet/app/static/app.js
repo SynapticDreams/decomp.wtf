@@ -962,7 +962,7 @@ function renderSetups(st) {
   const stages = (r) => Object.keys(STAGE_NAME).filter((k) => r.stages[k])
     .map((k) => `<span title="${r.stages[k].attempts} attempts on functions that were ${esc(STAGE_NAME[k])}">${esc(STAGE_NAME[k])} <b>${r.stages[k].per_attempt.toFixed(1)}</b></span>`).join(" · ");
   $("setups").innerHTML = `<table class="fn-table setups"><thead><tr><th>Setup</th><th class="r">Attempts</th><th class="r">Matches</th><th class="r">Points</th><th class="r">Per attempt</th></tr></thead><tbody>
-    ${rows.map((r) => `<tr class="setup"><td>${esc(SETUP_KIND[r.kind] || r.kind)}${r.model ? ` · <span class="mono">${esc(r.model)}</span>` : ""}${r.effort ? ` · ${esc(r.effort)}` : ""}</td>
+    ${rows.map((r) => `<tr class="setup"><td>${esc(SETUP_KIND[r.kind] || r.kind)}${r.model ? ` · <span class="mono">${esc(r.model)}</span>` : ""}${r.effort ? ` · ${esc(r.effort)}` : ""}${r.method ? ` · <b>${esc(r.method === "agent" ? "pinned" : r.method)}</b>` : ""}${r.tokens && r.points ? `<br><span class="muted small">${Math.round(r.tokens / r.points).toLocaleString()} tokens a point</span>` : ""}</td>
       <td class="r mono">${r.attempts.toLocaleString()}</td><td class="r mono">${r.matches.toLocaleString()}</td><td class="r mono">${Math.round(r.points).toLocaleString()}</td>
       <td class="r mono"><b>${r.per_attempt.toFixed(1)}</b></td></tr>
       <tr class="stages"><td colspan="5" class="muted small">${stages(r)}</td></tr>`).join("")}</tbody></table>
@@ -1746,7 +1746,7 @@ function renderSessions(sessions) {
     const b = s.compiles != null ? s : board.get(s.agent);  // this session's own work (names are reused)
     const facts = [s.model ? esc(s.model) : "default model", s.runs ? `session ${s.runs}` : "", b && b.matched ? `<b class="ok">${b.matched} matched</b>` : "", b ? plural(b.compiles, "compile") : "",
       s.usd ? money(s.usd) : s.tokens ? `${(s.tokens / 1000).toFixed(0)}k tokens` : "", s.started_at ? `since ${clock(s.started_at).slice(0, 5)}` : ""].filter(Boolean);
-    return `<div class="session"><div class="session-top"><span class="dot ${dot}"></span><b>${esc(s.label)}</b>${s.only_starred ? `<span class="tag">only ★</span>` : ""}${s.focus ? `<span class="tag">${esc((FOCUS.find((f) => f.id === s.focus) || {}).name || s.focus)}</span>` : ""}
+    return `<div class="session"><div class="session-top"><span class="dot ${dot}"></span><b>${esc(s.label)}</b>${s.only_starred ? `<span class="tag">only ★</span>` : ""}${s.pin ? `<span class="tag" title="${s.lean ? `the lean loop: ${esc(LEAN_NAME[s.lean] || s.lean)}` : "pinned to one function"}">on ${esc(s.pin)}${s.lean ? " · lean" : ""}</span>` : s.lean ? `<span class="tag" title="the lean loop: ${esc(LEAN_NAME[s.lean] || s.lean)}, function after function">lean</span>` : ""}${s.focus ? `<span class="tag">${esc((FOCUS.find((f) => f.id === s.focus) || {}).name || s.focus)}</span>` : ""}
         <span class="state ${s.state === "error" ? "err" : ""}">${esc(STATE_TEXT[s.state] || s.state)}</span>
         <button class="ghost" data-stop="${esc(s.id)}" data-remove="${live ? "" : "1"}" type="button">${live ? "Stop" : "Remove"}</button></div>
       <span class="facts-line">${facts.join(" · ")}</span>
@@ -1798,6 +1798,15 @@ $("removeAll").onclick = async () => {
 /* The launcher's Focus menu: which functions new helpers take. Default leaves claiming as it always was. */
 const FOCUS = [{ id: "default", name: "Default" }, { id: "quick", name: "Quick Wins", note: "small functions only" },
   { id: "close", name: "Close Calls", note: "functions already 90%+ matched" }];
+/* How an API helper or Codex works: its own agent loop (tools, a fresh session every few functions), or the lean loop
+   (lean.py): short prompts, three versions of the function per call, on to the next function when one stops gaining. */
+const LEAN_KINDS = ["api", "codex"];
+function leanSelect(a) {
+  if (!LEAN_KINDS.includes(a.id)) return "";
+  return `<label class="field"><span>How it works</span><select data-f="lean">
+    <option value="" ${LZ.lean ? "" : "selected"}>Agent loop: tools, a fresh session every few functions</option>
+    <option value="several" ${LZ.lean === "several" ? "selected" : ""}>Lean: short prompts, 3 versions per call</option></select></label>`;
+}
 function focusSelect() {
   return `<label class="field"><span>Focus</span><select data-f="focus">${FOCUS.map((f) => `<option value="${f.id}" ${f.id === (LZ.focus || "default") ? "selected" : ""}>${esc(f.name)}${f.note ? ` — ${esc(f.note)}` : ""}</option>`).join("")}</select></label>`;
 }
@@ -1811,6 +1820,7 @@ function launcherInit() {
   LZ.model = known ? (l.model || "") : "";
   LZ.effort = known ? (l.effort || "") : "";
   LZ.count = l.count || 1;
+  LZ.lean = l.lean || "";
   const eps = S.st.settings.endpoints || [];
   LZ.eps = (l.endpoints || []).filter((id) => eps.some((e) => e.id === id));
   if (!LZ.eps.length && eps.length) LZ.eps = [eps[0].id];
@@ -1854,8 +1864,9 @@ async function startAgents(a, model, count, btn, extra = {}) {
     if (LZ.per) options.per_session = LZ.per;
     if (LZ.starred && (S.ov?.priority || []).length) options.only_starred = true;
     if (LZ.focus && LZ.focus !== "default") options.focus = LZ.focus;
+    if (LZ.lean && LEAN_KINDS.includes(a.id)) Object.assign(options, { lean: LZ.lean, variants: 3 });
     await api("/api/agents/start", { method: "POST", body: { kind: a.id, slug: S.slug, count, options } });
-    S.st.settings.launcher = { kind: a.id, model: model || "", count, ...(a.id === "codex" && LZ.effort ? { effort: LZ.effort } : {}) };
+    S.st.settings.launcher = { kind: a.id, model: model || "", count, lean: LZ.lean || "", ...(a.id === "codex" && LZ.effort ? { effort: LZ.effort } : {}) };
     if (model && a.id !== "api") {
       const rec = (S.st.settings.recent_models ||= {});
       rec[a.id] = [model, ...(rec[a.id] || []).filter((m) => m !== model)].slice(0, 8);
@@ -1907,6 +1918,7 @@ function renderLauncher(box, compact = false) {
       ${ready ? `<div class="lz-row">
         <div class="field"><span>How many</span><span class="stepper"><button type="button" data-step="-1">−</button><output>${LZ.count}</output><button type="button" data-step="1">+</button></span></div>
         ${focusSelect()}
+        ${leanSelect(a)}
         ${compact ? "" : `<label class="field"><span>Functions per session</span><input data-f="per" type="number" min="1" max="20" value="${LZ.per || S.st.settings.per_session || 2}"></label>`}
         <span class="grow"></span>
         <button class="primary" data-act="start" type="button">${esc(launchLabel(a, LZ.model, LZ.count))}</button></div>
@@ -1929,6 +1941,8 @@ function renderLauncher(box, compact = false) {
   if (starred) starred.onchange = () => { LZ.starred = starred.checked; };
   const focus = box.querySelector('[data-f="focus"]');
   if (focus) focus.onchange = () => { LZ.focus = focus.value; };
+  const leanBox = box.querySelector('[data-f="lean"]');
+  if (leanBox) leanBox.onchange = () => { LZ.lean = leanBox.value; };
   wireEndpointFields(box);
   box.querySelectorAll("[data-ep]").forEach((c) => { c.onchange = () => { LZ.eps = [...box.querySelectorAll("[data-ep]:checked")].map((x) => x.dataset.ep); label(); }; });
   const addEp = box.querySelector('[data-act="add-ep"]'), pickEp = box.querySelector('[data-act="pick-ep"]');
@@ -2198,6 +2212,8 @@ async function refreshFn(first) {
     $("fnPin").classList.toggle("on", pinned);
     $("fnPin").textContent = pinned ? "★ Next (on)" : "★ Next";
     $("fnPin").onclick = () => togglePrio(d.name, !pinned).then(() => refreshFn(false));
+    $("fnWork").hidden = S.ov.kind === "fork" || d.status !== "open" || (S.ov.room || {}).role === "guest";
+    $("fnWork").onclick = () => openPinHelper(d.name);
     $("noteAdd").onclick = async () => {
       const text = $("noteText").value.trim();
       if (!text) return;
@@ -2519,6 +2535,81 @@ function cmdBox(cmd) {
 }
 function wireCopies(root) {
   root.querySelectorAll("[data-copy]").forEach((b) => { b.onclick = () => navigator.clipboard.writeText(b.dataset.copy).then(() => { b.textContent = "Copied"; setTimeout(() => (b.textContent = "Copy"), 1500); }); });
+}
+
+/* One helper on one function until it matches (the drawer's "Work on this"). An API helper runs the lean loop: a short
+   prompt per call (the target, the declarations it uses, the closest C, what still differs, what was tried) and C
+   only back, one version per call, several, or both in turn to compare them. Claude Code, Codex and the rest work in
+   their own loop, a fresh session per run. Either stops at a match, or when it stops getting closer. */
+const LEAN_NAME = { one: "one version per call", several: "several versions per call", both: "one and several per call in turn" };
+
+function openPinHelper(name) {
+  const eps = S.st.settings.endpoints || [];
+  const kinds = (S.st.agents || []).filter((a) => a.installed && a.id !== "api");
+  const last = S.st.settings.pin_helper || {};
+  const choices = [...eps.map((e) => ({ key: `ep:${e.id}`, label: `${e.name} · ${e.model}`, ep: e.id })),
+    ...kinds.map((a) => ({ key: `k:${a.id}`, label: a.name, kind: a.id, lean: a.id === "codex" }))];
+  if (!choices.length) {
+    dialog(`Work on ${name}`, `<p>Add an API endpoint or install an agent first: <a class="link" href="#/agents" data-close>Agents &amp; models</a>.</p>`);
+    return;
+  }
+  const pick = choices.find((c) => c.key === last.who) || choices[0];
+  const body = dialog(`Work on ${name} until it matches`, `<p class="muted">One helper on this function only. Each try starts from the closest version so far; it stops at a match, or when it stops getting closer, and leaves a note with what it tried.</p>
+    <label class="field"><span>Helper</span><select id="phWho">${choices.map((c) => `<option value="${esc(c.key)}" ${c === pick ? "selected" : ""}>${esc(c.label)}</option>`).join("")}</select></label>
+    <div id="phLean">
+      <label class="field"><span>How to ask</span><select id="phMethod"></select></label>
+      <label class="field" id="phNField"><span>Versions per call</span><input id="phN" type="number" min="2" max="6" value="${esc(String(last.variants || 3))}"></label>
+      <label class="field" id="phEscField"><span>When stuck, switch to</span><select id="phEsc"><option value="">Stay on this model</option>${eps.map((e) => `<option value="${esc(e.id)}" ${e.id === last.escalate ? "selected" : ""}>${esc(e.name)} · ${esc(e.model)}</option>`).join("")}</select></label>
+      <p class="muted small">The lean loop: a short prompt per call (the target, the declarations it uses, the closest C, what still differs, what was tried) and C only back. Nothing carries over from call to call, so calls stay small. Each attempt records its method and tokens: the overview's <b>Which setup works best</b> compares them.</p>
+    </div>
+    <label class="field"><span>Stop after this many <span id="phUnit">calls</span> without getting closer</span><input id="phStall" type="number" min="2" max="50"></label>
+    <label class="check"><input type="checkbox" id="phPolish" ${last.polish === false ? "" : "checked"}><span><b>The permuter between tries</b>: free rewrites of the closest version (order, temporaries, casts), no tokens</span></label>
+    <div class="row"><button class="primary" id="phGo" type="button">Start</button></div>`);
+  const which = () => choices.find((c) => c.key === $("phWho").value);
+  const METHODS = { several: "Several versions per call (three by default: best in our tests)", one: "One version per call", both: "Test both: in turn, on this function" };
+  const lean = () => $("phMethod").value !== "agent";
+  const fill = () => {  // Codex can also work its own way (tools, a session per run); an API model only lean
+    const c = which(), keep = $("phMethod").value || last.lean || "several";
+    const opts = c.ep ? METHODS : { ...METHODS, agent: "Its own loop: tools, a fresh session per run" };
+    $("phMethod").innerHTML = Object.entries(opts).map(([k, v]) => `<option value="${k}" ${k === keep ? "selected" : ""}>${v}</option>`).join("");
+  };
+  const sync = () => {
+    const c = which(), on = !!(c.ep || c.lean);
+    $("phLean").hidden = !on;
+    $("phEscField").hidden = !c.ep;
+    $("phNField").hidden = $("phMethod").value === "one" || !lean();
+    const calls = on && lean();
+    $("phUnit").textContent = calls ? "calls" : "runs";
+    $("phStall").value = calls ? (last.stall_calls || 10) : (last.stall_runs || 4);
+  };
+  $("phWho").onchange = () => { fill(); sync(); };
+  $("phMethod").onchange = sync;
+  fill();
+  sync();
+  body.querySelector("#phGo").onclick = async () => {
+    const c = which(), go = $("phGo");
+    const options = { pin: name, stall: Number($("phStall").value) || 0, polish: $("phPolish").checked };
+    let kind = c.kind;
+    if (c.ep) {
+      kind = "api";
+      Object.assign(options, { endpoints: [c.ep], lean: $("phMethod").value, variants: Number($("phN").value) || 3 });
+      if ($("phEsc").value) options.escalate = $("phEsc").value;
+    } else {
+      const l = S.st.settings.launcher || {};
+      if (l.kind === c.kind && l.model) options.model = l.model;
+      if (l.kind === c.kind && l.effort) options.effort = l.effort;
+      if (c.lean && lean()) Object.assign(options, { lean: $("phMethod").value, variants: Number($("phN").value) || 3 });
+    }
+    go.disabled = true;
+    try {
+      await api("/api/agents/start", { method: "POST", body: { kind, slug: S.slug, count: 1, options } });
+      S.st.settings.pin_helper = { who: c.key, lean: options.lean, variants: options.variants, escalate: options.escalate || "",
+        polish: options.polish, [options.lean ? "stall_calls" : "stall_runs"]: options.stall };
+      $("dialog").hidden = true;
+      toast(`A helper is on <code>${esc(name)}</code>: watch it in Agents.`, "match");
+      poll(false);
+    } catch (e) { toast(esc(e.message), "err"); go.disabled = false; }
+  };
 }
 
 function dialog(title, html) {

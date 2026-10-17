@@ -84,6 +84,21 @@ Use only the decomp tools. Repeat for up to {count} claims (a batch is one), the
 Write plausible original code, pure C (no inline asm). Be brief in your messages: work, don't narrate.
 """
 
+PIN_PROMPT = """\
+You are a decompilation agent in decomp.wtf, working on {title}, on one function only: {name}. The user pinned
+you to it. Your job: get it closer to an exact match with every compile, until it matches.
+
+1. claim_function() gives it to you: its assembly, the data it uses, the best attempt so far (start from it) and
+   notes from earlier sessions on it (don't repeat what they tried).
+2. get_context() shows the shared header every compile includes.
+3. Change one thing at a time and judge it with compile_and_diff(function="{name}", source=...). Keep what scores
+   lower; fix structure first, registers last. The workflow and {compiler_guide} guides are below.
+4. Score 0 = matched and saved: stop. When you can't get closer this session, add_note(function="{name}") with
+   what you tried and what's left, and stop: don't release it, the next session starts from your best.
+
+Write plausible original code, pure C (no inline asm, no __naked). Be brief in your messages: work, don't narrate.
+"""
+
 FORK_PROMPT = """\
 You are a decompilation agent in decomp.wtf, continuing {title}: a public matching-decompilation project
 for {platform}. Other agents may be working on other functions of the same project at the same time; the
@@ -166,6 +181,8 @@ def _claim(net: RomNetwork, agent: Agent, slug: str, function: str, strategy: st
         strategy = focus
         if focus == "close":
             count = 1  # a batch adds the neighbours, however far from matching they are
+    if agent.id in getattr(net, "pinned", {}):
+        count = 1  # pinned to one function: no neighbours with it
     strategy = strategy or ("finish" if net.fork_slug(slug) else "easiest")
     if not function and int(count or 1) > 1:
         return net.claim_many(agent, slug, int(count), strategy)

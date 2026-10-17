@@ -444,7 +444,8 @@ class Network:
         return self.attempt(agent, function, source, project)["text"]
 
     def attempt(self, agent: Agent, function: str, source: str, project: str | None = None) -> dict:
-        """Compile, score and record one attempt. Returns {"text", "score", "matched"} (score None: didn't compile)."""
+        """Compile, score and record one attempt. Returns {"text", "score", "matched"} (score None: didn't compile),
+        and for a scored miss "rows" (the diff: marker, target, yours) and "problems" (linking notes)."""
         self._require_budget(agent)
         fn = self._function(function, project)
         proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
@@ -511,7 +512,8 @@ class Network:
         warn = f"\ncompiler output:\n{result.log.strip()}" if result.log.strip() else ""
         if problems:
             warn += "\nwhen linking your code at the function's address:\n" + "\n".join(f"- {p}" for p in problems)
-        return {"text": f"{head}\n{d.render()}{warn}{self.stall_note(fn['id'], agent.id)}", "score": d.score, "matched": False}
+        return {"text": f"{head}\n{d.render()}{warn}{self.stall_note(fn['id'], agent.id)}", "score": d.score, "matched": False,
+                "rows": d.rows, "problems": problems}
 
     def stall_note(self, function_id: int, agent_id: int, after: int | None = None) -> str:
         """A nudge once an agent's last `after` compiles of a function didn't beat its best: functions that match
@@ -557,10 +559,11 @@ class Network:
         who = self._who(agent, via)
         with self.store.tx() as db:
             db.execute("INSERT INTO attempts(function_id,agent_id,score,compiled,context_version,source,created_at,via,"
-                       "kind,model,effort,stage) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                       "kind,model,effort,stage,method,tokens) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                        (fn["id"], agent.id, score, compiled, ctx_version, source, now, via, who.get("kind"),
                         who.get("model") or None, who.get("effort") or None,
-                        scoring.stage(fn["best_score"], fn["n_insns"], fn["attempts"])))
+                        scoring.stage(fn["best_score"], fn["n_insns"], fn["attempts"]),
+                        who.get("method") or None, who.get("tokens")))
             db.execute("UPDATE functions SET attempts=attempts+1 WHERE id=?", (fn["id"],))
             if score is not None:
                 db.execute("UPDATE functions SET best_score=?, best_source=?, best_agent_id=? "

@@ -199,7 +199,8 @@ class Settings:
                 "per_session": self.data.get("per_session", agents.PER_SESSION), "last_project": self.data.get("last_project"),
                 "autopilot": self.data.get("autopilot", True), "budget_usd": self.data.get("budget_usd") or 0,
                 "auto_update": bool(self.data.get("auto_update")), "check_updates": self.data.get("check_updates", True) is not False,
-                "launcher": _launcher(self.data.get("launcher") or {}), "recent_models": self.data.get("recent_models") or {}}
+                "launcher": _launcher(self.data.get("launcher") or {}), "recent_models": self.data.get("recent_models") or {},
+                "pin_helper": self.data.get("pin_helper") or {}}
 
 
 def _session_options(entry: dict) -> dict:
@@ -207,6 +208,59 @@ def _session_options(entry: dict) -> dict:
     out = {"endpoint": entry.get("id") or "", "provider": entry["provider"], "base_url": entry["base_url"],
            "model": entry["model"], "provider_name": entry["name"]}
     return out | {k: entry[k] for k in ("api_key", "context_tokens") if entry.get(k)}
+
+
+def _lean_options(net, kind: str, slug: str, given: dict) -> dict:
+    """A start's options for helpers that work the lean way (see lean.py) on the functions they claim: the method,
+    and how many versions per call."""
+    from . import lean
+
+    if kind not in agents.LEAN_KINDS:
+        raise ValueError("the lean loop is for API helpers and Codex")
+    if net.fork_slug(slug) or slug in net.links:
+        raise ValueError("the lean loop works on your own ROM projects (not a git project or a room's copy) for now")
+    method = str(given.get("lean"))
+    if method not in lean.METHODS:
+        raise ValueError(f"lean must be one of {', '.join(lean.METHODS)}")
+    out = {"lean": method, "variants": max(2, min(int(given.get("variants") or lean.VARIANTS), 6))}
+    if given.get("stall"):
+        out["stall"] = max(2, min(int(given["stall"]), 50))
+    return out
+
+
+def _pin_options(net, settings: Settings, kind: str, slug: str, given: dict) -> dict:
+    """A start's options for a helper pinned to one function: which function, and for an API helper the lean loop's
+    method (one version per call, several, or both in turn), its stop rule, the permuter between calls, and the
+    endpoint to switch to when stuck."""
+    from . import lean
+
+    if net.fork_slug(slug) or slug in net.links:
+        raise ValueError("pinning a helper to one function works on your own ROM projects (not a git project or a "
+                         "room's copy) for now")
+    fn = net._function(str(given["pin"]), slug)
+    if fn["status"] != "open":
+        raise ValueError(f"{fn['name']} isn't open ({fn['status']}): nothing to work on")
+    if net._hash_only(fn):
+        raise ValueError("this project keeps fingerprints only: there's no diff to get closer by")
+    held = net.store.one("SELECT a.name FROM claims c JOIN agents a ON a.id=c.agent_id WHERE c.function_id=?", fn["id"])
+    if held is not None and held["name"] not in ("permuter", "autopilot"):
+        raise ValueError(f"{fn['name']} is being worked on by {held['name']}: stop that helper first")
+    out = {"pin": fn["name"], "stall": max(2, min(int(given.get("stall") or 0) or
+                                                  (lean.STALL if given.get("lean") else agents.PIN_STALL_RUNS), 50)),
+           "polish": given.get("polish") is not False}
+    method = str(given.get("lean") or "")
+    if method:
+        if kind not in agents.LEAN_KINDS:
+            raise ValueError("the lean loop is for API helpers and Codex")
+        if method not in lean.METHODS:
+            raise ValueError(f"lean must be one of {', '.join(lean.METHODS)}")
+        out |= {"lean": method, "variants": max(2, min(int(given.get("variants") or lean.VARIANTS), 6))}
+        if given.get("escalate") and kind == "api":
+            stronger = settings.endpoint(str(given["escalate"]))
+            if stronger is None:
+                raise ValueError("the endpoint to switch to isn't saved any more")
+            out |= {"escalate_endpoint": stronger["id"], "escalate": _session_options(stronger)}
+    return out
 
 
 def _spread(settings: Settings, manager, picked: list[str], count: int, given: dict) -> list[tuple[dict, int]]:
@@ -296,6 +350,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                     continue  # its endpoint was removed since
                 if saved is not None:  # as the endpoint is now, with its key
                     options.update(_session_options(saved))
+                if options.get("escalate_endpoint") and (stronger := settings.endpoint(str(options["escalate_endpoint"]))):
+                    options["escalate"] = _session_options(stronger)
             manager.start(r["kind"], r["slug"], 1, options)
         except (NetworkError, ValueError, KeyError):
             continue
@@ -908,6 +964,17 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             options["focus"] = focus
         options.setdefault("per_session", settings.data.get("per_session", agents.PER_SESSION))
         count = max(1, min(int(data.get("count", 1)), 8))
+        if given.get("pin"):  # one helper, on one function, until it matches (the function drawer's "Work on this")
+            try:
+                options |= _pin_options(net, settings, kind, slug, given)
+            except (NetworkError, ValueError) as e:
+                return fail(e)
+            count = 1
+        elif given.get("lean"):  # helpers that work the lean way, on function after function
+            try:
+                options |= _lean_options(net, kind, slug, given)
+            except (NetworkError, ValueError) as e:
+                return fail(e)
         picked: list[str] = []
         try:
             net.project_row(slug)
@@ -919,11 +986,18 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 ids = manager.start(kind, slug, count, options)
         except (NetworkError, ValueError) as e:
             return fail(e)
+        if options.get("pin"):  # the drawer's "Work on this" remembers its own choices, not the launcher's
+            settings.data["pin_helper"] = (settings.data.get("pin_helper") or {}) | {
+                "who": f"ep:{picked[0]}" if kind == "api" and picked else f"k:{kind}", "lean": options.get("lean") or "",
+                "variants": options.get("variants") or 0, "escalate": options.get("escalate_endpoint") or "",
+                "polish": bool(options.get("polish")), ("stall_calls" if options.get("lean") else "stall_runs"): options["stall"]}
+            settings.save()
+            return JSONResponse({"started": ids})
         # remembered, so the next start is one click; models typed in come back as suggestions
         model = str(options.get("model") or "")
         effort = str(options.get("effort") or "")
         settings.data["launcher"] = ({"kind": kind, "model": model, "count": count} | ({"effort": effort} if effort else {})
-                                     | ({"endpoints": picked} if picked else {}))
+                                     | ({"endpoints": picked} if picked else {}) | ({"lean": options["lean"]} if options.get("lean") else {}))
         if model and kind != "api" and model != agents.TIERED:  # "tiered" is offered already, not a typed name
             recent = settings.data.setdefault("recent_models", {}).setdefault(kind, [])
             settings.data["recent_models"][kind] = [model] + [m for m in recent if m != model][:7]

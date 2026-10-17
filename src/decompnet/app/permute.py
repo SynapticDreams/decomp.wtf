@@ -118,31 +118,51 @@ class Permuter:
         if not self._hold(agent, fn):
             return
         st.current, st.tried = fn["name"], st.tried + 1
-        fork = self.net.fork_slug(proj["slug"])
-        rng = random.Random(f"{fn['id']}-{self._turns.get(fn['id'])}")
         try:
-            best_src = cur_src = fn["best_source"]
-            best = cur = fn["best_score"]
-            deadline = time.monotonic() + SECONDS
-            while time.monotonic() < deadline and best > 0 and not st.stop.is_set():
-                cand = mutate(cur_src if rng.random() < 0.85 else best_src, rng)
-                if cand is None:
-                    continue
-                st.variants += 1
-                score = self._score(agent, proj, fn, cand, best, fork)
-                if score is None:
-                    continue
-                if score < best:
-                    best, best_src = score, cand
-                    st.improved += 1
-                    if score == 0:
-                        st.matched += 1
-                        log.info("permuter: %s matched", fn["name"])
-                        break
-                if score <= cur or rng.random() < 0.02:  # mostly downhill, now and then sideways off a plateau
-                    cur, cur_src = score, cand
+            self._climb(agent, proj, fn, st, SECONDS, random.Random(f"{fn['id']}-{self._turns.get(fn['id'])}"), st.stop)
         finally:
             self._let_go(agent, fn)
+
+    def polish(self, fn, seconds: float = 20, stop: threading.Event | None = None) -> int | None:
+        """A turn on a function a helper is pinned to, between its calls (the helper keeps its claim): from the
+        closest source at any percentage, not just near misses. The best score after, or None (nothing to start
+        from). Improvements are recorded as the permuter's, like the background pass's."""
+        if not fn["best_source"] or fn["best_score"] is None or fn["best_score"] <= 0:
+            return None
+        agent, _ = self.net.local_agent("permuter")
+        proj = self.net.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        st = State()  # its own counts: the background pass's stay as they are
+        return self._climb(agent, proj, fn, st, seconds, random.Random(f"{fn['id']}-polish-{time.time()}"), stop or st.stop)
+
+    def _climb(self, agent, proj, fn, st: State, seconds: float, rng: random.Random, stop: threading.Event) -> int:
+        """Rewrites of the function's best source for `seconds`, mostly downhill: returns the best score reached."""
+        fork = self.net.fork_slug(proj["slug"])
+        best_src = cur_src = fn["best_source"]
+        best = cur = fn["best_score"]
+        deadline = time.monotonic() + seconds
+        empty = 0
+        while time.monotonic() < deadline and best > 0 and not stop.is_set():
+            cand = mutate(cur_src if rng.random() < 0.85 else best_src, rng)
+            if cand is None:
+                empty += 1
+                if empty > 200:  # nothing in it to rewrite
+                    break
+                continue
+            empty = 0
+            st.variants += 1
+            score = self._score(agent, proj, fn, cand, best, fork)
+            if score is None:
+                continue
+            if score < best:
+                best, best_src = score, cand
+                st.improved += 1
+                if score == 0:
+                    st.matched += 1
+                    log.info("permuter: %s matched", fn["name"])
+                    break
+            if score <= cur or rng.random() < 0.02:  # mostly downhill, now and then sideways off a plateau
+                cur, cur_src = score, cand
+        return best
 
     def _score(self, agent, proj, fn, source: str, best: int, fork: str | None) -> int | None:
         """A variant's score; recorded (as the function's best attempt, or its match) only when it beats `best`."""

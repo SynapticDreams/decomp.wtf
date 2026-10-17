@@ -159,6 +159,7 @@ class RomNetwork(Network):
         self.autopilots: dict[str, dict] = {}  # slug -> progress of trying every function's machine draft
         self.starred_only: dict[int, float] = {}  # helper agent id -> when its session began (★ Next in line only)
         self.focus: dict[int, str] = {}  # helper agent id -> the strategy its Focus (Quick Wins, Close Calls) claims by
+        self.pinned: dict[int, str] = {}  # helper agent id -> the one function the user pinned it to
         from .forkengine import ForkEngine  # forks build on this class's claims, attempts and live view
         from .permute import Permuter
         from .twins import Twins
@@ -1869,6 +1870,10 @@ class RomNetwork(Network):
             project_id, agent_id, n, since)}
 
     def claim_row(self, agent: Agent, project: str | None = None, function: str | None = None, strategy: str = "easiest"):
+        if (pin := self.pinned.get(agent.id)) is not None:  # a helper pinned to one function gets it, and only it
+            if function is not None and self._function(function, project)["name"] != pin:
+                raise NetworkError(f"this helper works on {pin} only (the user pinned it there): keep improving it")
+            function = pin
         if project and not self.fork_slug(project):
             proj = self._project(project)
             names = self.cfg(proj).get("priority", [])
@@ -2155,27 +2160,32 @@ class RomNetwork(Network):
         """Progress short of matches, from every attempt's score against the function's best before it: who made
         the functions closer, and with which setup. A function's closeness is 1 - best/worst (worst: every
         instruction wrong), so going from 40% to 90% is 50 points, and a match takes it to 100%. What's set aside
-        (no C makes it) doesn't count. Cached until the project has a new attempt (and for half a minute)."""
+        (no C makes it) doesn't count. An attempt that didn't compile counts as one with no points (it cost a try,
+        and tokens). Setups are told apart by method too (a pinned helper's 1 or several versions per call), with
+        the tokens their attempts cost. Cached until the project has a new attempt (and for half a minute)."""
         last = self.store.one("SELECT MAX(t.id) AS m FROM attempts t JOIN functions f ON f.id=t.function_id "
                               "WHERE f.project_id=?", pid)["m"] or 0
         hit = self._progress_cache.get(pid)
         if hit and hit[0] == last and now - hit[1] < 30:
             return hit[2]
         rows = self.store.all(
-            """SELECT t.score, t.created_at, t.kind, t.model, t.effort, t.stage, a.name AS agent, f.name, f.n_insns, f.status,
+            """SELECT t.score, t.created_at, t.kind, t.model, t.effort, t.stage, t.method, t.tokens, a.name AS agent, f.name,
+                      f.n_insns, f.status,
                       MIN(t.score) OVER (PARTITION BY t.function_id ORDER BY t.id
                                          ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS before
                FROM attempts t JOIN functions f ON f.id=t.function_id JOIN agents a ON a.id=t.agent_id
-               WHERE f.project_id=? AND f.status!='asm' AND t.score IS NOT NULL ORDER BY t.id""", pid)
+               WHERE f.project_id=? AND f.status!='asm' ORDER BY t.id""", pid)
         close = lambda score, n: max(0.0, min(1.0, 1 - score / (max(n or 0, 1) * 100))) if score is not None else 0.0  # noqa: E731
         points, closer, setups, gains = {}, {}, {}, []
         for r in rows:
             gain = close(r["score"], r["n_insns"]) - close(r["before"], r["n_insns"])
-            key = (r["kind"], r["model"], r["effort"]) if r["kind"] else None
+            key = (r["kind"], r["model"], r["effort"], r["method"]) if r["kind"] else None
             if key:
                 st = setups.setdefault(key, {"kind": r["kind"], "model": r["model"] or "", "effort": r["effort"] or "",
-                                             "attempts": 0, "matches": 0, "points": 0.0, "stages": {}})
+                                             "method": r["method"] or "", "attempts": 0, "matches": 0, "points": 0.0,
+                                             "tokens": 0, "stages": {}})
                 st["attempts"] += 1
+                st["tokens"] += r["tokens"] or 0
                 stage = st["stages"].setdefault(r["stage"] or "fresh", {"attempts": 0, "points": 0.0})
                 stage["attempts"] += 1
             if gain <= 0:
