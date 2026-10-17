@@ -263,6 +263,35 @@ def models(kind: str, path: str | None) -> list[dict]:
     return out
 
 
+_log_levels: dict[str, str] = {}
+
+
+def _said_by(argv_: list[str]) -> str:
+    res = subprocess.run(argv(argv_), capture_output=True, text=True, encoding="utf-8", errors="replace",
+                         stdin=subprocess.DEVNULL, timeout=20)
+    return res.stdout + res.stderr
+
+
+def opencode_error_level(path: str) -> str:
+    """How this opencode spells its "error" log level. Its `run` accepts one spelling only: 1.x lists upper case
+    (DEBUG, INFO, WARN, ERROR) and refuses "error" by printing its help instead of running; 2.x refuses "ERROR".
+    Read from its own `run --help`, else from its version."""
+    if path not in _log_levels:
+        level = "ERROR"
+        try:
+            choices = re.search(r"--log-level[^\n]*choices:([^\n]*)", _said_by([path, "run", "--help"]))
+            if choices:
+                level = next((c for c in re.findall(r'"([A-Za-z]+)"', choices.group(1)) if c.lower() == "error"), level)
+            else:
+                version = re.search(r"\b(\d+)\.\d+", _said_by([path, "--version"]))
+                if version and int(version.group(1)) >= 2:
+                    level = "error"
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        _log_levels[path] = level
+    return _log_levels[path]
+
+
 def search_path() -> str | None:
     """Where to look for agents and npm (None: this process's PATH). On Windows also the PATH set for the user right
     now, read from the registry: an agent or Node.js installed while the app runs is found without restarting it."""
@@ -282,10 +311,13 @@ def search_path() -> str | None:
 
 
 def _which(cmd: str) -> str | None:
+    home = Path.home()
+    own = {"opencode": home / ".opencode" / "bin" / "opencode"}.get(cmd)  # its self-updating install beats a stale PATH copy
+    if own and own.exists():
+        return str(own)
     found = shutil.which(cmd, path=search_path())
     if found:
         return found
-    home = Path.home()
     dirs = [home / ".local" / "bin", home / ".claude" / "local", home / ".opencode" / "bin", home / ".npm-global" / "bin"]
     if WIN and os.environ.get("APPDATA"):
         dirs.append(Path(os.environ["APPDATA"]) / "npm")  # npm's global installs on Windows
@@ -880,7 +912,7 @@ class Manager:
             }), encoding="utf-8")
             # --print-logs: opencode's JSON error only says "Unexpected server error"; the log line says what failed.
             # (No --dir: it runs in workdir, and OpenCode before 1.4 stops at the flag.)
-            cmd = [exe, "run", "--format", "json", "--print-logs", "--log-level", "ERROR"]
+            cmd = [exe, "run", "--format", "json", "--print-logs", "--log-level", opencode_error_level(exe)]
             if model:
                 cmd += ["-m", model]
         else:
