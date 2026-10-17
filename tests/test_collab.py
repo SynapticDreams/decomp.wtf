@@ -274,3 +274,44 @@ def test_joining_a_git_room_asks_for_the_project_only_after_approval(built, tmp_
     with pytest.raises(NetworkError, match="isn't a git tree"):
         collab._join_fork(guest, client, "", code, hello, "kim", b"game", lambda *_: None, client, False)
     assert asked == [[]]  # nobody pending: the approval came first
+
+
+def _events(net, slug):
+    return [dict(e) for e in net.store.all("SELECT id, kind, detail, created_at FROM events WHERE project_id=? ORDER BY id",
+                                           net.project_row(slug)["id"])]
+
+
+def test_an_event_the_member_already_has_is_not_stored_again(built, tmp_path):  # noqa: F811
+    g = RomNetwork(tmp_path / "g.db", tmp_path / "g")
+    slug = g.import_rom(built, confirmed=True, log=lambda *_: None)
+    pid = g.project_row(slug)["id"]
+    g.remote_event(pid, "match", "func_80000808", "host", 100.0)
+    g.remote_event(pid, "match", "func_80000808", "host", 100.0)  # the same event, sent again
+    assert [e["detail"] for e in _events(g, slug) if e["kind"] == "match"] == ["func_80000808"]
+    g.remote_event(pid, "match", "func_80000808", "host", 200.0)  # matched again later: another event
+    g.remote_event(pid, "match", "func_80000808", "bea.claude-1", 100.0)  # by someone else
+    g.remote_event(pid, "release", "func_80000808", "host", 100.0)  # of another kind
+    assert len([e for e in _events(g, slug) if e["detail"] == "func_80000808"]) == 4
+
+
+def test_a_members_app_starting_again_does_not_replay_the_room_as_news(built, tmp_path):  # noqa: F811
+    """Each start asks the host for everything from the beginning. The page announces events newer than the last it
+    saw, so copies with new ids were a toast for every match the room ever made."""
+    host, slug, room, code, client = _host(built, tmp_path)
+    g, gslug = _guest(tmp_path, "sam", f"http://192.168.1.20:6481/join/{code}#room={slug}", built, client)
+    hagent, _ = host.local_agent("codex-1")
+    host.claim(hagent, slug, "func_800007C4")
+    host.release(hagent, "func_800007C4", "not this one", slug)
+    assert host.compile_and_diff(hagent, "func_800007F4", ABS, slug).startswith("✅ MATCH")
+    g.links[gslug].sync()
+    seen = _events(g, gslug)
+    assert {"match", "claim", "release"} <= {e["kind"] for e in seen}
+    for _ in range(3):  # the app restarts: a new connection, its cursors back at the start
+        again = RomNetwork(tmp_path / "sam.db", tmp_path / "sam")
+        again.restore_links()
+        again.links[gslug].client = client
+        again.links[gslug].stop()
+        again.links[gslug].sync()
+    assert _events(g, gslug) == seen
+    assert g.live(gslug, since_event=seen[-1]["id"])["events"] == []  # nothing for the page to announce
+    assert g._function("func_800007F4", gslug)["status"] == "matched"  # the state itself still arrives in full
