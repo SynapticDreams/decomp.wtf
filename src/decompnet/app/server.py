@@ -957,7 +957,11 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         if (bad := guard(request, write=True)):
             return bad
         data = await body(request)
-        if data.get("remove"):
+        if data.get("remove") and data.get("slug") and not data.get("id"):  # every stopped helper card on one project
+            for s in list(manager.sessions.values()):
+                if s.slug == data["slug"] and s.state not in ("starting", "working", "waiting"):
+                    manager.remove(s.id)
+        elif data.get("remove"):
             manager.remove(str(data.get("id")))
         elif data.get("slug"):  # every helper on one project
             for s in list(manager.sessions.values()):
@@ -966,6 +970,34 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         else:
             manager.stop(data.get("id") or None)
         return JSONResponse({"ok": True})
+
+    @mcp.custom_route("/api/agents/disconnect", methods=["POST"])
+    async def api_agents_disconnect(request: Request) -> Response:
+        """Cut off an outside agent ({name}), or every one on a project ({slug}): its claims go back to the others and
+        its tool calls are refused. The app's own helpers keep their Stop button."""
+        if (bad := guard(request, write=True)):
+            return bad
+        data = await body(request)
+        mine = {s.agent_name for s in list(manager.sessions.values())}
+        if data.get("slug"):
+            try:
+                gone = await call(net.disconnect_all, str(data["slug"]), mine)
+            except NetworkError as e:
+                return fail(e)
+            for name in gone:
+                if (row := net.store.one("SELECT id FROM agents WHERE name=?", name)) is not None:
+                    manager.assignments.pop(row["id"], None)
+            return JSONResponse({"ok": True, "disconnected": gone})
+        name = str(data.get("name") or "")
+        if any(s.agent_name == name and s.state in ("starting", "working", "waiting") for s in list(manager.sessions.values())):
+            return fail(ValueError(f"{name} is one of your helpers: stop it with its Stop button"))
+        try:
+            freed = await call(net.disconnect_agent, name)
+        except NetworkError as e:
+            return fail(e)
+        if (row := net.store.one("SELECT id FROM agents WHERE name=?", name)) is not None:
+            manager.assignments.pop(row["id"], None)
+        return JSONResponse({"ok": True, "released": freed})
 
     @mcp.custom_route("/api/settings", methods=["POST"])
     async def api_settings(request: Request) -> Response:

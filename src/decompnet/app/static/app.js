@@ -1474,6 +1474,7 @@ function renderSessions(sessions) {
   const board = new Map((S.stats?.agents || []).map((r) => [r.agent, r]));
   const running = sessions.filter((s) => ["starting", "working", "waiting"].includes(s.state));
   $("stopAll").hidden = running.length < 2;
+  $("removeAll").hidden = sessions.length - running.length < 2;
   box.innerHTML = sessions.map((s) => {
     const claim = S.claims.find((c) => c.agent === s.agent);
     const dot = s.state === "error" ? "err" : s.state === "working" ? "on" : s.state === "stopped" ? "" : "work";
@@ -1490,10 +1491,20 @@ function renderSessions(sessions) {
   }).join("");
   const own = new Set(sessions.map((s) => s.agent));
   const outside = [...new Set(S.claims.filter((c) => !own.has(c.agent) && c.agent !== AUTO).map((c) => c.agent))];
-  box.insertAdjacentHTML("beforeend", outside.map((a) => `<div class="session ext"><div class="session-top"><span class="dot on"></span><b>${esc(a)}</b><span class="tag">${a.startsWith("@") ? "in the room" : "connected agent"}</span></div>
+  $("disconnectAll").hidden = outside.filter((a) => !a.startsWith("@")).length < 2;
+  box.insertAdjacentHTML("beforeend", outside.map((a) => `<div class="session ext"><div class="session-top"><span class="dot on"></span><b>${esc(a)}</b><span class="tag">${a.startsWith("@") ? "in the room" : "connected agent"}</span>${a.startsWith("@") ? "" : `<button class="ghost" data-kick="${esc(a)}" type="button">Disconnect</button>`}</div>
       <span class="last">on ${S.claims.filter((c) => c.agent === a).map((c) => fnLink(c.name)).join(", ")}</span></div>`).join(""));
   box.querySelectorAll(".fn").forEach((x) => { x.onclick = () => openFn(x.dataset.fn); });
   $("noSessions").hidden = sessions.length + outside.length > 0;
+  box.querySelectorAll("[data-kick]").forEach((b) => {
+    b.onclick = async () => {
+      const who = b.dataset.kick;
+      if (!confirm(`Disconnect ${who}? The functions it's working on go back to the others, and anything else it tries here is refused.`)) return;
+      const r = await api("/api/agents/disconnect", { method: "POST", body: { name: who } }).catch((e) => { toast(esc(e.message), "err"); });
+      if (r) toast(`Disconnected ${esc(who)}.`);
+      poll(false);
+    };
+  });
   box.querySelectorAll("[data-stop]").forEach((b) => {
     b.onclick = async () => {
       await api("/api/agents/stop", { method: "POST", body: { id: b.dataset.stop, remove: !!b.dataset.remove } }).catch((e) => toast(esc(e.message), "err"));
@@ -1504,6 +1515,17 @@ function renderSessions(sessions) {
 $("stopAll").onclick = async () => {
   await api("/api/agents/stop", { method: "POST", body: { slug: S.slug } }).catch((e) => toast(esc(e.message), "err"));
   toast("Stopping every agent on this project.");
+  poll(false);
+};
+
+$("disconnectAll").onclick = async () => {
+  if (!confirm("Disconnect every connected agent on this project? The functions they're working on go back to the others, and anything else they try here is refused. Your own helpers keep running.")) return;
+  const r = await api("/api/agents/disconnect", { method: "POST", body: { slug: S.slug } }).catch((e) => { toast(esc(e.message), "err"); });
+  if (r) toast(`Disconnected ${plural(r.disconnected.length, "agent")}.`);
+  poll(false);
+};
+$("removeAll").onclick = async () => {
+  await api("/api/agents/stop", { method: "POST", body: { slug: S.slug, remove: true } }).catch((e) => toast(esc(e.message), "err"));
   poll(false);
 };
 
