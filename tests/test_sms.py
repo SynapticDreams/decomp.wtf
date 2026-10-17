@@ -277,3 +277,46 @@ def test_without_the_toolchain_the_rom_is_imported_read_only(tmp_path, monkeypat
     ov = net.overview(slug)  # the project still opens, and says what is missing
     assert statuses == {"asm"} and ov["platform"] == "sms"  # shown, not handed out
     assert ov["compiler"]["toolchain"] == "gbdk-2020" and ov["compiler"]["installed"] in (True, False)
+
+
+# ------------------------------------------------------------------ rst calls with an inline byte (__z88dk_shortcall)
+
+RST_SOURCE = ("typedef unsigned char u8;\nvoid func_000_0028(void) __z88dk_shortcall(0x28, 0);\n"
+              "u8 func_000_0100(u8 m) { func_000_0028(); return m; }\n")
+RST_BYTES = bytes.fromhex("4fc5ef00c179c9")  # ld c,a ; push bc ; rst $28 ; db $00 ; pop bc ; ld a,c ; ret
+
+
+def test_sdcc_writes_the_byte_after_an_rst_as_defb_and_sdas_reads_dot_db():
+    asm = "\trst\t0x28\n\tdefb\t0x00\n  DEFW 0x1234\n\tdefbad\n\tld a, (defb)\n"
+    assert gb_build.sdas_directives(asm) == "\trst\t0x28\n\t.db\t0x00\n  .dw 0x1234\n\tdefbad\n\tld a, (defb)\n"
+
+
+def test_the_listing_keeps_a_data_byte_inside_a_function_and_does_not_invent_functions_from_data():
+    listing = """
+    00000000                         10 _f::
+    00000000 EF               [11]   11 \trst\t0x28
+    00000001 00                      12 \t.db\t0x00
+    00000002 C9               [10]   13 \tret
+    00000003                         20 _table::
+    00000003 01 02 03 04             21 \t.db\t0x01, 0x02, 0x03, 0x04
+"""
+    funcs = gb_build.parse_listing(listing)
+    assert funcs["f"].code == bytes.fromhex("ef00c9") and list(funcs) == ["f"]
+
+
+@needs_toolchain
+@pytest.mark.parametrize("arch", ["z80", "sm83"])
+def test_a_shortcall_rst_with_its_byte_builds(arch):
+    built = gb_build.compile_function(RST_SOURCE, "func_000_0100", symbols={"func_000_0028": 0x28}, arch=arch)
+    assert built.code == RST_BYTES
+
+
+@needs_toolchain
+def test_an_rst_call_matches_through_the_app(tmp_path):
+    rom = make_rom(code={0x28: b"\xc9", 0x80: bytes.fromhex("cd0001" "18fe"), 0x100: RST_BYTES})
+    net = RomNetwork(tmp_path / "d.db", tmp_path)
+    slug = net.import_rom(rom, name="game.sms", confirmed=True, log=lambda *_: None)
+    agent, _ = net.local_agent("tester")
+    net.claim(agent, slug, "func_000_0100")
+    out = net.compile_and_diff(agent, "func_000_0100", RST_SOURCE, slug)
+    assert out.startswith("✅ MATCH"), out[:400]

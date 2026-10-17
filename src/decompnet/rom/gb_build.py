@@ -49,6 +49,9 @@ MOS6502_REGISTERS = {"DPTR": 0x32, "REGTEMP": 0x34, **{f"___SDCC_m6502_ret{i}": 
 
 _LABEL = re.compile(r"^\s*([0-9A-Fa-f]{8})\s+\d+\s+([._A-Za-z][\w.$]*):{1,2}\s*$")
 _LINE = re.compile(r"^\s*(?:[A-Za-z]{1,2}\s+)?([0-9A-Fa-f]{8})\s+((?:[0-9A-Fa-f]{2}\s+)+)\s*\[\s*\d+\]\s+\d+\s+(.*)$")
+# A data directive (`.db 0x00`, the byte after an `rst` that SDCC's shortcall calls leave) has bytes but no cycle count.
+_DATA_LINE = re.compile(r"^\s*(?:[A-Za-z]{1,2}\s+)?([0-9A-Fa-f]{8})\s+((?:[0-9A-Fa-f]{2}\s+)+)\s*\d+\s+(\.(?:db|dw|byte|word)\b.*)$",
+                        re.I)
 _SYM_FIX = re.compile(r"^([._A-Za-z][\w.$]*)$")
 
 
@@ -180,6 +183,16 @@ def _pin_data(asm_text: str, symbols: dict[str, int]) -> tuple[str, dict[str, in
     return _DATA_LABEL.sub(drop, asm_text), pinned, left
 
 
+# SDCC writes the byte that follows a `__z88dk_shortcall` rst as `defb`/`defw`, which its own assemblers (sdas) do not know:
+# they spell it `.db`/`.dw`.
+_Z88DK_DIRECTIVE = re.compile(r"^([ \t]*)def([bw])\b", re.M | re.I)
+
+
+def sdas_directives(asm_text: str) -> str:
+    """The assembly with SDCC's z88dk-style `defb`/`defw` written the way sdas reads them."""
+    return _Z88DK_DIRECTIVE.sub(lambda m: f"{m.group(1)}.d{m.group(2).lower()}", asm_text)
+
+
 def parse_listing(text: str, arch: str = "sm83") -> dict[str, BuiltFunction]:
     """Functions out of an `sdasgb -l` listing: each global label starts a function, its instructions run to
     the next one (local labels such as `00102$` stay inside), trimmed after the last instruction that leaves the
@@ -211,6 +224,8 @@ def parse_listing(text: str, arch: str = "sm83") -> dict[str, BuiltFunction]:
         if current is None:
             continue
         line = _LINE.match(raw)
+        if not line and lines:  # data inside a function that has instructions; a bare data label is not a function
+            line = _DATA_LINE.match(raw)
         if not line:
             continue
         lines.append((bytes(int(byte, 16) for byte in line.group(2).split()), line.group(3).strip()))
@@ -263,7 +278,7 @@ def build_source(source: str, *, context_header: str = "", include_dirs: tuple[s
             raise RomError(f"sdcc could not compile the candidate: {log.strip()[-600:]}")
 
         # inject the ROM's addresses, then assemble to a listing (label offsets + instruction bytes)
-        asm_text = (work / "func.asm").read_text(encoding="utf-8", errors="replace")
+        asm_text = sdas_directives((work / "func.asm").read_text(encoding="utf-8", errors="replace"))
         pinned: dict[str, int] = {}
         if arch == "mos6502":
             symbols = {**(symbols or {}), **pins_in(source), **pins_in(context_header)}

@@ -851,6 +851,8 @@ class RomNetwork(Network):
         "object must contain the symbol the app is judging, or the compile is reported as an error.",
         "- Calling convention (`sdcccall(1)`): byte arguments arrive in A, E, B, D, C; the return value "
         "leaves in A. Write C and let the target assembly tell you which registers it used.",
+        "- An `rst` call with a byte after it: `void func_000_0028(void) __z88dk_shortcall(0x28, 0);` then `func_000_0028();` "
+        "builds to `rst $28` and the byte `0x00`.",
         "- Hardware registers and any absolute memory are **volatile pointers**: "
         "`*(volatile u8 *)0xFFF2 = v;` compiles to `ldh ($ff00+$f2), a`, `*(volatile u8 *)0x2100 = v;` "
         "compiles to `ld ($2100), a`, and `return *(volatile u8 *)0xC000;` reads a RAM byte.",
@@ -900,6 +902,8 @@ class RomNetwork(Network):
         "which registers it used.",
         "- I/O ports are `__sfr` variables: `__sfr __at(0xBF) VDP_CTRL;` then `VDP_CTRL = v;` compiles to "
         "`out ($bf), a`, and reading one to `in a, ($be)`.",
+        "- An `rst` call with a byte after it: `void func_000_0028(void) __z88dk_shortcall(0x28, 0);` then `func_000_0028();` "
+        "builds to `rst $28` and the byte `0x00`.",
         "- Absolute memory is a **volatile pointer**: `*(volatile u8 *)0xC000 = v;` compiles to `ld ($c000), a`. "
         "The mapper registers at 0xFFFC-0xFFFF are written the same way.",
         "- To call another function, declare it and call it by name (`void func_000_0100(void);` … "

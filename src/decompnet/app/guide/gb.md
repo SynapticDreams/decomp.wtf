@@ -24,6 +24,9 @@ A Game Boy ROM's bytes contain **absolute** call and jump addresses, so the lane
 symbol mode: the build emits `.equ` lines that pin SDCC's references to the ROM's own addresses, and
 scores the result with the same judge as every other platform.
 
+An `rst` call with a byte after it is `void func_000_0028(void) __z88dk_shortcall(0x28, 0);` then `func_000_0028();`, which
+builds to `rst $28` and the byte `0x00` (the second number is the byte that follows).
+
 **Until the toolchain is installed**, a `.gb`/`.gbc` project is imported **read-only**: every function
 is disassembled, searchable and briefable, but functions are not handed out for matching, because no
 candidate could be judged yet. That is deliberate — it is the honest state rather than distributing
