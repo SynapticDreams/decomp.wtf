@@ -888,8 +888,11 @@ function renderNext(ov) {
   steps.push(`<span class="todo">○</span> Agents`, `<span class="todo">○</span> Export`);
   box.hidden = false;
   box.innerHTML = `<div class="next-text"><b>Next: start your agents</b><span class="steps-line">${steps.join("")}</span></div>
+    ${a && (a.installed || a.id === "api") ? focusSelect() : ""}
     ${a && (a.installed || a.id === "api") ? `<button class="primary" id="nextGo" type="button">${esc(launchLabel(a, LZ.model, LZ.count))}</button>` : ""}
     <button class="ghost" id="nextPick" type="button">Choose agent &amp; model</button>`;
+  const nextFocus = box.querySelector('[data-f="focus"]');
+  if (nextFocus) nextFocus.onchange = () => { LZ.focus = nextFocus.value; };
   const go = $("nextGo");
   if (go) go.onclick = () => a.id !== "api" ? startAgents(a, LZ.model, LZ.count, go)
     : (LZ.eps || []).length ? startAgents(a, "", LZ.count, go, { endpoints: LZ.eps }) : showLaunch();
@@ -1482,7 +1485,7 @@ function renderSessions(sessions) {
     const b = s.compiles != null ? s : board.get(s.agent);  // this session's own work (names are reused)
     const facts = [s.model ? esc(s.model) : "default model", s.runs ? `session ${s.runs}` : "", b && b.matched ? `<b class="ok">${b.matched} matched</b>` : "", b ? plural(b.compiles, "compile") : "",
       s.usd ? money(s.usd) : s.tokens ? `${(s.tokens / 1000).toFixed(0)}k tokens` : "", s.started_at ? `since ${clock(s.started_at).slice(0, 5)}` : ""].filter(Boolean);
-    return `<div class="session"><div class="session-top"><span class="dot ${dot}"></span><b>${esc(s.label)}</b>${s.only_starred ? `<span class="tag">only ★</span>` : ""}
+    return `<div class="session"><div class="session-top"><span class="dot ${dot}"></span><b>${esc(s.label)}</b>${s.only_starred ? `<span class="tag">only ★</span>` : ""}${s.focus ? `<span class="tag">${esc((FOCUS.find((f) => f.id === s.focus) || {}).name || s.focus)}</span>` : ""}
         <span class="state ${s.state === "error" ? "err" : ""}">${esc(STATE_TEXT[s.state] || s.state)}</span>
         <button class="ghost" data-stop="${esc(s.id)}" data-remove="${live ? "" : "1"}" type="button">${live ? "Stop" : "Remove"}</button></div>
       <span class="facts-line">${facts.join(" · ")}</span>
@@ -1531,6 +1534,12 @@ $("removeAll").onclick = async () => {
 };
 
 /* ------------------------------------------------------------------ the launcher: agent, model, how many */
+/* The launcher's Focus menu: which functions new helpers take. Default leaves claiming as it always was. */
+const FOCUS = [{ id: "default", name: "Default" }, { id: "quick", name: "Quick Wins", note: "small functions only" },
+  { id: "close", name: "Close Calls", note: "functions already 90%+ matched" }];
+function focusSelect() {
+  return `<label class="field"><span>Focus</span><select data-f="focus">${FOCUS.map((f) => `<option value="${f.id}" ${f.id === (LZ.focus || "default") ? "selected" : ""}>${esc(f.name)}${f.note ? ` — ${esc(f.note)}` : ""}</option>`).join("")}</select></label>`;
+}
 const LZ = { kind: null, model: "", effort: "", count: 1, per: null };
 function launcherInit() {
   if (LZ.kind || !S.st) return;
@@ -1583,6 +1592,7 @@ async function startAgents(a, model, count, btn, extra = {}) {
     if (a.id === "codex" && LZ.effort) options.effort = LZ.effort;
     if (LZ.per) options.per_session = LZ.per;
     if (LZ.starred && (S.ov?.priority || []).length) options.only_starred = true;
+    if (LZ.focus && LZ.focus !== "default") options.focus = LZ.focus;
     await api("/api/agents/start", { method: "POST", body: { kind: a.id, slug: S.slug, count, options } });
     S.st.settings.launcher = { kind: a.id, model: model || "", count, ...(a.id === "codex" && LZ.effort ? { effort: LZ.effort } : {}) };
     if (model && a.id !== "api") {
@@ -1635,6 +1645,7 @@ function renderLauncher(box, compact = false) {
     <div class="lz-body">${body}
       ${ready ? `<div class="lz-row">
         <div class="field"><span>How many</span><span class="stepper"><button type="button" data-step="-1">−</button><output>${LZ.count}</output><button type="button" data-step="1">+</button></span></div>
+        ${focusSelect()}
         ${compact ? "" : `<label class="field"><span>Functions per session</span><input data-f="per" type="number" min="1" max="20" value="${LZ.per || S.st.settings.per_session || 2}"></label>`}
         <span class="grow"></span>
         <button class="primary" data-act="start" type="button">${esc(launchLabel(a, LZ.model, LZ.count))}</button></div>
@@ -1655,6 +1666,8 @@ function renderLauncher(box, compact = false) {
   if (per) per.onchange = () => { LZ.per = Math.max(1, Math.min(20, Number(per.value) || 4)); };
   const starred = box.querySelector('[data-f="starred"]');
   if (starred) starred.onchange = () => { LZ.starred = starred.checked; };
+  const focus = box.querySelector('[data-f="focus"]');
+  if (focus) focus.onchange = () => { LZ.focus = focus.value; };
   wireEndpointFields(box);
   box.querySelectorAll("[data-ep]").forEach((c) => { c.onchange = () => { LZ.eps = [...box.querySelectorAll("[data-ep]:checked")].map((x) => x.dataset.ep); label(); }; });
   const addEp = box.querySelector('[data-act="add-ep"]'), pickEp = box.querySelector('[data-act="pick-ep"]');
