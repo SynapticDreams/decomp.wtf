@@ -36,7 +36,8 @@ DEFAULT_TOOLCHAIN = {"KMC": "gcc-2.7.2-kmc", "IDO": "ido-7.1", "PSYQ": "gcc-2.7.
 # of project as decomp.dev's, linked file by file as it's finished; N64: tested on real games, rebuilt byte for byte).
 # beta: works and is tested on homemade games, less so on real ones yet.
 PLATFORM_STATUS = {"gc": "recommended", "wii": "recommended", "n64": "recommended",
-                   "psx": "beta", "ps2": "beta", "gba": "beta", "gb": "beta", "gbc": "beta", "nds": "beta"}
+                   "psx": "beta", "ps2": "beta", "gba": "beta", "gb": "beta", "gbc": "beta", "sms": "beta", "gg": "beta",
+                   "nds": "beta"}
 COMPILERS = {
     "gcc-2.7.2-kmc": "many third-party N64 games",
     "ido-7.1": "most later first-party N64 games",
@@ -45,7 +46,7 @@ COMPILERS = {
     "gcc-2.8.1-psx": "later PlayStation games",
     "ee-gcc-2.96": "PlayStation 2 games (Sony's EE GCC)",
     "agbcc": "Game Boy Advance games (pret's agbcc, GCC 2.95)",
-    "gbdk-2020": "Game Boy and Game Boy Color games (GBDK-2020 / SDCC)",
+    "gbdk-2020": "Game Boy, Game Boy Color, Master System and Game Gear games (GBDK-2020 / SDCC)",
 }
 SHORT_NAMES = {"gcc-2.7.2-kmc": "KMC GCC 2.7.2", "ido-7.1": "IDO 7.1", "ido-5.3": "IDO 5.3",
                "gcc-2.7.2-psx": "GCC 2.7.2 (PS1)", "gcc-2.8.1-psx": "GCC 2.8.1 (PS1)", "ee-gcc-2.96": "EE-GCC 2.96",
@@ -74,7 +75,11 @@ TOOLS = {
 # Functions this small are handed out in batches (claim_function count): agents match most on the first try.
 BATCH_INSNS = 48
 PLATFORM_COMPILERS = {"n64": ["gcc-2.7.2-kmc", "ido-7.1", "ido-5.3"], "psx": ["gcc-2.7.2-psx", "gcc-2.8.1-psx"],
-                      "ps2": ["ee-gcc-2.96"], "gba": ["agbcc"], "gb": ["gbdk-2020"], "gbc": ["gbdk-2020"]}
+                      "ps2": ["ee-gcc-2.96"], "gba": ["agbcc"], "gb": ["gbdk-2020"], "gbc": ["gbdk-2020"],
+                      "sms": ["gbdk-2020"], "gg": ["gbdk-2020"]}
+# Platforms whose functions live in 16 KiB banks and are matched with SDCC (rom/gb_build.py), by the CPU they run.
+BANKED_PLATFORMS = ("gb", "gbc", "sms", "gg")
+BANKED_ARCHS = ("sm83", "z80")
 _AUTO_TOKEN = re.compile(r"\b(?:func|D|B|jtbl|RO|STR|FLT|DBL)_[0-9A-F]{8}\b")
 _ADDRESS = re.compile(r"^(?:0x)?([0-9A-Fa-f]{8})$")
 
@@ -327,8 +332,8 @@ class RomNetwork(Network):
     def _target_obj(self, fn, proj):
         if not self.is_rom(proj):
             return super()._target_obj(fn, proj)
-        if (self.cfg(proj).get("arch") or "").lower() == "sm83":
-            return FunctionObj(fn["name"], "sm83", False, fn["target"], [])
+        if (arch := (self.cfg(proj).get("arch") or "").lower()) in BANKED_ARCHS:
+            return FunctionObj(fn["name"], arch, False, fn["target"], [])
         if self.cfg(proj).get("platform") == "gba":
             return FunctionObj(fn["name"], "thumb", False, fn["target"], [])
         return match.canonical_target(self._rom_target(fn), self.symbols(proj["id"], fn["unit"]))
@@ -336,8 +341,8 @@ class RomNetwork(Network):
     def _evaluate(self, fn, proj, obj: bytes):
         if not self.is_rom(proj):
             return super()._evaluate(fn, proj, obj)
-        if (self.cfg(proj).get("arch") or "").lower() == "sm83":
-            # The Game Boy lane compiles in absolute mode (the ROM's own symbol addresses are injected),
+        if (self.cfg(proj).get("arch") or "").lower() in BANKED_ARCHS:
+            # The Game Boy and Master System lanes compile in absolute mode (the ROM's own symbol addresses are injected),
             # so the candidate's bytes can be compared with the target's directly — no relocations to mask.
             from ..elfobj import function_from_payload
 
@@ -410,8 +415,8 @@ class RomNetwork(Network):
             f"{info['region']}), {size}, looks built with {info['compiler_guess']}")
         if picked.platform == "gba":
             return self._import_gba(picked, slug, workdir, toolchain, flags, log)
-        if picked.platform in ("gb", "gbc"):
-            return self._import_gb(picked, slug, workdir, log)
+        if picked.platform in BANKED_PLATFORMS:
+            return self._import_banked(picked, slug, workdir, log)
         if picked.overlays:
             log(f"{len(picked.overlays)} overlay{'s' if len(picked.overlays) != 1 else ''} on the disc: "
                 + ", ".join(f"{o[0]} at 0x{o[2]:08X}" for o in picked.overlays[:6]) + (", ..." if len(picked.overlays) > 6 else ""))
@@ -521,39 +526,34 @@ class RomNetwork(Network):
         log(f"ready: {len(fns)} functions to decompile")
         return slug
 
-    def _import_gb(self, picked, slug: str, workdir: Path, log) -> str:
-        """Game Boy / Game Boy Color: functions found by the fork's own SM83 disassembler.
+    def _import_banked(self, picked, slug: str, workdir: Path, log) -> str:
+        """Game Boy / Game Boy Color (SM83) and Master System / Game Gear (Z80): functions found by the fork's own
+        disassemblers (mgbdis and rgbs for the Game Boy when installed), banks included.
 
-        The reading lane is complete (detection, header, disassembly, function discovery), but the
-        *matching* lane is not: byte-identical Game Boy C needs an SDCC/GBDK toolchain this app does not
-        ship yet. Functions are therefore imported as `asm` — visible, searchable, disassembled and
-        briefable, and deliberately NOT claimable, so no agent burns compiles on a lane that cannot
-        judge a candidate yet. When the toolchain lands they become `open` (see benchmarks/ROADMAP.md)."""
-        from ..rom import gb
-
-        from ..rom import gb_build
+        The matching lane is live when the pinned GBDK-2020 toolchain is installed: then functions are claimable
+        (agents compile through rom/gb_build) and the profile names it. Without it the project stays readable-only
+        (the functions are shown as assembly), which is the honest state rather than handing out work nobody can
+        judge."""
+        from ..rom import gb, gb_build, sms
 
         info = picked.info
-        fns = gb.split(workdir / picked.filename, workdir, log=log)
-        # The matching lane is live when the pinned GBDK-2020 toolchain is installed: then functions are
-        # claimable (agents compile through rom/gb_build) and the profile names it. Without it the project
-        # stays readable-only, which is the honest state rather than handing out work nobody can judge.
-        matchable = gb_build.available()
-        compiler = ({"toolchain": gb_build.TOOLCHAIN, "flags": ["--opt-code-speed"], "timeout": 120,
-                     "wrapper": "cc", "provenance": "explicit",
-                     "note": "SDCC/GBDK-2020 through decompnet.rom.gb_build (absolute symbol mode)"}
-                    if matchable else
-                    {"toolchain": "", "flags": [], "timeout": 20, "wrapper": "cc",
-                     "provenance": "unavailable",
-                     "note": "the Game Boy C toolchain (GBDK-2020) is not installed: run `decomp setup`"})
-        # One segment per 16 KiB bank: bank 0 occupies 0x0000-0x3FFF, every other bank is switched into
-        # the 0x4000-0x7FFF window (the same window for all of them, which is what the hardware does).
-        segments = [{"name": f"bank{b:03d}", "rom_start": b * gb.BANK_SIZE,
-                     "rom_end": min((b + 1) * gb.BANK_SIZE, info["size"]),
-                     "vram": 0 if b == 0 else 0x4000}
-                    for b in range(max(1, info["size"] // gb.BANK_SIZE))]
+        sega = picked.platform in ("sms", "gg")
+        lane, arch = (sms, "z80") if sega else (gb, "sm83")
+        label = "Master System / Game Gear" if sega else "Game Boy"
+        fns = lane.split(workdir / picked.filename, workdir, log=log)
+        matchable = gb_build.available(arch)
+        # The toolchain is named even when it is not installed: the project's overview reads it (and says it is missing).
+        compiler = {"toolchain": gb_build.TOOLCHAIN, "flags": ["--fsigned-char"], "timeout": 120, "wrapper": "cc",
+                    "provenance": "explicit" if matchable else "unavailable",
+                    "note": ("SDCC/GBDK-2020 through decompnet.rom.gb_build (absolute symbol mode)" if matchable else
+                             f"the {label} C toolchain (GBDK-2020) is not installed: run `decomp setup`")}
+        # One segment per 16 KiB bank, at the CPU address the bank is shown at (see rom/gb.py and rom/sms.py).
+        segments = [{"name": f"bank{b:03d}", "rom_start": b * lane.BANK_SIZE,
+                     "rom_end": min((b + 1) * lane.BANK_SIZE, info["size"]),
+                     "vram": sms.segment_vram(b, info["size"]) if sega else (0 if b == 0 else 0x4000)}
+                    for b in range(max(1, -(-info["size"] // lane.BANK_SIZE)))]
         cfg = {
-            "kind": "rom", "platform": info["platform"], "big_endian": False, "gp": 0, "arch": "sm83",
+            "kind": "rom", "platform": info["platform"], "big_endian": False, "gp": 0, "arch": arch,
             "rom": {**info, "file": picked.filename, "program": picked.filename},
             "segments": segments,
             "compiler": compiler,
@@ -562,13 +562,14 @@ class RomNetwork(Network):
                       "confirmed_at": time.time()},
             "context": {"file": None},
         }
+        mode = info["region"] if sega else info["cgb"]["mode"]
         now = time.time()
         with self.store.tx() as db:
             pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
                              (slug, info["title"],
-                              f"{info['cartridge']} · {info['cgb']['mode']} · {len(fns)} functions · "
-                              f"reading lane only (no C toolchain yet)",
-                              "sm83", 0, str(workdir), json.dumps(cfg))).lastrowid
+                              f"{info['cartridge']} · {mode} · {len(fns)} functions · "
+                              + ("matched with SDCC/GBDK-2020" if matchable else "reading lane only (no C toolchain yet)"),
+                              arch, 0, str(workdir), json.dumps(cfg))).lastrowid
             names: set[str] = set()
             for f in fns:
                 name = f.name
@@ -595,20 +596,22 @@ class RomNetwork(Network):
         return slug
 
     def _compile(self, proj, header: str, source: str):
-        """Game Boy candidates go through gb_build (SDCC + sdasgb) instead of the ELF pipeline: the
+        """Game Boy and Master System candidates go through gb_build (SDCC + its assembler) instead of the ELF pipeline: the
         project's own symbol table is injected, so the candidate's call/jump addresses are the ROM's and
         `_evaluate` can compare bytes directly. The payload carries every function the source defines;
         `_evaluate` picks the one being judged by name."""
-        if self.is_rom(proj) and (self.cfg(proj).get("arch") or "").lower() == "sm83":
+        if self.is_rom(proj) and (arch := (self.cfg(proj).get("arch") or "").lower()) in BANKED_ARCHS:
             from ..compiler import CompileResult
             from ..rom import gb_build
 
             symbols = {n: sym.address for n, sym in self.symbols(proj["id"]).by_name.items()}
             cfg = self.cfg(proj)
             inc = tuple(str((Path(proj["root"]) / p).resolve()) for p in (cfg.get("compiler") or {}).get("include_dirs", []))
+            flags = (cfg.get("compiler") or {}).get("flags")  # the project's own, as set in Setup or set_compiler
             try:
                 payload = gb_build.build_payload(source, context_header=header, symbols=symbols,
-                                                 include_dirs=inc)
+                                                 include_dirs=inc, arch=arch,
+                                                 **({} if flags is None else {"opt": list(flags)}))
             except Exception as e:  # a build failure is a compile failure, reported like any other
                 return CompileResult(False, None, f"{type(e).__name__}: {e}")
             return CompileResult(True, payload, "")
@@ -751,14 +754,36 @@ class RomNetwork(Network):
         "are rejected by the source policy, exactly as on every other platform.",
     )
 
+    SMS_NOTES = (
+        "### Master System / Game Gear (SDCC via GBDK-2020, Z80)",
+        "- **Define the function with its own name** (e.g. `void func_000_0200(void) { }`): the compiled "
+        "object must contain the symbol the app is judging, or the compile is reported as an error.",
+        "- Calling convention (`sdcccall(1)`): the first byte argument arrives in A and the second in L; 16-bit "
+        "arguments arrive in HL and then DE (a 16-bit argument after a byte one is in DE); later ones go on the "
+        "stack. A byte result leaves in A, a 16-bit result in DE. Write C and let the target assembly tell you "
+        "which registers it used.",
+        "- I/O ports are `__sfr` variables: `__sfr __at(0xBF) VDP_CTRL;` then `VDP_CTRL = v;` compiles to "
+        "`out ($bf), a`, and reading one to `in a, ($be)`.",
+        "- Absolute memory is a **volatile pointer**: `*(volatile u8 *)0xC000 = v;` compiles to `ld ($c000), a`. "
+        "The mapper registers at 0xFFFC-0xFFFF are written the same way.",
+        "- To call another function, declare it and call it by name (`void func_000_0100(void);` … "
+        "`func_000_0100();`) — the ROM's own address is substituted, so the call is byte-exact.",
+        "- SDCC turns a call in tail position into `jp`; if the target does `call … ; ret`, give the "
+        "call something to do afterwards (a following statement, or return a value).",
+        "- There is no m2c draft for Z80: the target assembly is the specification.",
+    )
+
     def _extra_brief(self, fn, proj) -> list[str]:
         if not self.is_rom(proj):
             return []
         shared = self._extra_brief_shared(fn, proj)
-        if (self.cfg(proj).get("arch") or "").lower() == "sm83":
+        arch = (self.cfg(proj).get("arch") or "").lower()
+        if arch == "sm83":
             # Game Boy agents need the calling convention and the register idioms: nothing about SM83 is
             # guessable from other platforms, and the lane has no machine draft to start from.
             return self._gb_brief(fn, proj) + shared
+        if arch == "z80":
+            return ["", *self.SMS_NOTES] + shared
         return shared
 
     def _gb_brief(self, fn, proj) -> list[str]:
