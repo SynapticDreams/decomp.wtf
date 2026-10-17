@@ -3,6 +3,7 @@
 import json
 import re
 import shutil
+import threading
 
 import pytest
 from starlette.testclient import TestClient
@@ -227,3 +228,49 @@ def test_members_stay_in_the_room_when_their_app_restarts(built, tmp_path):  # n
     again.links[gslug].stop()
     again.links[gslug].sync()
     assert [m["name"] for m in room._members_now()] == ["sam"]
+
+
+def _pending_member(room, client, slug, code, name="kim"):
+    r = client.post(f"/collab/join?room={slug}", json={"invite": code, "name": name, "sha1": room.cfg["rom"]["sha1"]})
+    assert r.status_code == 200 and r.json()["waiting"]
+    return r.json(), {"authorization": f"Bearer {r.json()['token']}", "x-room": slug}
+
+
+def test_a_joiner_waits_to_be_let_in_by_the_real_host(built, tmp_path):  # noqa: F811
+    host, slug, room, code, client = _host(built, tmp_path, approve=True)
+    _, headers = _pending_member(room, client, slug, code)
+    said = []
+    threading.Timer(0.3, room.approve, args=("kim",)).start()  # the host clicks "let in" a moment later
+    collab._wait_to_be_let_in(client, "", slug, headers, said.append, every=0.05)
+    assert said == ["waiting for the host to let you in", "the host let you in"]
+    assert [m["name"] for m in room.members()] == ["kim"]
+
+
+def test_a_joiner_the_host_turns_away_is_told_so(built, tmp_path):  # noqa: F811
+    host, slug, room, code, client = _host(built, tmp_path, approve=True)
+    _, headers = _pending_member(room, client, slug, code)
+    threading.Timer(0.2, room.approve, args=("kim", False)).start()
+    with pytest.raises(NetworkError, match="didn't let you in"):
+        collab._wait_to_be_let_in(client, "", slug, headers, lambda *_: None, every=0.05)
+
+
+def test_joining_a_git_room_asks_for_the_project_only_after_approval(built, tmp_path, monkeypatch):  # noqa: F811
+    """The regression behind #4: the project was requested while the joiner was still pending, failing the join."""
+    host, slug, room, code, client = _host(built, tmp_path, approve=True)
+    sha1 = room.cfg["rom"]["sha1"]
+    hello = {"kind": "fork", "room": slug, "title": "Fork Quest", "functions": 1, "matched": 0, "sha1": sha1,
+             "platform": "n64"}
+    asked = []
+
+    def clone(dest, info, get_bundle, log=print):
+        asked.append(room.pending())  # who is still waiting at the moment the project is asked for
+        get_bundle("")
+
+    monkeypatch.setattr(collab.forkroom, "clone", clone)
+    monkeypatch.setattr(collab.forkroom, "game_identity", lambda game: sha1)
+    guest = RomNetwork(tmp_path / "g.db", tmp_path / "g")
+    threading.Timer(0.3, room.approve, args=("kim",)).start()
+    # this room's project isn't a git tree, so the host refuses the bundle for that reason, not for "waiting"
+    with pytest.raises(NetworkError, match="isn't a git tree"):
+        collab._join_fork(guest, client, "", code, hello, "kim", b"game", lambda *_: None, client, False)
+    assert asked == [[]]  # nobody pending: the approval came first
