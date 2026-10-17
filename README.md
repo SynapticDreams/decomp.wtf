@@ -314,6 +314,7 @@ the game.
 | **PlayStation 2** | Beta | ✓ disc or ELF | EE-GCC 2.96 | ✓ export | ✓ |
 | **Game Boy Advance** | Beta | ✓ ROM | agbcc | ✓ export | ✓ |
 | **Nintendo DS** | Beta | ✓ ROM (.nds) | CodeWarrior for DS 1.2 – DSi 1.6 | ✓ ds-decomp | ✓ |
+| **Game Boy · Game Boy Color** | Beta | ✓ ROM (.gb, .gbc) | GBDK-2020 (SDCC) | | |
 | **3DS · PSP · Switch · PC · Xbox · Xbox 360** | coming | | | | ✓ |
 
 **Recommended platforms: GameCube, Wii and Nintendo 64.** They're the most tested path from dropping in a game to a
@@ -328,7 +329,7 @@ full decomp you can port and mod:
   its original address: right for matching and for a port, while a mod that makes code bigger needs a shiftable
   build, which is coming.
 
-**Beta: PlayStation, PlayStation 2, Game Boy Advance and DS.** They work end to end and are tested on homemade
+**Beta: PlayStation, PlayStation 2, Game Boy, Game Boy Color, Game Boy Advance and DS.** They work end to end and are tested on homemade
 games, much less on real ones so far. Expect rough edges, and please
 [report](https://github.com/SynapticDreams/decomp.wtf/issues) what you hit: the app's error panel copies everything an issue
 needs. Public decomps of any platform run in their own project's build, so their status is the project's.
@@ -337,6 +338,10 @@ needs. Public decomps of any platform run in their own project's build, so their
 generated [dtk-template](https://github.com/encounter/dtk-template) project, [ds-decomp](https://github.com/AetiasHax/ds-decomp)
 analyses DS ROMs (ARM9, ITCM, DTCM, overlays) inside a generated project of the same kind, and Game Boy Advance
 ROMs are split by [luvdis](https://github.com/aarant/luvdis) plus decomp.wtf's own pass for code nothing calls.
+Game Boy and Game Boy Color ROMs are split by [mgbdis](https://github.com/mattcurrie/mgbdis) and
+[rgbds](https://github.com/gbdev/rgbds) (the disassembly reassembles to the same bytes), banks included, and
+matched with GBDK-2020's SDCC. That fits games written in C with SDCC, such as homebrew; most commercial Game
+Boy games were written in assembly, so little of one will match.
 Code beyond the main program is found too: N64 code the game loads later (placed at its address from its own
 calls, including code run through the TLB and code Rare and Nintendo shipped compressed), and the PlayStation 1 and
 2 overlays in a disc's other files. Every attempt is
