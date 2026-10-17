@@ -246,3 +246,41 @@ def test_mgbdis_split_finds_code_and_covers_the_rom(tmp_path):
     assert 0x200 in by_flat and by_flat[0x200].code[:3] == bytes.fromhex("ea0021")  # the setter's bytes
     assert 0x210 in by_flat and by_flat[0x210].code[:3] == bytes.fromhex("af47c9")
     assert all(f.bank == 0 and f.vram == f.rom for f in fns if f.rom < 0x4000)
+
+
+# ------------------------------------------------------------------ where a function ends
+
+LISTING = """\
+ASxxxx Assembler V02.00 + NoICE + SDCC mods  (GameBoy)                  Page 1
+                                     46 	.area _CODE
+    00000000                         51 _f::
+    00000000 4F               [ 4]   52 	ld	c, a
+    00000001 83               [ 4]   53 	add	a,e
+    00000002 B9               [ 4]   54 	cp	a, c
+    00000003 D0               [20]   55 	ret	NC
+    00000004 3E FF            [ 8]   56 	ld	a, #0xff
+    00000006 C9               [16]   57 	ret
+    00000007                         62 _loop::
+    00000007                         63 00102$:
+    00000007 AF               [ 4]   64 	xor	a, a
+    00000008 20 FD            [12]   65 	jr	NZ, 00102$
+    0000000A CD 34 12         [24]   66 	call	_g
+    0000000D 18 F8            [12]   67 	jr	00102$
+    0000000F 00               [ 4]   68 	nop
+                                     66 	.area _CODE
+"""
+
+
+def test_a_conditional_return_or_jump_does_not_end_a_function():
+    funcs = gb_build.parse_listing(LISTING)
+    assert funcs["f"].code == bytes.fromhex("4f83b9d03effc9")  # the code after `ret nc` is part of it
+    assert funcs["f"].asm.splitlines()[-2:] == ["ld\ta, #0xff", "ret"]
+    # a loop: `jr nz` falls through, the unconditional `jr` closes it, and the padding after it is left out
+    assert funcs["loop"].code == bytes.fromhex("af20fdcd341218f8")
+
+
+@needs_toolchain
+def test_a_function_with_an_early_return_is_compiled_whole():
+    fn = gb_build.compile_function("typedef unsigned char u8;\n"
+                                   "u8 f(u8 a, u8 b) { u8 r = a + b; if (r < a) return 0xFF; return r; }\n", "f")
+    assert fn.code == bytes.fromhex("4f83b9d03effc9")
