@@ -183,7 +183,7 @@ def build_source(source: str, *, context_header: str = "", include_dirs: tuple[s
     cpu_flag, assembler = ARCHS[arch]
     sdcc, sdasgb = toolchain_bin("sdcc"), toolchain_bin(assembler)
     if sdcc is None or sdasgb is None:
-        raise RomError(f"the Game Boy / Master System C toolchain ({TOOLCHAIN}) is not installed: run `decomp setup`")
+        raise RomError(f"the Game Boy / Master System C toolchain ({TOOLCHAIN}) is not installed (the app installs it when a game is imported; Setup lists it)")
     # The same source policy every other lane applies (compiler.check_source): matches must come from C,
     # so inline assembly, `__naked`, pragmas and system includes are refused here too. Without this the
     # Game Boy lane would be a loophole: `__asm("nop")` reproduces any single-instruction target.
