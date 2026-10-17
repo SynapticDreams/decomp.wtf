@@ -5,8 +5,8 @@
 # so decomp.wtf runs on the same Linux everywhere. Running it again updates the system and changes nothing else.
 #
 # What it does: installs the few system programs decomp.wtf and the agent CLIs use (git, Node.js for npm-installed
-# agents, the 32-bit C library for old compilers), makes the user "decomp" (uid 1000), and puts a `decomp` command
-# in /usr/local/bin that starts decomp.wtf from that user's install (install.sh puts it in ~/.local).
+# agents, the 32-bit C library for old compilers, a headless JDK 21 for Ghidra), makes the user "decomp" (uid 1000),
+# and puts a `decomp` command in /usr/local/bin that starts decomp.wtf from that user's install (install.sh puts it in ~/.local).
 set -eu
 
 MODE="${1:-docker}"
@@ -19,7 +19,7 @@ echo "> system packages"
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
   ca-certificates curl git xz-utils zstd unzip bzip2 file procps less nano bash python3 \
-  nodejs npm libc6-i386 lib32stdc++6 lib32z1 locales >/dev/null
+  nodejs npm libc6-i386 lib32stdc++6 lib32z1 locales openjdk-21-jdk-headless >/dev/null
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 
