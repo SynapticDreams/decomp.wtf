@@ -104,3 +104,13 @@ def test_a_room_member_ends_and_sets_aside_the_same_functions(game):
         time.sleep(0.05)
     assert _fn(net, "Call_000_0011")["status"] == "asm" and _fn(net, "Call_000_0198")["size"] == len(WRAPPER)
     net.links.clear()
+
+
+def test_the_overview_counts_what_is_set_aside_apart(game):
+    """Progress is measured against what C can match: the page shows what's set aside next to it."""
+    net, proj = game
+    net.twins.set_aside_asm(proj)
+    ov = net.overview("game")
+    aside = net.store.all("SELECT size FROM functions WHERE status='asm'")
+    assert ov["asm"] == 3 and ov["asm_bytes"] == sum(r["size"] for r in aside)
+    assert ov["functions"] - ov["asm"] == 3 and ov["matched"] == 1  # 3 to match in C, 1 of them done

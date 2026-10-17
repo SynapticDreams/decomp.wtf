@@ -148,6 +148,7 @@ class RomNetwork(Network):
         self._syms: dict[int | tuple, SymbolTable] = {}
         self._sym_override: dict[int, SymbolTable] = {}
         self._roms: dict[int, tuple[bytes, list[split.Segment]]] = {}
+        self._progress_cache: dict[int, tuple[int, float, dict]] = {}  # project -> (last attempt, when, _progress)
         self._xrefs: dict[int | tuple, dict] = {}
         self._seed_lock = threading.Lock()
         self.links: dict = {}  # slug -> collab.Link, for projects joined from a friend's room
@@ -1757,7 +1758,8 @@ class RomNetwork(Network):
         cfg = self.cfg(proj)
         agg = self.store.one(
             "SELECT COUNT(*) AS total, SUM(status='matched') AS matched, SUM(size) AS bytes, "
-            "SUM(CASE WHEN status='matched' THEN size ELSE 0 END) AS matched_bytes, SUM(attempts) AS attempts "
+            "SUM(CASE WHEN status='matched' THEN size ELSE 0 END) AS matched_bytes, SUM(attempts) AS attempts, "
+            "SUM(status='asm') AS asm, SUM(CASE WHEN status='asm' THEN size ELSE 0 END) AS asm_bytes "
             "FROM functions WHERE project_id=?", proj["id"])
         tc = toolchains.get(cfg["compiler"]["toolchain"])
         return {
@@ -1771,6 +1773,8 @@ class RomNetwork(Network):
                          "why": None if tc.supported else toolchains.unsupported_cpu()},
             "functions": agg["total"] or 0, "matched": agg["matched"] or 0, "bytes": agg["bytes"] or 0,
             "matched_bytes": agg["matched_bytes"] or 0, "attempts": agg["attempts"] or 0,
+            # set aside: assembly no compiler makes, or what the split took for code (see handwritten.py)
+            "asm": agg["asm"] or 0, "asm_bytes": agg["asm_bytes"] or 0,
             "context_version": self._context(proj["id"])["version"],
             "folder": proj["root"],
             "export": cfg.get("export"),
@@ -2141,7 +2145,72 @@ class RomNetwork(Network):
             per_hour[23 - min(23, max(0, int((now - r["matched_at"]) // 3600)))] += 1  # (one matched since `now`: this hour)
         compiles = self.store.one("SELECT COUNT(*) AS n FROM attempts t JOIN functions f ON f.id=t.function_id "
                                   "WHERE f.project_id=? AND t.created_at > ?", pid, now - 3600)["n"]
-        return {"agents": board[:24], "matches_per_hour": per_hour, "compiles_last_hour": compiles}
+        progress = self._progress(pid, now)
+        for row in board:
+            row["points"] = round(progress["points"].get(row["agent"], 0.0))
+        return {"agents": board[:24], "matches_per_hour": per_hour, "compiles_last_hour": compiles,
+                "closer": progress["closer"], "closeness": progress["closeness"], "setups": progress["setups"]}
+
+    def _progress(self, pid: int, now: float) -> dict:
+        """Progress short of matches, from every attempt's score against the function's best before it: who made
+        the functions closer, and with which setup. A function's closeness is 1 - best/worst (worst: every
+        instruction wrong), so going from 40% to 90% is 50 points, and a match takes it to 100%. What's set aside
+        (no C makes it) doesn't count. Cached until the project has a new attempt (and for half a minute)."""
+        last = self.store.one("SELECT MAX(t.id) AS m FROM attempts t JOIN functions f ON f.id=t.function_id "
+                              "WHERE f.project_id=?", pid)["m"] or 0
+        hit = self._progress_cache.get(pid)
+        if hit and hit[0] == last and now - hit[1] < 30:
+            return hit[2]
+        rows = self.store.all(
+            """SELECT t.score, t.created_at, t.kind, t.model, t.effort, t.stage, a.name AS agent, f.name, f.n_insns, f.status,
+                      MIN(t.score) OVER (PARTITION BY t.function_id ORDER BY t.id
+                                         ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) AS before
+               FROM attempts t JOIN functions f ON f.id=t.function_id JOIN agents a ON a.id=t.agent_id
+               WHERE f.project_id=? AND f.status!='asm' AND t.score IS NOT NULL ORDER BY t.id""", pid)
+        close = lambda score, n: max(0.0, min(1.0, 1 - score / (max(n or 0, 1) * 100))) if score is not None else 0.0  # noqa: E731
+        points, closer, setups, gains = {}, {}, {}, []
+        for r in rows:
+            gain = close(r["score"], r["n_insns"]) - close(r["before"], r["n_insns"])
+            key = (r["kind"], r["model"], r["effort"]) if r["kind"] else None
+            if key:
+                st = setups.setdefault(key, {"kind": r["kind"], "model": r["model"] or "", "effort": r["effort"] or "",
+                                             "attempts": 0, "matches": 0, "points": 0.0, "stages": {}})
+                st["attempts"] += 1
+                stage = st["stages"].setdefault(r["stage"] or "fresh", {"attempts": 0, "points": 0.0})
+                stage["attempts"] += 1
+            if gain <= 0:
+                continue
+            points[r["agent"]] = points.get(r["agent"], 0.0) + 100 * gain
+            gains.append((r["created_at"], gain * max(r["n_insns"] or 0, 1)))
+            if key:
+                st["points"] += 100 * gain
+                stage["points"] += 100 * gain
+                st["matches"] += r["score"] == 0
+            if r["status"] != "matched" and gain >= 0.05 and r["before"] is not None:  # a match shows in Recent matches
+                # one line per function: from where it was before its first big jump to its latest
+                was = closer.pop(r["name"], None)
+                closer[r["name"]] = {"name": r["name"], "from": was["from"] if was else close(r["before"], r["n_insns"]),
+                                     "to": close(r["score"], r["n_insns"]), "agent": r["agent"], "model": r["model"] or "",
+                                     "effort": r["effort"] or "", "at": r["created_at"]}
+        # how close the best attempts are, over the code C can match (weighted by size), and how that moved by hour
+        agg = self.store.one("SELECT SUM(n_insns) AS w, SUM(CASE WHEN status='matched' THEN n_insns WHEN best_score IS NULL "
+                             "THEN 0 ELSE MAX(0, n_insns - best_score / 100.0) END) AS got FROM functions "
+                             "WHERE project_id=? AND status!='asm'", pid)
+        weight = max(agg["w"] or 0, 1)
+        hourly = [0.0] * 24
+        for t, g in gains:
+            if now - t < 86400:
+                hourly[23 - min(23, int((now - t) // 3600))] += 100 * g / weight
+        out = {"points": points, "closer": list(closer.values())[::-1][:12],
+               "closeness": {"now": 100 * (agg["got"] or 0) / weight, "per_hour": [round(x, 2) for x in hourly],
+                             "today": round(sum(hourly), 2)},
+               "setups": sorted(({**v, "points": round(v["points"], 1),
+                                  "per_attempt": round(v["points"] / v["attempts"], 2) if v["attempts"] else 0,
+                                  "stages": {k: {"attempts": x["attempts"], "per_attempt": round(x["points"] / x["attempts"], 2)}
+                                             for k, x in v["stages"].items()}}
+                                 for v in setups.values()), key=lambda v: -v["points"])}
+        self._progress_cache[pid] = (last, now, out)
+        return out
 
     def session_counts(self, slug: str, agent: str, since: float) -> dict:
         """What one agent session did on this project since it started. Session names (claude-1, ...) come back

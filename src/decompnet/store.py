@@ -62,6 +62,12 @@ MIGRATIONS = [
     ("functions", "rom_offset", "INTEGER"),                    # ROM projects: where its bytes are in the ROM
     ("functions", "meta", "TEXT"),                             # forks: symbol, demangled name, source file
     ("functions", "boost", "INTEGER NOT NULL DEFAULT 0"),      # claim order: >0 matching it matches that many twins
+    # who made an attempt, to compare setups: the agent's kind (claude, codex, api, own...), model and effort, and
+    # how far its function was then (scoring.stage), so setups are compared on like work
+    ("attempts", "kind", "TEXT"),
+    ("attempts", "model", "TEXT"),
+    ("attempts", "effort", "TEXT"),
+    ("attempts", "stage", "TEXT"),
 ]
 
 
