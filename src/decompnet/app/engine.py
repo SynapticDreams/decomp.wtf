@@ -135,6 +135,12 @@ def _preview(data: bytes | None, kind: str) -> str:
     return data[:16].hex(" ")
 
 
+def _listed(asm: str) -> int:
+    """How many instructions a listing shows (labels, comments and blank lines aside)."""
+    return sum(1 for line in asm.splitlines()
+               if line.strip() and not line.strip().startswith(";") and not re.match(r"^\s*[\w.$]+::?\s*$", line))
+
+
 class RomNetwork(Network):
     def __init__(self, db_path: str | Path, workspace: Path, claim_ttl: int = 30 * 60):
         super().__init__(db_path, claim_ttl=claim_ttl)
@@ -389,7 +395,35 @@ class RomNetwork(Network):
     def _asm_text(self, fn, proj) -> str:
         if not self.is_rom(proj):
             return super()._asm_text(fn, proj)
-        return self.rename_tokens(proj, fn["asm"], fn["unit"])
+        text = fn["asm"] or ""
+        if proj["arch"] == "sm83" and fn["target"] and _listed(text) != (fn["n_insns"] or 0):
+            text = self._sm83_listing(proj, fn)
+        return self.rename_tokens(proj, text, fn["unit"])
+
+    def _sm83_listing(self, proj, fn) -> str:
+        """A Game Boy function's whole listing, from its bytes, when the split's text isn't the function's: mgbdis's
+        text for a label stops at the next label, an internal branch target too (a few of its instructions, or none),
+        and a function cut to its routine's end (handwritten.sm83_routine) is shorter than the text.
+        In RGBDS's brackets, with the names of the functions it calls or jumps to."""
+        from ..rom import sm83
+
+        bank = (fn["rom_offset"] or 0) // 0x4000
+        lines = sm83.asm_text(bytes(fn["target"]), fn["vram"] or 0, width=4).splitlines()
+        targets = sorted({int(t, 16) for line in lines for t in re.findall(r"\b(?:call|jp|jr)\b[^$]*\$([0-9a-f]{4})\b", line)})
+        names = {}
+        for at in range(0, len(targets), 500):
+            chunk = targets[at:at + 500]
+            for r in self.store.all(f"SELECT name, vram, rom_offset FROM functions WHERE project_id=? AND vram IN "
+                                    f"({','.join('?' * len(chunk))})", proj["id"], *chunk):
+                if (r["rom_offset"] or 0) // 0x4000 == (0 if r["vram"] < 0x4000 else bank):  # bank 0, or this bank
+                    names[r["vram"]] = r["name"]
+
+        def tidy(line: str) -> str:
+            line = re.sub(r"\(\$ff00\+\$([0-9a-f]{2})\)", r"[$ff\1]", line)
+            line = re.sub(r"\(([^()]*)\)", r"[\1]", line)
+            return re.sub(r"\b(call|jp|jr)((?: n?[zc],)?) \$([0-9a-f]{4})\b",
+                          lambda m: f"{m.group(1)}{m.group(2)} {names.get(int(m.group(3), 16), '$' + m.group(3))}", line)
+        return "; the whole function, from its bytes\n" + "\n".join(tidy(line) for line in lines)
 
     # ------------------------------------------------------------------ import
 
@@ -1756,6 +1790,7 @@ class RomNetwork(Network):
         proj = self._project(slug)
         rows = self.store.all(
             "SELECT f.name, f.vram, f.size, f.n_insns, f.status, f.best_score, f.attempts, f.unit, f.matched_at, "
+            "CASE WHEN f.status='asm' THEN f.meta END AS meta, "
             "a.name AS agent, m.name AS matched_by FROM functions f LEFT JOIN claims c ON c.function_id=f.id "
             "LEFT JOIN agents a ON a.id=c.agent_id LEFT JOIN agents m ON m.id=f.matched_agent_id "
             "WHERE f.project_id=? ORDER BY f.vram, f.unit, f.id", proj["id"])
@@ -1766,7 +1801,8 @@ class RomNetwork(Network):
         return [{"name": r["name"], "vram": r["vram"], "size": r["size"], "insns": r["n_insns"], "unit": r["unit"],
                  "status": r["status"] if r["status"] in ("matched", "asm") else "working" if (r["agent"] or key(r) in remote) else "open",
                  "best": r["best_score"], "attempts": r["attempts"], "agent": r["agent"] or remote.get(key(r)),
-                 "matched_at": r["matched_at"], "matched_by": r["matched_by"]} for r in rows]
+                 "matched_at": r["matched_at"], "matched_by": r["matched_by"],
+                 **({"why": json.loads(r["meta"] or "{}").get("asm_code")} if r["status"] == "asm" else {})} for r in rows]
 
     def map_signature(self, slug: str) -> str:
         """What the function map shows, summed up: it changes when a function is added, matched, tried or claimed.

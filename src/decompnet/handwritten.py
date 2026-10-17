@@ -18,9 +18,19 @@ never emit (PSY-Q's libgte is written in assembly; C that drives the GTE does it
 doesn't take); code that ends without a return or a jump and so runs on into the next function (an extra entry
 point into hand-written code: the splitter cut it off); or a first block that reads a temporary register (at, v0,
 v1, t0-t9) or k0/k1 before setting it (compiled code gets its arguments in a0-a3).
+
+SM83 (Game Boy, Game Boy Color), see sm83_reason. The split of a Game Boy ROM bounds each function by the next
+called address, so what it hands out isn't always a function: padding (00/FF bytes only), a stretch that runs 1 KiB
+without reaching the next function (graphics and tables after the last routine), bytes that are no instruction, or
+ones SDCC never writes (ld b, b: a register to itself; rst $38, an FF byte). SDCC can't write any of those. Of real code: a routine that runs on into the next one (it ends without a return or
+a jump: hand-written code that shares its tail), one that reads the carry or zero flag before setting it (C passes
+nothing in the flags), one that sets the stack pointer to an address (start-up code), or one with halt or stop (C
+writes those only as inline assembly, which decomp.wtf doesn't take).
 """
 
 from __future__ import annotations
+
+import re
 
 _SCRATCH = (0, 11, 12)  # never an argument, never read by compiled code before it's set
 
@@ -237,4 +247,80 @@ def mips_reason(code: bytes, big_endian: bool, platform: str = "") -> str | None
                 name = names.get(early[0], f"t{early[0] - 8}")
                 return f"reads {name} before setting it: compiled code gets its arguments in {args}"
             return None
+    return None
+
+
+# ------------------------------------------------------------------------------------------------ SM83
+
+_SM83_UNDEFINED = {0xD3, 0xDB, 0xDD, 0xE3, 0xE4, 0xEB, 0xEC, 0xED, 0xF4, 0xFC, 0xFD}  # no instruction has them
+_SM83_COND = re.compile(r"^(jr|jp|call|ret) (n?[zc]),?")  # a branch on a flag
+_SM83_ZC = re.compile(r"^(add a|adc|sub|sbc|and|xor|or|cp|daa|rlca|rrca|rla|rra|rlc|rrc|rl |rr |sla|sra|srl|swap)\b")
+_SM83_Z = re.compile(r"^((inc|dec) ([abcdehl]|\[hl\])|bit )")  # sets the zero flag, not the carry
+_SM83_C = re.compile(r"^(scf|add hl|add sp|ld hl, sp)")  # sets the carry, not the zero flag
+_SM83_READS_C = re.compile(r"^(adc|sbc|rla|rra|rl |rr |ccf)\b")
+_SM83_BRANCH = re.compile(r"^(jr|jp|call|ret|reti|rst)\b")
+_SM83_SELF_MOVE = re.compile(r"^ld ([abcdehl]), \1$")  # ld b, b: a register to itself (0x40 0x49 ... bytes)
+
+
+def sm83_reason(code: bytes, base: int = 0, capped: bool = False) -> str | None:
+    """Why this Game Boy function (its code, from the entry at `base`) isn't code SDCC compiled, or None.
+    `capped`: the split gave it its longest size, not having found the next function."""
+    from .rom import sm83
+
+    if not code:
+        return None
+    if all(b in (0x00, 0xFF) for b in code):
+        return "padding (00 or FF bytes only), not a function"
+    if capped:
+        return "the split ran 1 KiB without reaching the next function: its end isn't known (data follows code)"
+    insns, off = [], 0
+    for addr, text, ln in sm83.disassemble(code, base):
+        if text.startswith("db $") and code[off] in _SM83_UNDEFINED:
+            return f"bytes that are no instruction (at ${addr:04x}): data, not code"
+        if _SM83_SELF_MOVE.match(text) or text == "rst $38":  # no compiler writes these: bytes of graphics do
+            return f"{text} at ${addr:04x}, which SDCC never writes: data, not code"
+        insns.append((addr, text, ln))
+        off += max(1, ln)
+    addr, last, ln = insns[-1]
+    ends = last in ("ret", "reti", "jp hl") or re.match(r"^(jp|jr) \$", last) is not None
+    if not ends or addr + ln > base + len(code):
+        return "runs on into the next function (it ends without a return or a jump): hand-written"
+    z = c = False
+    for addr, text, ln in insns:
+        cond = _SM83_COND.match(text)
+        if cond and ((cond.group(2)[-1] == "z" and not z) or (cond.group(2)[-1] == "c" and not c)) \
+                or (_SM83_READS_C.match(text) and not c):
+            flag = "zero" if cond and cond.group(2)[-1] == "z" else "carry"
+            return f"reads the {flag} flag before setting it ({text}): C passes nothing in the flags"
+        if _SM83_BRANCH.match(text):
+            break
+        if _SM83_ZC.match(text):
+            z = c = True
+        elif _SM83_Z.match(text):
+            z = True
+        elif _SM83_C.match(text):
+            c = True
+    for addr, text, ln in insns:
+        if text.startswith("ld sp, $"):
+            return "sets the stack pointer to an address: start-up code, hand-written"
+        if text == "halt" or text.startswith("stop"):
+            return f"{text.split()[0]} at ${addr:04x}: C writes it only as inline assembly, which isn't taken"
+    return None
+
+
+def sm83_routine(code: bytes, base: int = 0) -> int | None:
+    """How long the routine at the start of a Game Boy function is, when the split ran it on into what follows
+    (padding, data, or code with no entry of its own): up to its first return or jump that no earlier branch goes
+    past, if that's code SDCC could have written (sm83_reason). None: no such end before the function's own."""
+    from .rom import sm83
+
+    far, off = base, 0
+    for addr, text, ln in sm83.disassemble(code, base):
+        if text.startswith("db $"):
+            return None
+        if (m := re.match(r"^(jr|jp)\b.*\$([0-9a-f]{4})$", text)):
+            far = max(far, int(m.group(2), 16))  # a branch inside: the routine goes on at least that far
+        off += max(1, ln)
+        if (text in ("ret", "reti") or re.match(r"^(jp|jr) \$", text)) and far < addr + ln:
+            return off if off < len(code) and sm83_reason(code[:off], base) is None else None
     return None

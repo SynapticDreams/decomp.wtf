@@ -28,6 +28,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from ..handwritten import sm83_reason, sm83_routine
 from . import gb, sm83
 from .n64 import RomError
 
@@ -242,6 +243,10 @@ def split(rom_path: Path, workdir: Path, log=lambda *_: None) -> tuple[list[gb.G
                 code = _trim_padding(data[flat:end])
                 if not code:
                     continue
+                # a routine the next called address doesn't bound (padding, data or code with no entry of its own
+                # follow it) ends at its own end, when that's a routine SDCC could write (handwritten.py)
+                if sm83_reason(code, addr, capped=nxt - addr > MAX_FUNCTION) and (n := sm83_routine(code, addr)):
+                    code = code[:n]
                 fns.append(gb.GbFunction(name=name, vram=addr, rom=flat, bank=bank, code=code,
                                          n_insns=sum(1 for _ in sm83.disassemble(code, addr)),
                                          asm=asm_blocks.get(name, ""),

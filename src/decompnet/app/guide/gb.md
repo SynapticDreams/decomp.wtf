@@ -44,6 +44,25 @@ name) so the next session starts ahead:
   another way may need `--opt-code-size` or `--opt-code-speed` (the project's compiler flags): if a function's loops or
   jumps come out in a different shape from the target, try those before rewriting, and say what worked in a note.
 
+## Games written in assembly
+
+Most Game Boy games are hand-written assembly, and SDCC matches only the parts of them it could have written. The app
+sets the rest aside (status *assembly* or *not code*, with the reason): padding, graphics or tables the split took for
+a function, routines that run on into the next one, code that reads a flag its caller left. A routine the split ran
+on past its end is cut to it. If a function you're given looks like one of those, say so in a note and release it.
+
+What SDCC does write in such a game, and how (each matched on a real cartridge):
+
+- A bank switch around a call: `u8 b = (u8)(u16)&bank_0x11;` with `__at(0x0011) u8 bank_0x11;` gives `ld a, $11`,
+  then `*(volatile u8 *)0xff9b = b; *(volatile u8 *)0x2100 = b;` and the call through a constant pointer:
+  `((void (*)(void))0x4000)();`.
+- A tail call to a fixed address: `((void (*)(void))0x2547)();` as a function's last statement gives `jp $2547`.
+- An interrupt handler that only returns: `void handler(void) __critical __interrupt { }` gives `reti` (without
+  `__critical`, `ei; ret`).
+
+What it doesn't: a loop counted in `b` where SDCC picks `c`, `ld a, n` then `ld [nn], a` (SDCC writes
+`ld hl, nn` then `ld [hl], n`), long runs of `ld [hl+], a` with constants. Don't spend many tries on those.
+
 ## Conventions
 
 - `bankNNN_XXXX` style automatic names, `D_`/`B_` for data by address; keep the split's names unless a
