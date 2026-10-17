@@ -1157,10 +1157,14 @@ class RomNetwork(Network):
         return aid
 
     def remote_event(self, project_id: int, kind: str, detail: str, agent_name: str, created_at: float) -> None:
+        """The host's event, kept with the host's time. A member's app asks for the room's whole history each time
+        it starts, so an event it already has is not stored again: a copy would get a new id, and the page would
+        announce it as new (a toast for every match the room ever made)."""
         aid = self._remote_agent(agent_name)
         with self.store.tx() as db:
-            db.execute("INSERT INTO events(project_id,agent_id,kind,detail,created_at) VALUES(?,?,?,?,?)",
-                       (project_id, aid, kind, detail, created_at))
+            db.execute("INSERT INTO events(project_id,agent_id,kind,detail,created_at) SELECT ?,?,?,?,? WHERE NOT EXISTS "
+                       "(SELECT 1 FROM events WHERE created_at=? AND project_id=? AND agent_id=? AND kind=? AND detail=?)",
+                       (project_id, aid, kind, detail, created_at, created_at, project_id, aid, kind, detail))
 
     def apply_remote_match(self, slug: str, vram: int, source: str, agent_name: str) -> None:
         proj = self._project(slug)
