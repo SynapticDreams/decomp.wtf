@@ -912,7 +912,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         effort = str(options.get("effort") or "")
         settings.data["launcher"] = ({"kind": kind, "model": model, "count": count} | ({"effort": effort} if effort else {})
                                      | ({"endpoints": picked} if picked else {}))
-        if model and kind != "api":
+        if model and kind != "api" and model != agents.TIERED:  # "tiered" is offered already, not a typed name
             recent = settings.data.setdefault("recent_models", {}).setdefault(kind, [])
             settings.data["recent_models"][kind] = [model] + [m for m in recent if m != model][:7]
         settings.save()
