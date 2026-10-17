@@ -316,6 +316,7 @@ the game.
 | **Nintendo DS** | Beta | ✓ ROM (.nds) | CodeWarrior for DS 1.2 – DSi 1.6 | ✓ ds-decomp | ✓ |
 | **Game Boy · Game Boy Color** | Beta | ✓ ROM (.gb, .gbc) | GBDK-2020 (SDCC) | | |
 | **Master System · Game Gear** | Beta | ✓ ROM (.sms, .gg) | GBDK-2020 (SDCC) | | |
+| **NES** | Beta | ✓ ROM (.nes) | GBDK-2020 (SDCC) | | |
 | **3DS · PSP · Switch · PC · Xbox · Xbox 360** | coming | | | | ✓ |
 
 **Recommended platforms: GameCube, Wii and Nintendo 64.** They're the most tested path from dropping in a game to a
@@ -330,7 +331,7 @@ full decomp you can port and mod:
   its original address: right for matching and for a port, while a mod that makes code bigger needs a shiftable
   build, which is coming.
 
-**Beta: PlayStation, PlayStation 2, Game Boy, Game Boy Color, Master System, Game Gear, Game Boy Advance and DS.** They work end to end and are tested on homemade
+**Beta: PlayStation, PlayStation 2, Game Boy, Game Boy Color, Master System, Game Gear, NES, Game Boy Advance and DS.** They work end to end and are tested on homemade
 games, much less on real ones so far. Expect rough edges, and please
 [report](https://github.com/SynapticDreams/decomp.wtf/issues) what you hit: the app's error panel copies everything an issue
 needs. Public decomps of any platform run in their own project's build, so their status is the project's.
@@ -343,7 +344,8 @@ Game Boy and Game Boy Color ROMs are split by [mgbdis](https://github.com/mattcu
 [rgbds](https://github.com/gbdev/rgbds) (the disassembly reassembles to the same bytes), banks included, and
 matched with GBDK-2020's SDCC. Master System and Game Gear ROMs use decomp.wtf's own Z80 disassembler and the same
 SDCC (its Z80 back end), with the Sega mapper's banks. That fits games written in C with SDCC, such as homebrew;
-most commercial games for these consoles were written in assembly, so little of one will match.
+most commercial games for these consoles were written in assembly, so little of one will match. NES ROMs (iNES and NES 2.0)
+use decomp.wtf's own 6502 disassembler and SDCC's 6502 back end, with the common mappers' banks, and the same limits.
 Code beyond the main program is found too: N64 code the game loads later (placed at its address from its own
 calls, including code run through the TLB and code Rare and Nintendo shipped compressed), and the PlayStation 1 and
 2 overlays in a disc's other files. Every attempt is

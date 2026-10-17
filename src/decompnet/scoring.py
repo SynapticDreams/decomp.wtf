@@ -35,6 +35,8 @@ _CS = {
     ("sm83", False): ("sm83", 0),
     # Zilog Z80 (Master System, Game Gear): no capstone back end either, so rom/z80.py decodes it
     ("z80", False): ("z80", 0),
+    # MOS 6502 (NES): rom/mos6502.py decodes it, so the sweep and the scoring read the same instruction forms
+    ("mos6502", False): ("mos6502", 0),
 }
 
 _REG = re.compile(
@@ -66,9 +68,9 @@ def percent_text(p: float | None) -> str:
 
 def disassemble(fn: FunctionObj) -> list[Insn]:
     arch, mode = _CS[(fn.arch, fn.big_endian)]
-    if arch in ("sm83", "z80"):  # capstone has no back end for these: our own decoders, capstone-shaped
-        from .rom import sm83, z80
-        md = (sm83 if arch == "sm83" else z80).Decoder()
+    if arch in ("sm83", "z80", "mos6502"):  # our own decoders, capstone-shaped
+        from .rom import mos6502, sm83, z80
+        md = {"sm83": sm83, "z80": z80, "mos6502": mos6502}[arch].Decoder()
     else:
         md = capstone.Cs(arch, mode)
     md.detail = True

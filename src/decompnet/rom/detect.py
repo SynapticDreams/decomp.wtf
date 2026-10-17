@@ -8,18 +8,18 @@ from dataclasses import dataclass, field
 import struct
 from pathlib import Path
 
-from . import chd, gb, gba, n64, overlays, ps2, psx, sms
+from . import chd, gb, gba, n64, nes, overlays, ps2, psx, sms
 from .n64 import RomError
 
 PLATFORMS = {"n64": "Nintendo 64", "psx": "PlayStation", "ps2": "PlayStation 2",
              "gba": "Game Boy Advance", "gb": "Game Boy", "gbc": "Game Boy Color",
-             "sms": "Sega Master System", "gg": "Sega Game Gear"}
+             "sms": "Sega Master System", "gg": "Sega Game Gear", "nes": "Nintendo Entertainment System"}
 SMALL = 64 * 1024 * 1024  # ROMs and programs are read whole; disc images are read from disk
 
 
 @dataclass
 class Picked:
-    platform: str  # n64 | psx | ps2 | gba | gb | gbc
+    platform: str  # n64 | psx | ps2 | gba | gb | gbc | sms | gg | nes
     data: bytes  # what we split: a z64 ROM, a PS-X EXE or a PS2 ELF
     filename: str  # name to store it under in the project folder
     info: dict
@@ -30,6 +30,8 @@ class Picked:
 def _program(data: bytes, name: str = "") -> Picked | None:
     if gba.is_gba(data):
         return Picked("gba", data, "rom.gba", gba.read_info(data), False)
+    if nes.is_nes(data):
+        return Picked("nes", data, "rom.nes", nes.read_info(data, name), False)
     if gb.is_gb(data):
         info = gb.read_info(data)
         return Picked(info["platform"], data, f"rom.{'gbc' if info['platform'] == 'gbc' else 'gb'}", info, False)
@@ -75,7 +77,8 @@ def identify(src: bytes | Path, name: str = "") -> Picked:
     if src[:4] == b"\x7fELF":
         raise RomError("this ELF program isn't for a console decomp.wtf can split from scratch yet")
     raise RomError("this isn't a ROM, disc or game program this app can read: pick an N64 ROM (.z64, .n64, .v64), "
-                   "a Game Boy or Game Boy Color ROM (.gb, .gbc), a Game Boy Advance ROM (.gba), a PlayStation 1 "
+                   "a Game Boy or Game Boy Color ROM (.gb, .gbc), a Game Boy Advance ROM (.gba), an NES ROM (.nes), "
+                   "a Master System or Game Gear ROM (.sms, .gg), a PlayStation 1 "
                    "or 2 disc image (.bin, .iso, .chd) or its program file (e.g. SLUS_200.00)")
 
 
