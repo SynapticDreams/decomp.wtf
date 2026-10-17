@@ -383,7 +383,8 @@ def join(args) -> int:
         if input(f"Is {game.name} your own legally obtained copy of the game? [y/N] ").strip().lower() not in ("y", "yes"):
             raise SystemExit("decomp.wtf only works with your own copy of a game")
     info = ensure_app(home_dir())
-    q = urllib.parse.urlencode({"link": args.link, "name": args.name, "confirmed": "1", "path": str(game.resolve())})
+    q = urllib.parse.urlencode({"link": args.link, "name": args.name, "confirmed": "1", "path": str(game.resolve()),
+                                **({"trust": "1"} if args.trust_host else {})})
     req = urllib.request.Request(f"http://127.0.0.1:{info['port']}/api/collab/join?{q}", method="POST",
                                  data=b"", headers={"Cookie": f"decomp_live={info['secret']}", "X-Decomp": "1",
                                                                   "Host": f"127.0.0.1:{info['port']}",
@@ -417,9 +418,11 @@ def share(args) -> int:
     if args.project not in slugs:
         raise SystemExit(f"no project {args.project!r}; projects here: {', '.join(slugs) or 'none'}")
     body = {"slug": args.project, "visibility": "public" if args.public else "private", "approve": args.approve,
-            "mode": "address" if args.address else "tunnel", "address": args.address or "", "port": args.port}
+            "findable": args.findable, "mode": "address" if args.address else "tunnel", "address": args.address or "",
+            "port": args.port}
     result = _wait(_api("/api/collab/start", body)["job"], "sharing")
-    print(f"Sharing {args.project} ({body['visibility']}{', you approve each member' if args.approve else ''}).")
+    approve = args.approve if args.approve is not None else args.public  # a public room approves unless told not to
+    print(f"Sharing {args.project} ({body['visibility']}{', you approve each member' if approve else ''}).")
     print(f"Invite link: {result['link']}")
     print("Teammates open decomp.wtf, choose Join a friend's room, paste the link and pick their own copy of the game.")
     return 0
@@ -468,20 +471,28 @@ def main(argv: list[str] | None = None) -> int:
     sh.add_argument("--address", help="the address teammates use, e.g. http://my-server:6481 (default: a quick tunnel)")
     sh.add_argument("--port", type=int, default=6481, help="port for --address (default 6481)")
     sh.add_argument("--public", action="store_true", help="anyone with the address can join (default: invite link)")
-    sh.add_argument("--approve", action="store_true", help="you let each new member in")
+    sh.add_argument("--approve", action=argparse.BooleanOptionalAction, default=None,
+                    help="you let each new member in (default: in a public room)")
+    sh.add_argument("--findable", action=argparse.BooleanOptionalAction, default=None,
+                    help="members find the room again when its quick tunnel's address changes (default: yes)")
     ho = sub.add_parser("host", help="host a game for your team: import your copy and open a room (home PC or server)")
     ho.add_argument("game", help="your copy of the game (ROM, disc image or program file)")
     ho.add_argument("--own-copy", action="store_true", help="confirm it's your own legally obtained copy")
     ho.add_argument("--address", help="the address teammates use, e.g. http://my-server:6481 (default: a quick tunnel)")
     ho.add_argument("--port", type=int, default=6481, help="port for --address (default 6481)")
     ho.add_argument("--public", action="store_true", help="anyone with the address can join (default: invite link)")
-    ho.add_argument("--approve", action="store_true", help="you let each new member in")
+    ho.add_argument("--approve", action=argparse.BooleanOptionalAction, default=None,
+                    help="you let each new member in (default: in a public room)")
+    ho.add_argument("--findable", action=argparse.BooleanOptionalAction, default=None,
+                    help="members find the room again when its quick tunnel's address changes (default: yes)")
     ho.add_argument("--service", action="store_true", help="also run decomp.wtf as a service that starts with the computer")
     jo = sub.add_parser("join", help="join a team's room with your own copy of the game")
     jo.add_argument("link", help="the invite link (or the room's address for a public room)")
     jo.add_argument("game", help="your copy of the same game")
     jo.add_argument("--name", required=True, help="your name in the room")
     jo.add_argument("--own-copy", action="store_true", help="confirm it's your own legally obtained copy")
+    jo.add_argument("--trust-host", action="store_true",
+                    help="a GameCube, Wii or DS project whose build setup comes from the host: building it runs that here")
     sv = sub.add_parser("service", help="run decomp.wtf in the background, starting with the computer")
     sv.add_argument("action", choices=["install", "remove", "status"])
     m = sub.add_parser("mcp", help="serve decomp.wtf to the AI agent you talk to (stdio MCP; starts the app if needed)")

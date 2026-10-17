@@ -812,7 +812,10 @@ function openTogether() {
     <label class="check"><input type="checkbox" id="tgApprove"><span>I let each new member in (they wait until I say yes)</span></label>
     <div class="row"><button class="primary" id="tgGo" type="button">Open the room</button><a class="link small" href="#/p/${esc(S.slug)}/team">More options: your own address (LAN, Tailscale, a server)</a></div>
     <pre class="joblog" id="tgLog" hidden></pre><div id="tgDone"></div>`);
-  body.querySelectorAll("[data-vis]").forEach((b) => { b.onclick = () => body.querySelectorAll("[data-vis]").forEach((x) => x.classList.toggle("on", x === b)); });
+  body.querySelectorAll("[data-vis]").forEach((b) => { b.onclick = () => {
+    body.querySelectorAll("[data-vis]").forEach((x) => x.classList.toggle("on", x === b));
+    body.querySelector("#tgApprove").checked = b.dataset.vis === "public";  // strangers can reach a public room
+  }; });
   body.querySelector("#tgGo").onclick = async (e) => {
     e.target.disabled = true;
     body.querySelector("#tgLog").hidden = false;
@@ -822,7 +825,7 @@ function openTogether() {
       const res = await followJob(job, body.querySelector("#tgLog"));
       body.querySelector("#tgLog").hidden = true;
       body.querySelector("#tgDone").innerHTML = `<p><b>The room is open.</b> Send this link to friends who own the game:</p>${cmdBox(res.link)}
-        <p class="muted small">They open decomp.wtf, choose <b>Join a team</b>, paste it and pick their own copy (or run <code>decomp join &lt;link&gt; &lt;their copy&gt; --name &lt;name&gt;</code>). The link works while this app is open; for a room that stays up, use your own address in the Team tab.</p>
+        <p class="muted small">They open decomp.wtf, choose <b>Join a team</b>, paste it and pick their own copy (or run <code>decomp join &lt;link&gt; &lt;their copy&gt; --name &lt;name&gt;</code>). The room opens again when this app starts again; its quick tunnel then has a new address, which members follow by themselves (the Team tab has the details, and your own address for a room that stays up).</p>
         <div class="row"><a class="primary small-btn as-btn" href="#/p/${esc(S.slug)}/team">See who's in</a></div>`;
       wireCopies(body.querySelector("#tgDone"));
       S.ov = await api(`/api/project?slug=${S.slug}`);
@@ -978,7 +981,14 @@ async function renderTeam() {
   clearInterval(teamTimer);
   if (!S.ov) return;
   const room = S.ov.room;
-  if (room && room.role === "guest") { renderGuest(box, room); teamTimer = setInterval(() => { if (S.tab === "team" && S.ov.room) renderGuest(box, S.ov.room); }, 4000); return; }
+  if (room && room.role === "guest") {
+    renderGuest(box, room);
+    teamTimer = setInterval(() => {
+      if (box.querySelector("details[open], #roomFollow:disabled")) return;  // reading the host's changes, or following them
+      if (S.tab === "team" && S.ov.room) renderGuest(box, S.ov.room);
+    }, 4000);
+    return;
+  }
   if (S.ov.kind === "fork" && !S.ov.ready) {
     box.innerHTML = `<h2 class="pane-title">Decompile together</h2>
       <p class="muted">Set the project up first (Overview): then friends who own the game can join it from their own decomp.wtf.</p>
@@ -1008,9 +1018,25 @@ function renderGuest(box, room) {
       : room.connected ? `You're <b>${esc(room.member)}</b>. Your agents claim functions through the room, so nobody does the same one twice; matches are checked and shared by the host.`
       : `${esc(room.error || "Waiting for the host…")} Your agents wait and carry on when it's back.`}</p>
     <dl class="facts"><div><dt>Host</dt><dd>${esc(room.host)}</dd></div><div><dt>Members</dt><dd>${members.length}</dd></div><div><dt>Online</dt><dd>${members.filter((m) => m.online).length}</dd></div></dl>
+    ${room.held ? `<div class="setup-group"><h3>The host changed the project's build setup</h3>
+      <p class="muted small">The room's newest commits change more than code: ${room.held.paths.slice(0, 6).map((f) => `<code>${esc(f)}</code>`).join(", ")}${room.held.paths.length > 6 ? ` and ${room.held.paths.length - 6} more` : ""}. Building the project runs them on this computer, so your copy stays where it was until you choose to follow. Look at the changes first; follow only a host you trust.</p>
+      <details class="logbox"><summary>What changes</summary><pre class="joblog">${esc(room.held.diff || "")}</pre></details>
+      <div class="row"><button class="primary small-btn" id="roomFollow" type="button">Follow the host</button></div><pre class="joblog" id="followLog" hidden></pre></div>` : ""}
     ${people ? `<div class="setup-group"><h3>In the room</h3>${people}</div>` : ""}
     <div class="row"><button class="ghost" id="roomReconnect" type="button">${room.connected ? "The host shared a new link?" : "Reconnect with a new link"}</button><button class="ghost danger" id="roomLeave" type="button">Leave room</button></div>`;
   $("roomReconnect").onclick = openReconnect;
+  if (room.held) $("roomFollow").onclick = async (e) => {
+    if (!confirm("Follow the host's changes to the build setup? Building the project runs them on this computer.")) return;
+    e.target.disabled = true;
+    $("followLog").hidden = false;
+    try {
+      const { job } = await api("/api/collab/follow", { method: "POST", body: { slug: S.slug, head: room.held.head } });
+      await followJob(job, $("followLog"));
+      toast("Following the host again.", "match");
+      S.ov = await api(`/api/project?slug=${S.slug}`);
+      renderGuest(box, S.ov.room);
+    } catch (err) { toast(esc(err.message), "err"); e.target.disabled = false; }
+  };
   $("roomLeave").onclick = async () => {
     if (!confirm("Leave this room? Your local copy of the project stays; it stops syncing.")) return;
     await api("/api/collab/leave", { method: "POST", body: { slug: S.slug } }).catch((e) => toast(esc(e.message), "err"));
@@ -1022,12 +1048,19 @@ function renderHost(box, info) {
     <p class="muted">Your team works on this game from their own computers, each with <b>their own copy of exactly this game</b> (decomp.wtf checks it's identical) and their own agents. This computer is the room's host: it keeps the shared work and checks every match against your copy.${S.ov.kind === "fork" ? " Members get this project's source tree from you (only what git tracks: never your game or its extracted files) and follow every commit made here." : ""} Only the work travels, never ROM data. You host the room and decide who's in.</p>`;
   const opts = (inf) => `<div class="setup-group"><h3>Who can join</h3>
       <div class="seg" id="visSeg"><button type="button" data-vis="private" class="${inf.settings.visibility !== "public" ? "on" : ""}">Private: invite link</button><button type="button" data-vis="public" class="${inf.settings.visibility === "public" ? "on" : ""}">Public: anyone with the address</button></div>
-      <label class="check"><input type="checkbox" id="apprChk" ${inf.settings.approve ? "checked" : ""}><span>I let each new member in (they wait until you approve)</span></label></div>`;
+      <label class="check"><input type="checkbox" id="apprChk" ${inf.settings.approve ? "checked" : ""}><span>I let each new member in (they wait until you approve)</span></label>
+      <label class="field"><span>At most this many members (0: no limit)</span><input id="limitIn" class="mono port" type="number" min="0" value="${inf.settings.limit || 0}"></label>
+      ${inf.mode === "address" && inf.sharing ? "" : `<label class="check"><input type="checkbox" id="findChk" ${inf.settings.findable !== false ? "checked" : ""}><span>Members find the room again when its quick tunnel's address changes: the room keeps its address, signed with its own key, in a secret gist on your GitHub account (members can see which account).</span></label>
+      ${inf.settings.findable === false ? "" : inf.github ? `<div class="row"><span class="ok-mark">On GitHub as ${esc(inf.github)}</span><button class="ghost small-btn" id="ghOff" type="button">Disconnect</button></div>`
+        : `<label class="field"><span>A GitHub token that can only make gists: <a href="https://github.com/settings/tokens/new?scopes=gist&amp;description=decomp.wtf%20rooms" target="_blank" rel="noopener">make one</a> (a classic token, the gist scope only)</span><input id="ghToken" class="mono" type="password" autocomplete="off" placeholder="ghp_…"></label>
+          <div class="row"><button class="ghost small-btn" id="ghGo" type="button">Connect GitHub</button></div>`}`}
+      ${inf.sharing && inf.mode !== "address" && inf.settings.findable !== false ? `<p class="muted small">${!inf.github ? "Until you connect GitHub, members paste the new link when the address changes."
+        : inf.published ? `Members follow it to ${esc(inf.published.url)} (your gist says so).` : inf.publish_error ? `Couldn't write the gist yet (${esc(inf.publish_error)}); trying again in a while. Until then members paste the new link.` : "Writing where it is to your gist…"}</p>` : ""}</div>`;
   if (!info.sharing) {
     const sugg = (info.addresses || []).map((a) => `<button type="button" class="chip" data-addr="${esc(a.address)}">${esc(a.label)}: <span>${esc(a.address)}</span></button>`).join("");
     box.innerHTML = `${intro}${info.was_sharing ? `<div class="notice"><span>This room was shared before the app restarted. Share it again: members keep their place.</span></div>` : ""}
       <div class="setup-group"><h3>How teammates reach this computer</h3>
-        <label class="check"><input type="radio" name="mode" value="tunnel" ${info.mode !== "address" ? "checked" : ""} ${info.tunnel_supported ? "" : "disabled"}><span><b>Quick tunnel</b>: works from anywhere, nothing to set up (Cloudflare's free tunnel). The address changes when the app restarts; members then paste the new link.</span></label>
+        <label class="check"><input type="radio" name="mode" value="tunnel" ${info.mode !== "address" ? "checked" : ""} ${info.tunnel_supported ? "" : "disabled"}><span><b>Quick tunnel</b>: works from anywhere, nothing to set up (Cloudflare's free tunnel, for testing: no uptime promised). Its address changes when the app restarts or the tunnel drops; decomp.wtf opens a new one by itself, and members follow it.</span></label>
         <label class="check"><input type="radio" name="mode" value="address" ${info.mode === "address" ? "checked" : ""}><span><b>An address you control</b>: this network, Tailscale, or a server with its own domain. It stays the same, so the room reopens by itself after a restart.</span></label>
         <div id="addrBox" ${info.mode === "address" ? "" : "hidden"}>
           <label class="field"><span>The address teammates use (the room listens on port <input id="addrPort" class="mono port" type="number" value="${info.port || 6481}">)</span><input id="addrIn" class="mono" placeholder="http://192.168.1.20:6481" value="${esc(info.address || "")}"></label>
@@ -1036,7 +1069,11 @@ function renderHost(box, info) {
       <div class="row"><button class="primary" id="startShare" type="button">Start sharing</button></div><pre class="joblog" id="shareLog" hidden></pre>`;
     box.querySelectorAll('[name="mode"]').forEach((r) => { r.onchange = () => { box.querySelector("#addrBox").hidden = r.value !== "address" || !r.checked; }; });
     box.querySelectorAll("[data-addr]").forEach((b) => { b.onclick = () => { box.querySelector("#addrIn").value = b.dataset.addr; }; });
-    box.querySelectorAll("[data-vis]").forEach((b) => { b.onclick = () => box.querySelectorAll("[data-vis]").forEach((x) => x.classList.toggle("on", x === b)); });
+    box.querySelectorAll("[data-vis]").forEach((b) => { b.onclick = () => {
+      box.querySelectorAll("[data-vis]").forEach((x) => x.classList.toggle("on", x === b));
+      box.querySelector("#apprChk").checked = b.dataset.vis === "public";  // strangers can reach a public room
+    }; });
+    wireGithub(box, async () => renderHost(box, await api(`/api/collab?slug=${S.slug}`)));
     box.querySelector("#startShare").onclick = async () => {
       const mode = box.querySelector('[name="mode"]:checked')?.value || "tunnel";
       const visibility = box.querySelector("[data-vis].on")?.dataset.vis || "private";
@@ -1044,7 +1081,9 @@ function renderHost(box, info) {
       box.querySelector("#startShare").disabled = true;
       try {
         const { job } = await api("/api/collab/start", { method: "POST", body: { slug: S.slug, mode, visibility,
-          approve: box.querySelector("#apprChk").checked, address: box.querySelector("#addrIn")?.value || "",
+          approve: box.querySelector("#apprChk").checked, limit: Number(box.querySelector("#limitIn").value) || 0,
+          findable: box.querySelector("#findChk") ? box.querySelector("#findChk").checked : undefined,
+          address: box.querySelector("#addrIn")?.value || "",
           port: Number(box.querySelector("#addrPort")?.value) || 6481, keep: info.was_sharing } });
         await followJob(job, box.querySelector("#shareLog"));
         renderHost(box, await api(`/api/collab?slug=${S.slug}`));
@@ -1060,7 +1099,7 @@ function renderHost(box, info) {
   const waiting = (info.pending || []).map((p) => `<div class="line-item"><div class="txt"><b>${esc(p.name)}</b><span>asks to join</span></div>
       <button class="primary small-btn" data-approve="${esc(p.name)}" type="button">Let in</button><button class="ghost small-btn" data-decline="${esc(p.name)}" type="button">Decline</button></div>`).join("");
   box.innerHTML = `${intro}<label class="field"><span>${info.settings.visibility === "public" ? "The room's address (anyone with it and their own copy of the game can join)" : "Invite link (send it to teammates who own this game)"}</span></label>${cmdBox(info.link || "")}
-    <p class="muted small">${info.mode === "address" ? "Shared at your own address: the room reopens by itself when this app restarts." : "Shared through a quick tunnel: the address changes if this app restarts."} Teammates choose <i>Join a team</i> in decomp.wtf, or run <code>decomp join &lt;link&gt; &lt;their copy&gt; --name &lt;name&gt;</code>.</p>
+    <p class="muted small">${info.mode === "address" ? "Shared at your own address: the room reopens by itself when this app restarts." : "Shared through a quick tunnel: its address changes when this app restarts or the tunnel drops, and decomp.wtf opens a new one by itself."} Teammates choose <i>Join a team</i> in decomp.wtf, or run <code>decomp join &lt;link&gt; &lt;their copy&gt; --name &lt;name&gt;</code>.</p>
     ${waiting ? `<div class="setup-group"><h3>Waiting to join</h3>${waiting}</div>` : ""}
     <div class="setup-group"><h3>In the room · ${members.length} member${members.length === 1 ? "" : "s"}, ${online} online</h3>${people || `<p class="muted small">Nobody yet.</p>`}</div>
     ${opts(info)}
@@ -1076,12 +1115,32 @@ function renderHost(box, info) {
   box.querySelectorAll("[data-decline]").forEach((b) => { b.onclick = () => manage({ action: "decline", name: b.dataset.decline }); });
   box.querySelectorAll("[data-vis]").forEach((b) => { b.onclick = () => manage({ action: "settings", visibility: b.dataset.vis }); });
   box.querySelector("#apprChk").onchange = (e) => manage({ action: "settings", approve: e.target.checked });
+  box.querySelector("#limitIn").onchange = (e) => manage({ action: "settings", limit: Number(e.target.value) || 0 });
+  const find = box.querySelector("#findChk");
+  if (find) find.onchange = (e) => manage({ action: "settings", findable: e.target.checked });
+  wireGithub(box, async () => renderHost(box, await api(`/api/collab?slug=${S.slug}`)));
   box.querySelector("#rotate").onclick = () => { if (confirm("Make a new invite link? The old one stops working for people who haven't joined yet; members stay in.")) manage({ action: "rotate" }); };
   box.querySelector("#stopShare").onclick = async () => {
     await api("/api/collab/stop", { method: "POST", body: { slug: S.slug } });
     renderHost(box, await api(`/api/collab?slug=${S.slug}`));
   };
   serviceRow(box.querySelector("#svcRow"), "The room is open while decomp.wtf runs.");
+}
+
+/* Connect GitHub for the gists that say where rooms are now (identity.py), or disconnect it. */
+function wireGithub(box, then) {
+  const go = box.querySelector("#ghGo"), off = box.querySelector("#ghOff");
+  if (go) go.onclick = async () => {
+    const token = box.querySelector("#ghToken").value.trim();
+    if (!token) return toast("Paste a GitHub token with the gist scope.", "err");
+    go.disabled = true;
+    try { const r = await api("/api/github", { method: "POST", body: { token } }); toast(`On GitHub as ${esc(r.github)}.`, "match"); await then(); }
+    catch (e) { toast(esc(e.message), "err"); go.disabled = false; }
+  };
+  if (off) off.onclick = async () => {
+    if (!confirm("Disconnect GitHub? Rooms stop saying where they are; members paste the new link when it changes.")) return;
+    try { await api("/api/github", { method: "DELETE" }); await then(); } catch (e) { toast(esc(e.message), "err"); }
+  };
 }
 
 /* Start decomp.wtf with the computer (systemd user service, launchd, or a log-on task). */
@@ -1128,6 +1187,7 @@ function openJoin() {
     <label class="field"><span>…or its path on this computer (best for a GameCube or Wii disc: it's read where it is)</span><input id="jPath" class="mono" placeholder="${S.st && S.st.host_os === "windows" ? "C:\\Games\\game.rvz" : "/home/you/games/game.iso"}"></label>
     <label class="check"><input type="checkbox" id="jOwn"><span>This is my own copy of this game, obtained legally. I'll keep what the room makes private.</span></label>
     <p class="muted small">A GameCube, Wii or DS project comes with its whole source tree from the host, and is then built here with your copy and your compilers: the first time takes a few minutes.</p>
+    <label class="check"><input type="checkbox" id="jTrust"><span>I trust the host with this computer. Only needed for a GameCube, Wii or DS game the host started from scratch: its build setup comes from the host, and building it runs that here. (A public decomp's build comes from its own repository; changes the host makes to it wait until you look at them.)</span></label>
     <div class="row"><button class="primary" id="jGo" type="button">Join</button></div><pre class="joblog" id="jLog" hidden></pre>`);
   body.querySelector("#jGo").onclick = async () => {
     const file = $("jRom").files[0], path = $("jPath").value.trim();
@@ -1137,7 +1197,7 @@ function openJoin() {
     $("jLog").hidden = false;
     $("jGo").disabled = true;
     try {
-      let q = `link=${encodeURIComponent($("jLink").value.trim())}&name=${encodeURIComponent($("jName").value)}&confirmed=1`;
+      let q = `link=${encodeURIComponent($("jLink").value.trim())}&name=${encodeURIComponent($("jName").value)}&confirmed=1${$("jTrust").checked ? "&trust=1" : ""}`;
       q += path ? `&path=${encodeURIComponent(path)}` : `&filename=${encodeURIComponent(file.name)}`;
       // the file streams from disk as it's sent: a disc image is never read into the page whole
       const { job } = await api(`/api/collab/join?${q}`, { method: "POST", raw: path ? new Blob([]) : file });

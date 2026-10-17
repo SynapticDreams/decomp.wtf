@@ -51,12 +51,18 @@ class SourceRejected(ValueError):
     pass
 
 
+def check_includes(text: str) -> None:
+    """No include may reach outside the compile's own folder: a header or source that names a file elsewhere on the
+    computer would put it into the build and its error messages (a room shares those with its other members)."""
+    for inc in _INCLUDE.findall(text):
+        if inc.startswith("/") or re.match(r"^[A-Za-z]:", inc) or ".." in re.split(r"[/\\]", inc):
+            raise SourceRejected(f"include path not allowed: {inc}")
+
+
 def check_source(source: str) -> None:
     if len(source.encode()) > MAX_SOURCE_BYTES:
         raise SourceRejected(f"source too large (max {MAX_SOURCE_BYTES} bytes)")
-    for inc in _INCLUDE.findall(source):
-        if inc.startswith("/") or ".." in inc.split("/"):
-            raise SourceRejected(f"include path not allowed: {inc}")
+    check_includes(source)
     # Remove register pins before masking comments/strings (the pin's own string is the register
     # name, which the masking below would otherwise hide from the pin pattern).
     pinned = _REGISTER_PIN.sub("register ", source)
