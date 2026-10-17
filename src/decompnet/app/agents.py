@@ -88,6 +88,13 @@ AGY_ALLOW = "mcp(decomp/*)"
 # drafts and diffs would otherwise ride along into the next one): cheaper per call, and the model stays sharp.
 PER_SESSION = 2
 
+# A helper's Focus (the launcher's menu) -> the claim strategy it works by, and what to say when that runs out.
+# Default is no focus: claims work as they always have.
+FOCUSES = {"quick": ("quick", "no small function (Quick Wins) is left to do here",
+                     "Quick Wins, small functions only"),
+           "close": ("close", "no function at 90% match or better (Close Calls) is left to do here",
+                     "Close Calls, functions already 90%+ matched only")}
+
 
 def kind_id(kind: str) -> str:
     return ALIASES.get(kind, kind)
@@ -593,7 +600,7 @@ class Session:
         self.feed.append({"seq": self.seq, "t": time.time(), "type": kind, "text": text[:4000]})
 
     def snapshot(self, since: int = 0) -> dict:
-        return {"id": self.id, "kind": self.kind, "label": self.label, "slug": self.slug, "agent": self.agent_name,
+        return {"id": self.id, "kind": self.kind, "label": self.label, "slug": self.slug, "agent": self.agent_name, "focus": self.options.get("focus") or "",
                 "state": self.state, "runs": self.runs, "error": self.error, "started_at": self.started_at,
                 "model": self.options.get("model") or "", "effort": self.options.get("effort") or "",
                 "usd": round(self.usd, 4), "tokens": self.tokens, "only_starred": bool(self.options.get("only_starred")),
@@ -754,6 +761,10 @@ class Manager:
             self.net.starred_only[agent.id] = s.started_at
         else:
             self.net.starred_only.pop(agent.id, None)
+        focus = FOCUSES.get(s.options.get("focus") or "")
+        if focus:
+            self.net.focus[agent.id] = focus[0]
+            s.push("info", f"focus: {focus[2]}")
         self.assignments[agent.id] = s.slug
         workdir = self.home / "agents" / s.id
         workdir.mkdir(parents=True, exist_ok=True)
@@ -781,6 +792,9 @@ class Manager:
                     continue
             elif self._left(s.slug) == 0:
                 s.push("info", "nothing left to decompile here 🎉")
+                break
+            if focus and self.net.strategy_left(s.slug, focus[0], agent.id) == 0:
+                s.push("info", f"stopping: {focus[1]}")
                 break
             if (cap := self.over_budget(s.slug)) is not None:
                 s.push("info", f"stopping: the agents on this project have spent the ${cap:.2f} budget (Setup)")
@@ -849,6 +863,7 @@ class Manager:
         with self.net.store.tx() as db:  # release any claim the agent still holds so others can take it
             db.execute("DELETE FROM claims WHERE agent_id=?", (agent.id,))
         self.net.starred_only.pop(agent.id, None)
+        self.net.focus.pop(agent.id, None)
 
     def prompt(self, s: Session) -> str:
         text = self._prompt(s)

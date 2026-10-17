@@ -32,7 +32,15 @@ MACHINE_AGENTS = ("autopilot", "permuter")  # decomp.wtf's own workers: their cl
 # free once it does.
 _TWINS = ("(f.boost > 0 AND f.n_insns <= 400 AND f.abandons < 2) DESC, "
           "CASE WHEN f.boost > 0 THEN (f.boost + 1) * 64 / (f.n_insns + 16) ELSE 0 END DESC, f.boost < 0, ")
+QUICK_INSNS = 48  # a "small" function: about what a batch of claims is made of
+# a strategy may also leave functions out (not only order them): quick wins are small ones only, and
+# close calls are the ones whose best attempt is already 90%+ matched (score <= 10% of n_insns * 100)
+STRATEGY_INSNS_CAP = {"quick": QUICK_INSNS}
+STRATEGY_WHERE = {"close": "AND f.best_score IS NOT NULL AND f.best_score <= MAX(f.n_insns, 1) * 10"}
 STRATEGIES = {
+    # the helpers' Focus menu (Quick Wins, Close Calls): what's quickest to finish, nothing else
+    "quick": "f.abandons > 0, f.n_insns ASC",
+    "close": "f.abandons ASC, CAST(f.best_score AS REAL) / (MAX(f.n_insns, 1) * 100) ASC, f.n_insns ASC",
     "easiest": _TWINS + "f.abandons > 0, f.n_insns ASC",
     # what nobody gave up on, small first; among functions of about the same size, the files closest to done (a
     # file is linked into the game once all of it matches). Leftovers agents released again and again come last,
@@ -285,19 +293,31 @@ class Network:
                 db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
                 self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
             else:
+                cap = STRATEGY_INSNS_CAP.get(strategy, -1)
                 fn = db.execute(
                     f"""SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
                         AND f.id NOT IN (SELECT function_id FROM claims)
+                        AND (? = -1 OR f.n_insns <= ?) {STRATEGY_WHERE.get(strategy, "")}
                         AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
                         ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
                                             AND created_at > ?), {STRATEGIES[strategy]} LIMIT 1""",
-                    (proj["id"], proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
+                    (proj["id"], cap, cap, proj["id"], agent.id, proj["id"], now - RELEASE_COOLDOWN),
                 ).fetchone()
                 if fn is None:
                     return None
                 db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
                 self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
         return fn
+
+    def strategy_left(self, project: str, strategy: str, agent_id: int = 0) -> int:
+        """How many open functions a strategy could still hand out to this agent (none another agent holds): 0
+        means a helper with that focus has nothing to do here."""
+        proj = self._project(project)
+        cap = STRATEGY_INSNS_CAP.get(strategy, -1)
+        return self.store.one(f"SELECT COUNT(*) AS n FROM functions f WHERE f.project_id=? AND f.status='open' "
+                              f"AND (? = -1 OR f.n_insns <= ?) {STRATEGY_WHERE.get(strategy, '')} "
+                              "AND f.id NOT IN (SELECT function_id FROM claims WHERE agent_id<>?)",
+                              proj["id"], cap, cap, agent_id)["n"]
 
     def release(self, agent: Agent, function: str, notes: str, project: str | None = None) -> str:
         fn = self._function(function, project)
