@@ -32,6 +32,15 @@ absolute, so the build pins every symbol to the ROM's own address and compares b
 Until the toolchain is installed a `.nes` project is imported **read-only**: disassembled and searchable, but not
 handed out for matching.
 
+## What's set aside
+
+Most NES games are hand-written assembly. The app sets aside what its split hands out that no C function is (status *assembly* or *not code*,
+with the reason): pieces of a routine that run on into the next function (the split starts a function wherever code
+jumps or branches to, and hand-written code branches into the middle of its routines), bytes that are no
+instruction, `brk` (what zero bytes decode to), padding, and a stretch the split ran its longest on. If a function you're given looks like one of
+those, say so in a note and release it. `__naked` is refused: it leaves out the function's return, so it can only
+reproduce such a piece, and a match has to be a whole function from C.
+
 ## What SDCC does on the 6502
 
 - **Arguments:** the first byte argument is in A and the second in X; a 16-bit first argument is A (low) and X (high).

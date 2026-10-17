@@ -145,3 +145,28 @@ def test_what_sdcc_never_writes_on_the_game_boy_as_measured():
     assert sm83_reason(h("b7caef4ec9"), 0x100) is None  # or a; jp z, _gv; ret: a conditional tail call
     assert sm83_reason(h("b72801c9afc9"), 0x100) is None  # a jr inside the function
     assert sm83_reason(h("b72003cd4729c9"), 0x100) is None  # call; ret, with a branch to that ret: SDCC may
+
+
+def test_what_the_nes_and_master_system_splits_hand_out_that_no_c_is():
+    """Their splits start a function wherever code branches to, so hand-written routines come out in pieces that run
+    on into the next one; and data. A whole function (ending on a return or a jump) is left alone."""
+    from decompnet.handwritten import mos6502_reason, z80_reason
+
+    h = bytes.fromhex
+    assert "runs on" in mos6502_reason(h("48"), 0x8000)  # pha, then the next piece
+    assert "runs on" in mos6502_reason(h("a9008d0620"), 0x8000)  # lda #0; sta $2006
+    assert "no instruction" in mos6502_reason(h("a90002"), 0x8000)
+    assert "brk" in mos6502_reason(h("a9000000"), 0x8000)  # zero bytes
+    assert mos6502_reason(h("0000"), 0x8000).startswith("padding")
+    assert "longest" in mos6502_reason(h("60"), 0x8000, capped=True)
+    assert mos6502_reason(h("60"), 0x8000) is None  # rts
+    assert mos6502_reason(h("ad2105cd2505f003"), 0x8000) is not None  # (cut off before its return)
+    assert mos6502_reason(h("ad2105cd2505f0038d25052061fe60"), 0x8000) is None  # a whole routine
+    assert mos6502_reason(h("4ca1fe"), 0x8000) is None  # a tail call
+    assert "runs on" in z80_reason(h("eda0eda0"), 0x0a95)  # ldi; ldi: an unrolled copy's middle
+    assert "halt" in z80_reason(h("76c9"), 0x100)
+    assert "no instruction" in z80_reason(h("edffc9"), 0x100)
+    assert z80_reason(h("ffff"), 0x100).startswith("padding")
+    assert z80_reason(h("3a06cad3bfc9"), 0x100) is None  # ld a, ($ca06); out ($bf), a; ret
+    assert z80_reason(h("b7ca0040c9"), 0x100) is None  # a conditional tail call, then ret
+    assert z80_reason(h("c30040"), 0x100) is None  # jp

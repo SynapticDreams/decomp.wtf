@@ -29,6 +29,12 @@ writes those only as inline assembly, which decomp.wtf doesn't take). And what S
 writes, measured: a routine that reads h or l before setting them (it passes arguments in a, e, de and bc; hl never),
 a jr out of the function (its jr stays inside one; it reaches other functions with jp, conditional tail calls
 included), and a call followed by a ret no branch reaches (a call at the end becomes a jp).
+
+6502 (NES) and Z80 (Master System, Game Gear), see mos6502_reason and z80_reason. Their splits start a function at
+every address code jumps or branches to, and hand-written code branches into the middle of its routines, so what they
+hand out is often a piece: one that runs on into the next function (no C function ends without a return or a jump;
+SDCC's __naked, which leaves the return out, is refused). Also padding, a stretch the split ran its longest on, bytes
+that are no instruction, brk (what zero bytes decode to on the 6502) and halt (inline assembly only, on the Z80).
 """
 
 from __future__ import annotations
@@ -377,4 +383,43 @@ def sm83_routine(code: bytes, base: int = 0) -> int | None:
         off += max(1, ln)
         if (text in ("ret", "reti") or re.match(r"^(jp|jr) \$", text)) and far < addr + ln:
             return off if off < len(code) and sm83_reason(code[:off], base) is None else None
+    return None
+
+
+def mos6502_reason(code: bytes, base: int = 0, capped: bool = False) -> str | None:
+    """Why this NES function (6502 code, from the entry at `base`) isn't code a C compiler made, or None.
+    `capped`: the split gave it its longest size, not having found the next function."""
+    from .rom import mos6502
+
+    return _piece_reason(code, base, capped, mos6502)
+
+
+def z80_reason(code: bytes, base: int = 0, capped: bool = False) -> str | None:
+    """Why this Master System or Game Gear function (Z80 code, from the entry at `base`) isn't code a C compiler made,
+    or None. `capped`: the split gave it its longest size, not having found the next function."""
+    from .rom import z80
+
+    return _piece_reason(code, base, capped, z80)
+
+
+def _piece_reason(code: bytes, base: int, capped: bool, cpu) -> str | None:
+    """What the NES and Master System splits hand out that no C function is. They start a function at every place
+    code jumps or branches to, and hand-written code branches into the middle of its routines all the time, so many
+    of their functions are pieces that run on into the next one; and data the split took for code."""
+    if not code:
+        return None
+    if all(b in (0x00, 0xFF) for b in code):
+        return "padding (00 or FF bytes only), not a function"
+    if capped:
+        return "the split ran its longest without reaching the next function: its end isn't known (data follows code)"
+    insns = list(cpu.disassemble(code, base))
+    for addr, text, _ln in insns:
+        if text.startswith("db "):
+            return f"bytes that are no instruction (at ${addr:04x}): data, not code"
+        if text.startswith("brk"):  # (6502) what zero bytes decode to: a game doesn't run it
+            return f"brk at ${addr:04x}, what zero bytes decode to: data, not code"
+        if text == "halt":  # (Z80)
+            return f"halt at ${addr:04x}: C writes it only as inline assembly, which isn't taken"
+    if not cpu.is_return(insns[-1][1]):
+        return "runs on into the next function (it ends without a return or a jump): a piece of a hand-written routine"
     return None

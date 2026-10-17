@@ -27,11 +27,16 @@ from io import BytesIO
 from pathlib import Path
 
 from ..elfobj import _MASKS, Reloc, mask_relocs
-from ..handwritten import mips_reason, ppc_reason, sm83_reason, sm83_routine
+from ..handwritten import mips_reason, mos6502_reason, ppc_reason, sm83_reason, sm83_routine, z80_reason
+from ..rom import nes, sms
 from ..rom.gb_mgbdis import MAX_FUNCTION
 from ..network import NetworkError
 
 log = logging.getLogger("decomp.wtf")
+# the 8-bit lanes, whose splits hand out pieces of routines and data too: why a function's code is none, and the
+# longest a function gets there (one that long: the split never found its end)
+PIECES = {"sm83": (sm83_reason, MAX_FUNCTION), "mos6502": (mos6502_reason, nes.MAX_FUNCTION),
+          "z80": (z80_reason, sms.MAX_FUNCTION)}
 IDENT = re.compile(r"^[A-Za-z_]\w*$")
 _MACHINE = {"EM_PPC": ("ppc", "big"), "EM_MIPS": ("mips", None), "EM_ARM": ("arm", "little")}
 _CACHE_VERSION = 2  # of twins.json: 2 added why code is hand-written assembly
@@ -393,9 +398,10 @@ class Twins:
 
     def _set_aside_rom_asm(self, proj) -> int:
         """ROM projects on MIPS (N64, PlayStation, PlayStation 2): mips_reason on each open function's code; on the
-        Game Boy's SM83, sm83_reason (which also finds what the split took for a function: padding, data)."""
+        Game Boy's SM83, sm83_reason, and on the NES's 6502 and the Master System's Z80 their own (which also find
+        what the split took for a function: padding, data, pieces of routines)."""
         arch = proj["arch"] or "mips"
-        if arch not in ("mips", "sm83"):
+        if arch not in ("mips", *PIECES):
             return 0
         cfg = self.net.cfg(proj)
         platform, big = cfg.get("platform", ""), bool(proj["big_endian"])
@@ -403,8 +409,11 @@ class Twins:
         for r in self.net.store.all("SELECT id, name, target, meta, vram, size, rom_offset FROM functions "
                                     "WHERE project_id=? AND status='open'", proj["id"]):
             code = r["target"] or b""
-            why = (sm83_reason(code, r["vram"] or 0, capped=r["size"] >= MAX_FUNCTION) if arch == "sm83"
-                   else mips_reason(code, big, platform))
+            if arch in PIECES:
+                reason, longest = PIECES[arch]
+                why = reason(code, r["vram"] or 0, capped=r["size"] >= longest)
+            else:
+                why = mips_reason(code, big, platform)
             if why and arch == "sm83" and (n := sm83_routine(code, r["vram"] or 0)):
                 trims.append((r, n))  # the routine at its start is one SDCC could write: the function is that
             elif why:
@@ -446,9 +455,10 @@ class Twins:
             return job
         if slug in self.net.links:  # a room member: the host's copy does this, and its matches come back here
             proj = self.net.project_row(slug)
-            if proj["arch"] == "sm83" and not self.net.fork_slug(slug):
-                # but a Game Boy function's end and what's set aside come from its bytes alone: the same here as
-                # on the host (every member's copy is the host's game), so this copy's functions end where its do
+            if proj["arch"] in PIECES and not self.net.fork_slug(slug):
+                # but a Game Boy (NES, Master System) function's end and what's set aside come from its bytes alone:
+                # the same here as on the host (every member's copy is the host's game), so this copy's functions end
+                # where its do
                 threading.Thread(target=self.set_aside_asm, args=(proj,), daemon=True, name=f"asm-{slug}").start()
             return None
         job = Job()
