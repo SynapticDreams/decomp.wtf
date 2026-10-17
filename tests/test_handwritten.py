@@ -108,7 +108,7 @@ def test_game_boy_code_sdcc_never_writes():
     # what SDCC does write: a bank-switching wrapper, a flag set before it's read, a loop, a tail jump
     wrapper = h("f09be09c3e14e09bea0021cdef4ef09ce09bea0021c9")
     assert sm83_reason(wrapper, 0x198) is None
-    assert sm83_reason(h("fe053802c9c9")) is None  # cp 5; jr c
+    assert sm83_reason(h("fe053801c9c9")) is None  # cp 5; jr c to the second ret
     assert sm83_reason(h("21ff9b0100043e10320b78b120f8c9"), 0x2997) is None  # a fill loop
     assert sm83_reason(h("c34729")) is None  # jp $2947
 
@@ -124,3 +124,24 @@ def test_a_routine_the_split_ran_on_ends_where_it_does():
     assert sm83_routine(h("3e01c9"), 0) is None  # nothing follows: nothing to cut
     assert sm83_routine(h("d3c9"), 0) is None  # data from the start
     assert sm83_routine(h("4000c9" "00"), 0) is None  # ld b, b: not a routine SDCC could write
+
+
+def test_what_sdcc_never_writes_on_the_game_boy_as_measured():
+    """Measured with GBDK-2020 4.5 (SDCC 4.5.1, -msm83): arguments come in a, e, de and bc, never hl (and
+    __z88dk_fastcall doesn't exist there); a call at the end becomes a jp, conditional ones too; jr stays inside the
+    function. An interrupt handler pushes hl first: saving it isn't reading it."""
+    from decompnet.handwritten import sm83_reason
+
+    h = bytes.fromhex
+    assert "reads hl" in sm83_reason(h("7ec9"), 0x100)  # ld a, (hl); ret: a pointer in hl
+    assert "reads hl" in sm83_reason(h("77c9"), 0x100)  # ld (hl), a
+    assert "reads l" in sm83_reason(h("2cc9"), 0x100)  # inc l
+    assert "then ret" in sm83_reason(h("cd4729c9"), 0x100)  # call $2947; ret: SDCC writes jp $2947
+    assert "leaves the function" in sm83_reason(h("b728f0c9c9"), 0x100)  # or a; jr z back into the routine before
+    # what SDCC writes
+    assert sm83_reason(h("1213c9"), 0x100) is None  # ld (de), a; inc de: arguments in a and de
+    assert sm83_reason(h("f8027eea00c0c9"), 0x100) is None  # __sdcccall(0): ldhl sp, #2 first
+    assert sm83_reason(h("f5c5d5e521ffc03601e1d1c1f1d9"), 0x100) is None  # an __interrupt handler's push hl
+    assert sm83_reason(h("b7caef4ec9"), 0x100) is None  # or a; jp z, _gv; ret: a conditional tail call
+    assert sm83_reason(h("b72801c9afc9"), 0x100) is None  # a jr inside the function
+    assert sm83_reason(h("b72003cd4729c9"), 0x100) is None  # call; ret, with a branch to that ret: SDCC may
