@@ -187,7 +187,7 @@ def split(rom_path: Path, workdir: Path, log=lambda *_: None) -> tuple[list[gb.G
     `{"faithful": bool, "labels": n, "functions": n, "rebuilt_bytes": n}`."""
     ts = tools()
     if ts is None:
-        raise RomError("mgbdis and rgbds are not installed (see `decomp setup`)")
+        raise RomError("mgbdis and rgbds are not installed (Setup lists them; the app installs them when a game is imported)")
     rom_path = Path(rom_path)
     data = rom_path.read_bytes()
     if not gb.is_gb(data):

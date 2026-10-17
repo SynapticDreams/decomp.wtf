@@ -309,8 +309,10 @@ def functions(data: bytes, log=lambda *_: None) -> list[gb.GbFunction]:
     return out
 
 
-def split(path: Path, workdir: Path, log=lambda *_: None) -> list[gb.GbFunction]:
-    """A ROM file's functions."""
+def split(path: Path, workdir: Path, log=lambda *_: None, report: dict | None = None) -> list[gb.GbFunction]:
+    """A ROM file's functions. (`report` gets {"splitter": "built-in"}: there is no external tool for the Z80.)"""
+    if report is not None:
+        report["splitter"] = "built-in"
     data = strip_copier_header(Path(path).read_bytes())
     if not is_sms(data, Path(path).name):
         raise RomError("this isn't a Master System or Game Gear ROM")

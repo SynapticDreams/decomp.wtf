@@ -17,7 +17,8 @@ its own disassembler (`decompnet.rom.sm83`) and reads cartridges through `mgbdis
 ## The matching lane
 
 Matching is done with the pinned **GBDK-2020** toolchain: `sdcc -msm83` for C, `sdasgb` for assembly.
-`decomp setup` installs it (every download is pinned by sha256 per platform).
+The app installs it when a game is imported (every download is pinned by sha256 per platform), and Setup lists it with
+mgbdis and rgbds, which split the ROM.
 
 A Game Boy ROM's bytes contain **absolute** call and jump addresses, so the lane compiles in absolute
 symbol mode: the build emits `.equ` lines that pin SDCC's references to the ROM's own addresses, and
@@ -26,7 +27,7 @@ scores the result with the same judge as every other platform.
 **Until the toolchain is installed**, a `.gb`/`.gbc` project is imported **read-only**: every function
 is disassembled, searchable and briefable, but functions are not handed out for matching, because no
 candidate could be judged yet. That is deliberate — it is the honest state rather than distributing
-work nobody can score. Run `decomp setup`, or ask the owner, to turn the lane on.
+work nobody can score. Importing the game again (or installing GBDK-2020 from Setup) turns the lane on.
 
 ## What moves SDCC's output
 
