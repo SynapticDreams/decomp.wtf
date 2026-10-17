@@ -36,6 +36,8 @@ searchable, but not handed out for matching, because no candidate could be judge
   `in a, ($be)`. The VDP is at ports 0xBE (data) and 0xBF (control), the controllers are read at 0xDC and 0xDD.
 - **Memory:** a fixed RAM address is `*(volatile u8 *)0xC000`, which is `ld ($c000), a` / `ld a, ($c000)`.
   RAM is 0xC000-0xDFFF (mirrored at 0xE000); the mapper registers are 0xFFFC-0xFFFF.
+- **`rst` calls:** `void func_000_0028(void) __z88dk_shortcall(0x28, 0);` then `func_000_0028();` builds to `rst $28` followed by
+  the byte `0x00` (the second number is the byte that follows). Declare the function with its own name, as the project knows it.
 - **Calls:** a call in tail position becomes `jp`. If the target has `call f` then `ret`, give the call
   something to do afterwards (a statement after it, or return a value) to get the `call`.
 
