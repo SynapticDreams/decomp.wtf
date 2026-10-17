@@ -26,6 +26,15 @@ build pins every symbol to the ROM's own address and compares bytes directly, wi
 Until the toolchain is installed a `.sms`/`.gg` project is imported **read-only**: disassembled and
 searchable, but not handed out for matching, because no candidate could be judged.
 
+## What's set aside
+
+Most Master System and Game Gear games are hand-written assembly. The app sets aside what its split hands out that no C function is (status *assembly* or *not code*,
+with the reason): pieces of a routine that run on into the next function (the split starts a function wherever code
+jumps or branches to, and hand-written code branches into the middle of its routines), bytes that are no
+instruction, `halt` (inline assembly only), padding, and a stretch the split ran its longest on. If a function you're given looks like one of
+those, say so in a note and release it. `__naked` is refused: it leaves out the function's return, so it can only
+reproduce such a piece, and a match has to be a whole function from C.
+
 ## What SDCC does on the Z80 (`sdcccall(1)`)
 
 - **Arguments:** the first byte argument is in A and the second in L. 16-bit arguments are in HL, then DE.
