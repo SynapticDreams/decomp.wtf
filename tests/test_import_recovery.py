@@ -230,6 +230,8 @@ def test_the_sidebar_offers_remove_on_a_project_that_cannot_be_opened():
     js = (Path(__file__).resolve().parent.parent / "src" / "decompnet" / "app" / "static" / "app.js").read_text(encoding="utf-8")
     start = js.index("function renderNav() {")
     fn = js[start:js.index("\n}\n", start) + 3]
+    at = js.index("const progress = (p) => {")
+    fn = js[at:js.index("\n};\n", at) + 4] + fn  # what the sidebar measures progress with
     script = f"""
 let html = "";
 const box = {{ set innerHTML(v) {{ html = v; }}, get innerHTML() {{ return html; }}, querySelectorAll: () => [] }};

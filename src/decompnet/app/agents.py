@@ -26,6 +26,7 @@ from pathlib import Path
 
 import httpx
 
+from ..scoring import MECHANICAL, NEAR_MISS, STALL_ATTEMPTS, stage  # noqa: F401 (the tiers' thresholds)
 from . import tools
 from .engine import RomNetwork
 
@@ -184,8 +185,7 @@ def no_credit(said: str) -> str | None:
 # Each session runs one function (per_session 1), so the model can change from one claim to the next.
 TIERED = "tiered"
 HAIKU, SONNET, OPUS = "haiku", "sonnet", "opus"  # Claude Code's aliases: always Anthropic's latest of each kind
-# tier -> (model, --effort). The thresholds below are fractions of the worst score (n_insns * 100: every
-# instruction wrong), so they mean the same on a 20-instruction function and a 2000-instruction one.
+# tier -> (model, --effort). The tiers are scoring.stage's: how far the function is (its thresholds are there).
 TIERS = {
     "escalated": (OPUS, "high"),       # still far off after STALL_ATTEMPTS attempts: structure not found yet
     "near_miss": (HAIKU, "low"),       # best within NEAR_MISS of the target: operands and registers left, compile-and-adjust
@@ -193,27 +193,14 @@ TIERS = {
     "fresh": (SONNET, "medium"),       # no compiled attempt yet: the first structural attempt, reading look-alikes
     "structural": (SONNET, "medium"),  # a best that is far off: structure still to find
 }
-NEAR_MISS = 0.10      # best_score <= 10% of the worst score
-MECHANICAL = 0.40     # best_score <= 40% of the worst score
-STALL_ATTEMPTS = 10   # attempts on the function (every agent) after which a far-off best goes to Opus
 EFFORTS = ("low", "medium", "high", "xhigh", "max")  # what Claude Code's --effort takes
 
 
 def tier_for(state: dict) -> tuple[str, str, str]:
     """(model, effort, tier) for a function's state. Keys: best_score (None = nothing compiled yet), n_insns,
     attempts (every agent's, from the store)."""
-    best = state.get("best_score")
-    if best is None:
-        return *TIERS["fresh"], "fresh"
-    n = max(int(state.get("n_insns") or 0), 1)
-    frac = float(best) / (n * 100)
-    if int(state.get("attempts") or 0) >= STALL_ATTEMPTS and frac > MECHANICAL:
-        return *TIERS["escalated"], "escalated"
-    if frac <= NEAR_MISS:
-        return *TIERS["near_miss"], "near_miss"
-    if frac <= MECHANICAL:
-        return *TIERS["mechanical"], "mechanical"
-    return *TIERS["structural"], "structural"
+    tier = stage(state.get("best_score"), state.get("n_insns"), state.get("attempts"))
+    return *TIERS[tier], tier
 
 
 def next_function(net, slug: str, agent_id: int = 0):
@@ -703,6 +690,22 @@ class Manager:
         self._prep: dict[str, threading.Event] = {}  # slug -> giving its code source files before agents claim
         self.on_stop = lambda: None  # set by the server: close tunnels when the app quits
         self.persist = lambda running: None  # set by the server: remember helpers to resume after a restart
+        if net is not None:
+            net.run_info = self.run_info  # each attempt says which helper setup made it
+
+    def run_info(self, agent_id: int) -> dict | None:
+        """The kind, model and effort of the helper running as this agent, for its attempts (None: no helper of
+        this app's is). A model or effort the helper wasn't given is its own default: the user's setting, when
+        decomp.wtf can read it."""
+        s = next((x for x in list(self.sessions.values()) if x.agent_id == agent_id and agent_id), None)
+        if s is None:
+            return None
+        model = (s.routed_model if s.tiered else s.options.get("model")) or ""
+        effort = (s.routed_effort if s.tiered else s.options.get("effort")) or ""
+        if s.kind != "api":
+            model = model or _config_model(s.kind) or "default"
+            effort = effort or _config_effort(s.kind) or "default"
+        return {"kind": s.kind, "model": model, "effort": effort}
 
     # -- control
 

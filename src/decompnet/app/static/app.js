@@ -7,6 +7,13 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 const hex8 = (n) => "0x" + (n >>> 0).toString(16).toUpperCase().padStart(8, "0");
 const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
 const pctOf = (best, insns) => (best == null ? null : Math.max(0, 1 - best / Math.max(1, insns * 100)));
+/* A project's progress against what can be matched: functions set aside (assembly no compiler makes, data the split
+   took for code) count apart, so a game written in assembly isn't stuck near 0% for good. */
+const progress = (p) => {
+  const asm = p.asm || 0, room = Math.max(0, (p.bytes || 0) - (p.asm_bytes || 0));
+  return { pct: room ? (100 * (p.matched_bytes || 0)) / room : 0, total: Math.max(0, (p.functions || 0) - asm), room, asm };
+};
+const asideText = (n) => (n ? ` · ${n.toLocaleString()} set aside` : "");
 /* A match percentage that never reads 100% before the function really matches (99.6% stays 99.6%). */
 const pctText = (p) => (p >= 0.99 ? `${(Math.floor(p * 1000) / 10).toFixed(1)}%` : `${Math.floor(p * 100)}%`);
 const pctNum = (p) => (p < 10 ? p.toFixed(2) : p.toFixed(1));
@@ -157,7 +164,7 @@ function renderNav() {
   const box = $("navProjects");
   if (!S.projects.length) { box.innerHTML = `<p class="nav-empty">None yet: drop in a game.</p>`; return; }
   box.innerHTML = S.projects.map((p) => {
-    const pct = p.bytes ? (100 * p.matched_bytes) / p.bytes : 0;
+    const pct = progress(p).pct;
     const short = PLAT_SHORT[p.platform] || (p.platform_name || "").replace("Nintendo ", "") || "?";
     const state = p.working ? `<span class="dot on" title="${p.working} agent${p.working === 1 ? "" : "s"} working"></span>`
       : p.autopilot === "running" ? `<span class="dot work" title="autopilot running"></span>` : "";
@@ -198,7 +205,7 @@ async function showHome() {
   box.innerHTML = "";
   $("recent").hidden = !st.projects.length;
   for (const p of st.projects) {
-    const pct = p.bytes ? (100 * p.matched_bytes) / p.bytes : 0;
+    const pr = progress(p), pct = pr.pct;
     const a = document.createElement("a");
     a.className = "card";
     a.href = `#/p/${p.slug}`;
@@ -213,7 +220,7 @@ async function showHome() {
       : `${esc(p.rom?.game_code || "")}${p.rom?.region ? " · " + esc(p.rom.region) : ""} · ${esc(p.compiler?.name || "")}`;
     a.innerHTML = `<div class="cc-top"><span class="plat">${esc(p.platform_name || "?")}</span><span class="meta">${esc(since(p.last_activity))}</span></div>
       <div><h4>${esc(p.title)}</h4><p class="meta">${meta}</p></div>
-      <div class="meter"><i></i></div><p class="meta"><b>${pctNum(pct)}%</b> of code · ${(p.matched || 0).toLocaleString()} / ${(p.functions || 0).toLocaleString()} functions</p>`;
+      <div class="meter"><i></i></div><p class="meta"><b>${pctNum(pct)}%</b> of code · ${(p.matched || 0).toLocaleString()} / ${pr.total.toLocaleString()} functions${asideText(pr.asm)}</p>`;
     box.append(a);
     requestAnimationFrame(() => { a.querySelector(".meter i").style.width = pct + "%"; });
   }
@@ -773,11 +780,11 @@ function renderHeader(ov) {
   if (comp) chips.push(`<span class="chip-s" title="${esc(fork ? "" : ov.compiler.flags.join(" "))}">${esc(comp)}</span>`);
   $("phChips").innerHTML = chips.join("");
   $("phTitle").textContent = ov.title;
-  const pct = ov.bytes ? (100 * ov.matched_bytes) / ov.bytes : 0;
+  const pr = progress(ov), pct = pr.pct;
   $("phPct").textContent = pctNum(pct);
   $("phBar").style.width = pct + "%";
   $("phSub").textContent = fork && !ov.ready ? "set up the project to start"
-    : `${ov.matched.toLocaleString()} / ${ov.functions.toLocaleString()} functions${linkedText(ov)} · ${plural(ov.attempts || 0, "compile")}${S.today ? ` · ${S.today} matched today` : ""}`;
+    : `${ov.matched.toLocaleString()} / ${pr.total.toLocaleString()} functions${asideText(pr.asm)}${linkedText(ov)} · ${plural(ov.attempts || 0, "compile")}${S.today ? ` · ${S.today} matched today` : ""}`;
   const w = workingAgents();
   $("phWorking").hidden = !w.n;
   $("phWorkingText").textContent = `${w.n} agent${w.n === 1 ? "" : "s"} working`;
@@ -843,10 +850,11 @@ function linkedText(ov) {
 
 function renderStats(ov) {
   renderHeader(ov);
-  const pct = ov.bytes ? (100 * ov.matched_bytes) / ov.bytes : 0;
+  const pr = progress(ov), pct = pr.pct;
   $("pct").textContent = pctNum(pct);
-  $("pctSub").textContent = (ov.bytes ? `${bytes(ov.matched_bytes)} of ${bytes(ov.bytes)}` : "") + linkedText(ov) + (S.today ? ` · ${S.today} matched today` : "");
-  $("fnCount").textContent = `${ov.matched.toLocaleString()} / ${ov.functions.toLocaleString()}`;
+  $("pctSub").textContent = (pr.room ? `${bytes(ov.matched_bytes)} of ${bytes(pr.room)}` : "") + (pr.asm ? ` (${bytes(ov.asm_bytes)} set aside)` : "")
+    + linkedText(ov) + (S.today ? ` · ${S.today} matched today` : "");
+  $("fnCount").textContent = `${ov.matched.toLocaleString()} / ${pr.total.toLocaleString()}`;
   renderAutopilot(ov);
   renderSteering(ov);
   if (S.tab === "source") renderSource(ov);
@@ -903,9 +911,10 @@ function renderOverview() {
   const c = fnCounts(), total = Math.max(1, S.map.length);
   const seg = (k, cls) => (c[k] ? `<i class="${cls}" data-w="${(100 * c[k]) / total}" title="${c[k]} ${k === "open" ? "to do" : k}"></i>` : "");
   $("fnStack").innerHTML = seg("matched", "s-match") + seg("working", "s-work") + seg("tried", "s-tried") + seg("asm", "s-asm") + seg("open", "s-open");
+  $("legendAsm").hidden = !c.asm;
   setWidths($("fnStack"));
-  const togo = S.ov.functions - S.ov.matched;
-  $("fnSub").textContent = `${togo.toLocaleString()} to go${c.tried ? ` · ${c.tried.toLocaleString()} tried` : ""}${c.working ? ` · ${c.working} in progress` : ""}${c.asm ? ` · ${c.asm} assembly` : ""}`;
+  const togo = Math.max(0, S.ov.functions - S.ov.matched - c.asm);  // what's set aside isn't to go
+  $("fnSub").textContent = `${togo.toLocaleString()} to go${c.tried ? ` · ${c.tried.toLocaleString()} tried` : ""}${c.working ? ` · ${c.working} in progress` : ""}${c.asm ? ` · ${c.asm.toLocaleString()} set aside (assembly or data)` : ""}`;
   const st = S.stats;
   if (st) {
     const ph = st.matches_per_hour, max = Math.max(1, ...ph);
@@ -914,13 +923,50 @@ function renderOverview() {
     $("paceBars").innerHTML = ph.map((n, i) => `<rect x="${i * 10 + 1}" y="${28 - Math.max(n ? 3 : 1, (26 * n) / max)}" width="8" height="${Math.max(n ? 3 : 1, (26 * n) / max)}" rx="1.5" class="${n ? "on" : ""}"><title>${n} matched ${23 - i ? `${23 - i} h ago` : "this hour"}</title></rect>`).join("");
     $("paceSub").textContent = `matched in the last hour · ${plural(st.compiles_last_hour, "compile")}` + (last3 > 0 && togo > 0 ? ` · ≈ ${duration(togo / last3)} to go at this pace` : "");
     $("board").innerHTML = st.agents.length ? st.agents.slice(0, 8).map((r) => `<li><span class="who">${esc(r.agent)}</span><span class="grow"></span>
-        <span class="mono small">${r.matched ? `<b class="ok">${r.matched.toLocaleString()}</b> matched · ` : ""}${plural(r.compiles, "compile")}</span></li>`).join("")
+        <span class="mono small">${r.matched ? `<b class="ok">${r.matched.toLocaleString()}</b> matched · ` : ""}${r.points ? `<span title="percentage points its attempts made functions closer by">${r.points.toLocaleString()} pts</span> · ` : ""}${plural(r.compiles, "compile")}</span></li>`).join("")
       : `<li class="muted small">Nobody yet. Matches by agents, the autopilot and you show up here.</li>`;
+    renderCloser(st);
+    renderSetups(st);
   }
   const recent = S.map.filter((f) => f.status === "matched" && f.matched_at).sort((a, b) => b.matched_at - a.matched_at).slice(0, 8);
   $("recentMatches").innerHTML = recent.length ? recent.map((f) => `<li><span class="ok">✓</span>${fnLink(f.name)}<span class="grow"></span><span class="muted small">${esc(f.matched_by || "")} · ${esc(since(f.matched_at))}</span></li>`).join("")
     : `<li class="muted small">No matches yet.</li>`;
   $("recentMatches").querySelectorAll(".fn").forEach((x) => { x.onclick = () => openFn(x.dataset.fn); });
+}
+
+/* Progress short of matches (engine._progress): how close the best attempts are, and who got them there. */
+const SETUP_KIND = { claude: "Claude Code", codex: "Codex", api: "API", antigravity: "Antigravity", opencode: "OpenCode",
+  own: "your own agent", permuter: "permuter", room: "room member" };
+const STAGE_NAME = { fresh: "first tries", structural: "far off", mechanical: "close", near_miss: "near misses", escalated: "stuck" };
+const pctPts = (x) => `${Math.round(100 * x)}%`;
+
+function renderCloser(st) {
+  const c = st.closeness || { now: 0, per_hour: [], today: 0 };
+  const ph = c.per_hour || [], max = Math.max(0.01, ...ph);
+  $("closerBars").innerHTML = ph.map((n, i) => `<rect x="${i * 10 + 1}" y="${20 - Math.max(n ? 3 : 1, (18 * n) / max)}" width="8" height="${Math.max(n ? 3 : 1, (18 * n) / max)}" rx="1.5" class="${n ? "on" : ""}"><title>+${n.toFixed(2)} pts ${23 - i ? `${23 - i} h ago` : "this hour"}</title></rect>`).join("");
+  $("closerSub").textContent = `The best attempts so far reproduce ${c.now.toFixed(1)}% of the code C can match`
+    + (c.today ? ` (+${c.today.toFixed(1)} points in the last 24 hours).` : ".");
+  const rows = st.closer || [];
+  $("closerList").innerHTML = rows.length ? rows.map((r) => `<li>${fnLink(r.name)}<span class="mono small nowrap">${pctPts(r.from)} → <b>${pctPts(r.to)}</b></span><span class="grow"></span><span class="muted small">${esc(r.agent)}${r.model ? ` · ${esc(r.model)}` : ""} · ${esc(since(r.at))}</span></li>`).join("")
+    : `<li class="muted small">No big jumps yet: functions that get 5 points or more closer show up here.</li>`;
+  $("closerList").querySelectorAll(".fn").forEach((x) => { x.onclick = () => openFn(x.dataset.fn); });
+}
+
+function renderSetups(st) {
+  const rows = st.setups || [];
+  if (!rows.length) {
+    $("setups").innerHTML = `<p class="muted small">Each attempt is tagged with the agent, model and effort that made it, from this version on. Once helpers have worked a while, this compares them: points are percentage points of closeness gained, and points per attempt are compared on like work (functions as far along).</p>`;
+    return;
+  }
+  // under each setup, points per attempt by how far its functions already were: the fair comparison
+  const stages = (r) => Object.keys(STAGE_NAME).filter((k) => r.stages[k])
+    .map((k) => `<span title="${r.stages[k].attempts} attempts on functions that were ${esc(STAGE_NAME[k])}">${esc(STAGE_NAME[k])} <b>${r.stages[k].per_attempt.toFixed(1)}</b></span>`).join(" · ");
+  $("setups").innerHTML = `<table class="fn-table setups"><thead><tr><th>Setup</th><th class="r">Attempts</th><th class="r">Matches</th><th class="r">Points</th><th class="r">Per attempt</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr class="setup"><td>${esc(SETUP_KIND[r.kind] || r.kind)}${r.model ? ` · <span class="mono">${esc(r.model)}</span>` : ""}${r.effort ? ` · ${esc(r.effort)}` : ""}</td>
+      <td class="r mono">${r.attempts.toLocaleString()}</td><td class="r mono">${r.matches.toLocaleString()}</td><td class="r mono">${Math.round(r.points).toLocaleString()}</td>
+      <td class="r mono"><b>${r.per_attempt.toFixed(1)}</b></td></tr>
+      <tr class="stages"><td colspan="5" class="muted small">${stages(r)}</td></tr>`).join("")}</tbody></table>
+    <p class="muted small">Points per attempt on functions as far along (the line under each setup) is the fair comparison: tiered helpers give near misses to faster models and stuck functions to stronger ones, so totals mix different work.</p>`;
 }
 
 function renderAgentsKpi(ov) {
@@ -937,11 +983,11 @@ function renderAgentsKpi(ov) {
 function renderNext(ov) {
   const box = $("nextStep");
   const w = workingAgents();
-  const done = ov.functions > 0 && ov.matched >= ov.functions;
+  const done = progress(ov).total > 0 && ov.matched >= progress(ov).total;  // everything that can be matched is
   const compilerOk = ov.kind === "fork" || ov.compiler.installed;
   if (done) {
     box.hidden = false;
-    box.innerHTML = `<div class="next-text"><b>Every function matches.</b><span class="muted small">Export the project: a source tree that rebuilds your game byte for byte.</span></div><a class="primary small-btn as-btn" href="#/p/${esc(S.slug)}/source">Export</a>`;
+    box.innerHTML = `<div class="next-text"><b>${ov.asm ? "Every function C can match is matched." : "Every function matches."}</b><span class="muted small">Export the project: a source tree that rebuilds your game byte for byte.</span></div><a class="primary small-btn as-btn" href="#/p/${esc(S.slug)}/source">Export</a>`;
     return;
   }
   if (ov.kind === "fork" && ov.ready && !ov.functions) {
@@ -2355,7 +2401,8 @@ $("fnPrev").onclick = () => stepFn(-1);
 $("fnNext").onclick = () => stepFn(1);
 
 /* ------------------------------------------------------------------ function list */
-const L = { q: "", filter: "all", sort: "i", dir: 1, limit: 200, rows: [] };
+const L = { q: "", filter: "all", sort: "i", dir: 1, limit: 200, rows: [], hideAsm: true };
+try { L.hideAsm = localStorage.getItem("fnHideAsm") !== "0"; } catch { /* no storage: the default */ }
 const FILTERS = [["all", "All"], ["open", "To do"], ["working", "Working"], ["tried", "Tried"], ["matched", "Matched"]];
 const fnState = (f) => (f.status === "matched" ? "matched" : f.status === "asm" ? "asm" : f.status === "working" ? "working" : f.best != null ? "tried" : "open");
 const STATE_RANK = { working: 0, tried: 1, open: 2, matched: 3, asm: 4 };
@@ -2364,9 +2411,13 @@ function renderList() {
   if (!S.map.length || S.tab !== "functions") return;
   const counts = { all: S.map.length, open: 0, working: 0, tried: 0, matched: 0, asm: 0 };
   for (const f of S.map) counts[fnState(f)]++;
+  if (L.hideAsm) counts.all -= counts.asm;
+  $("fnHideAsm").checked = L.hideAsm;
+  $("fnHideAsmN").textContent = counts.asm ? ` (${counts.asm.toLocaleString()})` : "";
+  $("fnHideAsmBox").hidden = !counts.asm;
   $("fnFilter").innerHTML = FILTERS.map(([k, label]) => `<button type="button" role="radio" aria-checked="${L.filter === k}" class="${L.filter === k ? "on" : ""}" data-filter="${k}">${label}<span>${counts[k].toLocaleString()}</span></button>`).join("");
   const q = L.q.trim().toLowerCase();
-  let rows = S.map.filter((f) => (L.filter === "all" || fnState(f) === L.filter)
+  let rows = S.map.filter((f) => (L.filter === "all" ? !(L.hideAsm && fnState(f) === "asm") : fnState(f) === L.filter)
     && (!q || f.name.toLowerCase().includes(q) || hex8(f.vram).toLowerCase().includes(q) || (f.unit || "").toLowerCase().includes(q)));
   const key = {
     i: (f) => f.i, name: (f) => f.name.toLowerCase(), insns: (f) => f.insns, attempts: (f) => f.attempts || 0,
@@ -2398,6 +2449,12 @@ function renderList() {
 $("fnFilter").addEventListener("click", (e) => { const b = e.target.closest("[data-filter]"); if (b) { L.filter = b.dataset.filter; L.limit = 200; renderList(); } });
 $("fnSearch").addEventListener("input", () => { L.q = $("fnSearch").value; L.limit = 200; renderList(); });
 $("fnMore").onclick = () => { L.limit += 500; renderList(); };
+$("fnHideAsm").addEventListener("change", (e) => {
+  L.hideAsm = e.target.checked;
+  try { localStorage.setItem("fnHideAsm", L.hideAsm ? "1" : "0"); } catch { /* remembered for this page only */ }
+  L.limit = 200;
+  renderList();
+});
 $("fnRows").addEventListener("click", (e) => {
   const star = e.target.closest("[data-star]");
   if (star) { e.stopPropagation(); togglePrio(star.dataset.star, !star.classList.contains("on")); return; }
@@ -2567,7 +2624,7 @@ function renderPrio() {
    function's machine draft through the judge; the permuter works on near misses meanwhile. */
 function renderAutopilot(ov) {
   const box = $("autopilot"), ap = ov.autopilot, tw = ov.twins, pm = ov.permuter;
-  const canRun = (ov.kind !== "fork" || ov.ready) && ov.functions - ov.matched > 0;
+  const canRun = (ov.kind !== "fork" || ov.ready) && progress(ov).total - ov.matched > 0;
   box.hidden = !ap && !canRun && !tw && !pm;
   if (box.hidden) return;
   const running = ap && ap.state === "running";

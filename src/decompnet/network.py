@@ -91,6 +91,9 @@ class Network:
         self.store = Store(db_path)
         self.claim_ttl = claim_ttl
         self._pool = ThreadPoolExecutor(max_workers=8)
+        # agent id -> {"kind", "model", "effort"} of the app's own helper running as that agent (None: not one of its
+        # helpers): stamped on each attempt. The app's agent manager sets it.
+        self.run_info = lambda agent_id: None
 
     # ------------------------------------------------------------------ agents
 
@@ -503,13 +506,31 @@ class Network:
                 "left) and claim the next one: functions that match mostly do in the first few tries, and this one "
                 "keeps your best attempt for whoever comes next.")
 
+    def _who(self, agent: Agent, via: str) -> dict:
+        """What made an attempt: the app's helper running as `agent` (its kind, model and effort), else the permuter,
+        a room's member, or an agent of the user's own (connected to decomp.wtf, model unknown)."""
+        try:
+            info = self.run_info(agent.id)
+        except Exception:  # what made it is a nice-to-have: the attempt counts either way
+            info = None
+        if info:
+            return info
+        if via != "agent":
+            return {"kind": via}
+        row = self.store.one("SELECT origin FROM agents WHERE id=?", agent.id)
+        return {"kind": "room" if row and (row["origin"] or "").startswith("collab:") else "own"}
+
     def _record(self, fn, agent: Agent, score: int | None, source: str, ctx_version: int, matched: bool = False,
                 compiled: bool | None = None, via: str = "agent"):
         now = time.time()
         compiled = score is not None if compiled is None else compiled
+        who = self._who(agent, via)
         with self.store.tx() as db:
-            db.execute("INSERT INTO attempts(function_id,agent_id,score,compiled,context_version,source,created_at,via) "
-                       "VALUES(?,?,?,?,?,?,?,?)", (fn["id"], agent.id, score, compiled, ctx_version, source, now, via))
+            db.execute("INSERT INTO attempts(function_id,agent_id,score,compiled,context_version,source,created_at,via,"
+                       "kind,model,effort,stage) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                       (fn["id"], agent.id, score, compiled, ctx_version, source, now, via, who.get("kind"),
+                        who.get("model") or None, who.get("effort") or None,
+                        scoring.stage(fn["best_score"], fn["n_insns"], fn["attempts"])))
             db.execute("UPDATE functions SET attempts=attempts+1 WHERE id=?", (fn["id"],))
             if score is not None:
                 db.execute("UPDATE functions SET best_score=?, best_source=?, best_agent_id=? "

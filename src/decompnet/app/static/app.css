@@ -670,3 +670,14 @@ a.ghost, a.primary { text-decoration: none; }
 .nav-proj.broken .np-meta, .err-text { color: var(--miss); }
 .credit { margin: 10px 0 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--raise); color: var(--ink-2); max-width: 760px; }
 .credit a { color: inherit; }
+
+/* Getting closer, Which setup works best */
+.bars.mini { width: 120px; height: 20px; }
+.pad-x { padding: 0 16px; }
+.pad-x.muted { margin: 0 0 6px; }
+.fn-table.setups td, .fn-table.setups th { padding: 6px 8px; white-space: nowrap; }
+.fn-table.setups tr.setup td { border-bottom: 0; padding-bottom: 0; }
+.fn-table.setups tr.stages td { white-space: normal; padding-top: 2px; }
+.nowrap { white-space: nowrap; }
+#setups { overflow-x: auto; padding-bottom: 12px; }
+.sw.aside { opacity: .35; }
