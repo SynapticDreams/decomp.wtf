@@ -1486,6 +1486,7 @@ function renderSessions(sessions) {
         <span class="state ${s.state === "error" ? "err" : ""}">${esc(STATE_TEXT[s.state] || s.state)}</span>
         <button class="ghost" data-stop="${esc(s.id)}" data-remove="${live ? "" : "1"}" type="button">${live ? "Stop" : "Remove"}</button></div>
       <span class="facts-line">${facts.join(" · ")}</span>
+      ${s.tiered ? `<span class="facts-line">tiered · ${s.model ? `${esc(s.model)}${s.effort ? ` (${esc(s.effort)})` : ""}` : "picking a model"}${s.tier ? ` · ${esc(s.tier.replace("_", " "))}` : ""}</span>` : ""}
       ${s.state === "error" ? `<span class="state err">${esc(s.error)}</span>` : ""}
       ${claim ? `<span class="last">on ${fnLink(claim.name)}</span>` : ""}</div>`;
   }).join("");
