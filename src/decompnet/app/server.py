@@ -1096,6 +1096,13 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
     share = {"servers": {}, "tunnel": None, "links": {}}
 
+    def github_token() -> str | None:
+        """The host's GitHub token for the gists that say where rooms are (identity.py): connected in the Team tab, or
+        DECOMP_GITHUB_TOKEN on a server."""
+        return os.environ.get("DECOMP_GITHUB_TOKEN") or (settings.data.get("github") or {}).get("token")
+
+    keeper = collab.Keeper(net, share, log=lambda line: jobs.logger.info("rooms: %s", line), token=github_token)
+
     def collab_server(public_port: int | None = None) -> int:
         """The room server: on 127.0.0.1 behind a quick tunnel, or on every network interface at `public_port` for
         a room shared at an address the host controls (LAN, Tailscale, a server). Only the room's API is served
@@ -1114,7 +1121,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             with socket.socket() as sock:
                 sock.bind(("127.0.0.1", 0))
                 port = sock.getsockname()[1]
-        server = uvicorn.Server(uvicorn.Config(collab.host_app(net, net.rooms), host=host, port=port, log_level="warning"))
+        server = uvicorn.Server(uvicorn.Config(collab.host_app(net, net.rooms, tunnel=not public_port), host=host, port=port,
+                                               log_level="warning"))
         threading.Thread(target=server.run, daemon=True, name=f"collab-{port}").start()
         for _ in range(100):
             if server.started:
@@ -1134,22 +1142,35 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             if not re.match(r"^https?://[^/\s]+$", address):
                 raise NetworkError("the address teammates use, like http://192.168.1.20:6481 or https://decomp.example.org")
             collab_server(port or 6481)
-            code = room.open_invite(keep=keep, mode="address", address=address, port=port or 6481)
+            room.open_invite(keep=keep, mode="address", address=address, port=port or 6481)
             base = address
         else:
             local = collab_server()
-            code = room.open_invite(keep=keep, mode="tunnel")
-            if share["tunnel"] is None or share["tunnel"].proc is None or share["tunnel"].proc.poll() is not None:
-                log("opening a private tunnel to this computer (Cloudflare quick tunnel, no account needed)")
-                share["tunnel"] = collab.Tunnel(local)
-                share["tunnel"].start(log)
-            base = share["tunnel"].url
+            room.open_invite(keep=keep, mode="tunnel")
+            with keeper.lock:
+                if share["tunnel"] is None or not share["tunnel"].alive():
+                    log("opening a private tunnel to this computer (Cloudflare quick tunnel, no account needed)")
+                    share["tunnel"] = collab.Tunnel(local)
+                    share["tunnel"].start(log)
+                base = share["tunnel"].url
+        room.url = base
         net.rooms[slug] = room
-        link = f"{base}/join/{'open' if room.settings['visibility'] == 'public' else code}#room={slug}"
+        link = room.link(base)
         share["links"][slug] = link
+        keeper.wake.set()  # publish where it is (a findable room shared through the tunnel)
         return link
 
-    # rooms shared at an address of the host's own come back when the app starts, with the same invite
+    def keep_rooms() -> None:
+        while True:
+            keeper.wake.wait(30)
+            keeper.wake.clear()
+            try:
+                keeper.tick()
+            except Exception:  # keep keeping: the next tick tries again
+                jobs.logger.warning("rooms: the tunnel keeper failed", exc_info=True)
+
+    # rooms that were open come back when the app starts, with the same invite: at an address of the host's own,
+    # or through a new quick tunnel (the keeper opens it, then the rooms publish where they are now)
     for p in net.store.all("SELECT slug, config FROM projects"):
         c = json.loads(p["config"]).get("collab") or {}
         if c.get("open") and c.get("mode") == "address" and c.get("address"):
@@ -1157,6 +1178,16 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 open_room(p["slug"], "address", c["address"], int(c.get("port") or 6481), keep=True)
             except (NetworkError, OSError):
                 pass
+        elif c.get("open") and c.get("mode", "tunnel") == "tunnel" and p["slug"] not in net.links:
+            try:
+                collab_server()
+                room = collab.Room(net, p["slug"])
+                room.open_invite(keep=True, mode="tunnel")
+                net.rooms[p["slug"]] = room
+                keeper.wake.set()  # open its tunnel now, not at the keeper's next round
+            except (NetworkError, OSError):
+                pass
+    threading.Thread(target=keep_rooms, daemon=True, name="rooms").start()
 
     @mcp.custom_route("/api/collab", methods=["GET"])
     async def api_collab(request: Request) -> Response:
@@ -1170,8 +1201,14 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         room = net.rooms.get(slug)
         cfg = (json.loads(net.project_row(slug)["config"]).get("collab") or {}) if slug else {}
         return JSONResponse({"sharing": room is not None, "link": share["links"].get(slug), "room": info,
-                             "settings": room.settings if room else {"visibility": cfg.get("visibility", "private"),
-                                                                       "approve": bool(cfg.get("approve"))},
+                             "settings": room.settings if room else {
+                                 "visibility": cfg.get("visibility", "private"),
+                                 "approve": bool(cfg.get("approve", cfg.get("visibility") == "public")),
+                                 "limit": int(cfg.get("limit") or 0), "findable": bool(cfg.get("findable", True))},
+                             "published": room.published if room else None,
+                             "publish_error": room.publish_error if room else "",
+                             "github": (settings.data.get("github") or {}).get("login") or
+                                       ("(from DECOMP_GITHUB_TOKEN)" if os.environ.get("DECOMP_GITHUB_TOKEN") else None),
                              "pending": room.pending() if room else [],
                              "mode": cfg.get("mode", "tunnel"), "address": cfg.get("address", ""), "port": cfg.get("port", 6481),
                              "was_sharing": bool(cfg.get("open")) and room is None,
@@ -1192,7 +1229,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
         def work(log):
             room = net.rooms.get(slug) or collab.Room(net, slug)
-            room.configure(data.get("visibility"), data.get("approve"))
+            room.configure(data.get("visibility"), data.get("approve"), data.get("limit"), data.get("findable"))
             return {"link": open_room(slug, mode, str(data.get("address", "")), int(data.get("port") or 6481), log=log,
                                       keep=bool(data.get("keep")))}
         return JSONResponse({"job": jobs.start("share", work)})
@@ -1213,7 +1250,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             elif action in ("approve", "decline"):
                 room.approve(name, action == "approve")
             elif action == "settings":
-                room.configure(data.get("visibility"), data.get("approve"))
+                room.configure(data.get("visibility"), data.get("approve"), data.get("limit"), data.get("findable"))
                 c = room.cfg.get("collab") or {}
                 share["links"][slug] = open_room(slug, c.get("mode", "tunnel"), c.get("address", ""),
                                                  int(c.get("port") or 6481), keep=True)
@@ -1291,7 +1328,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
         def work(log):
             try:
-                slug = collab.join_room(net, link, name, game or b"", log=log)
+                slug = collab.join_room(net, link, name, game or b"", log=log, trust=q.get("trust") == "1")
             finally:
                 if uploaded:
                     shutil.rmtree(game.parent, ignore_errors=True)
@@ -1308,6 +1345,40 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         slug, link = str(data.get("slug", "")), str(data.get("link", ""))
         return JSONResponse({"job": jobs.start("reconnect", lambda log: {"slug": collab.reconnect(net, slug, link, log=log)})})
 
+    @mcp.custom_route("/api/github", methods=["POST", "DELETE"])
+    async def api_github(request: Request) -> Response:
+        """Connect GitHub (a classic token with only the gist scope), so rooms shared through a quick tunnel can say
+        where they are now in a secret gist; or disconnect it."""
+        from . import identity
+
+        if (bad := guard(request, write=True)):
+            return bad
+        if request.method == "DELETE":
+            settings.data.pop("github", None)
+            settings.save()
+            return JSONResponse({"github": None})
+        token = str((await body(request)).get("token", "")).strip()
+        try:
+            login = await anyio.to_thread.run_sync(identity.github_login, token)
+        except ValueError as e:
+            return fail(e)
+        settings.data["github"] = {"token": token, "login": login}
+        settings.save()
+        keeper.wake.set()  # say where the rooms are now
+        return JSONResponse({"github": login})
+
+    @mcp.custom_route("/api/collab/follow", methods=["POST"])
+    async def api_collab_follow(request: Request) -> Response:
+        """A member follows the host's commits that change the project's build setup, having looked at them."""
+        if (bad := guard(request, write=True)):
+            return bad
+        data = await body(request)
+        slug, head = str(data.get("slug", "")), str(data.get("head", ""))
+        link = net.links.get(slug)
+        if link is None or not link.fork:
+            return fail(ValueError("this project doesn't follow a room's commits"))
+        return JSONResponse({"job": jobs.start("follow", lambda log: {"followed": link.follow_held(head)})})
+
     @mcp.custom_route("/api/collab/leave", methods=["POST"])
     async def api_collab_leave(request: Request) -> Response:
         if (bad := guard(request, write=True)):
@@ -1319,6 +1390,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         return JSONResponse({"ok": True})
 
     def shutdown_rooms() -> None:
+        keeper.stopped = True  # no new tunnel while the app quits (it would outlive the app)
         if share["tunnel"] is not None:
             share["tunnel"].stop()
         for link in list(net.links.values()):

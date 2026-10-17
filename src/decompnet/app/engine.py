@@ -1747,7 +1747,7 @@ class RomNetwork(Network):
         if slug in self.links:
             link = self.links[slug]
             return {"role": "guest", "host": link.url, "member": link.member, "error": link.error,
-                    "members": link.members, "connected": time.time() - link.last_ok < 15}
+                    "members": link.members, "connected": time.time() - link.last_ok < 15, "held": link.held}
         if slug in self.rooms:
             return {"role": "host", "members": self.rooms[slug].members()}
         return None

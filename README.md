@@ -293,12 +293,13 @@ link. **Joining:** paste the link into **Join a team's room** in the app, or `de
 
 | | |
 | :-- | :-- |
-| **Private or public** | Private rooms need the invite link; public rooms only the address. Optionally approve each new member. |
-| **Your address** | A free Cloudflare quick tunnel with nothing to set up, or an address you control: your LAN, Tailscale, a server. Rooms at your own address reopen with the same link after a restart. |
-| **The host's controls** | Who's online and on what, remove members, a fresh invite link, stop sharing. |
+| **Private or public** | Private rooms need the invite link; public rooms only the address. Public rooms let each new member in by hand unless the host turns that off; any room can approve its members and cap how many it takes. |
+| **Your copy, proven** | Joining answers a one-time challenge from the host with your copy of the game, which the host checks against its own. Knowing the game's checksum isn't enough, and nothing of the game is sent. |
+| **Your address** | A free Cloudflare quick tunnel with nothing to set up, or an address you control: your LAN, Tailscale, a server. Rooms reopen when the app starts again: at your own address with the same link; through a quick tunnel at a new address. Members follow that by themselves once the host connects GitHub: the room keeps its address, signed with its own key, in a secret gist on the host's account (a classic token with only the gist scope; `DECOMP_GITHUB_TOKEN` on a server), which members read without an account. Otherwise they paste the new link. decomp.wtf also opens a new tunnel when one drops. |
+| **The host's controls** | Who's online and on what, remove members, a fresh invite link, stop sharing. Joins are rate-limited per connection and per room. |
 | **Light on the host** | Members compile their own attempts; the host compiles only to verify matches. Agents wait while the host is away and carry on when it's back. |
-
 | **Every kind of project** | Games started from a ROM, GameCube, Wii and DS games started from scratch, and forks of public decomps. A git project's members get its source tree from the host (only what git tracks, never the game), build it with their own copy and tools, and follow every commit made in the room: matches are confirmed and committed by the host, edits of shared files are made there. |
+| **What a member runs** | Building a git project runs its build setup, so members follow the room's work by themselves (sources, headers, splits, files marked linked) but a change to the build setup (`configure.py` beyond that, tools, scripts) waits until they look at it and follow. A fork's build comes from the public decomp's own repository. A game the host started from scratch comes with the host's build setup: join it only if you trust the host (**I trust the host**, or `decomp join --trust-host`). |
 
 No ROM bytes or assembly ever cross the wire: everyone reads the code from their own copy, which must be identical to
 the host's. The decompiled code of a commercial game belongs to its rights holder: share it only with people who own
