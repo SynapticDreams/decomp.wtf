@@ -27,7 +27,8 @@ from io import BytesIO
 from pathlib import Path
 
 from ..elfobj import _MASKS, Reloc, mask_relocs
-from ..handwritten import mips_reason, ppc_reason
+from ..handwritten import mips_reason, ppc_reason, sm83_reason, sm83_routine
+from ..rom.gb_mgbdis import MAX_FUNCTION
 from ..network import NetworkError
 
 log = logging.getLogger("decomp.wtf")
@@ -391,18 +392,50 @@ class Twins:
         return n
 
     def _set_aside_rom_asm(self, proj) -> int:
-        """ROM projects on MIPS (N64, PlayStation, PlayStation 2): mips_reason on each open function's code."""
-        if (proj["arch"] or "mips") != "mips":
+        """ROM projects on MIPS (N64, PlayStation, PlayStation 2): mips_reason on each open function's code; on the
+        Game Boy's SM83, sm83_reason (which also finds what the split took for a function: padding, data)."""
+        arch = proj["arch"] or "mips"
+        if arch not in ("mips", "sm83"):
             return 0
-        platform, big = self.net.cfg(proj).get("platform", ""), bool(proj["big_endian"])
-        marks = []
-        for r in self.net.store.all("SELECT id, target, meta FROM functions WHERE project_id=? AND status='open'", proj["id"]):
-            if (why := mips_reason(r["target"] or b"", big, platform)):
+        cfg = self.net.cfg(proj)
+        platform, big = cfg.get("platform", ""), bool(proj["big_endian"])
+        marks, trims = [], []
+        for r in self.net.store.all("SELECT id, name, target, meta, vram, size, rom_offset FROM functions "
+                                    "WHERE project_id=? AND status='open'", proj["id"]):
+            code = r["target"] or b""
+            why = (sm83_reason(code, r["vram"] or 0, capped=r["size"] >= MAX_FUNCTION) if arch == "sm83"
+                   else mips_reason(code, big, platform))
+            if why and arch == "sm83" and (n := sm83_routine(code, r["vram"] or 0)):
+                trims.append((r, n))  # the routine at its start is one SDCC could write: the function is that
+            elif why:
                 marks.append((json.dumps({**json.loads(r["meta"] or "{}"), "asm_code": why}), r["id"]))
+        if trims:
+            self._trim_sm83(proj, cfg, trims)
         if marks:
             with self.net.store.tx() as db:
                 db.executemany("UPDATE functions SET status='asm', meta=? WHERE id=? AND status='open'", marks)
         return len(marks)
+
+    def _trim_sm83(self, proj, cfg: dict, trims: list) -> None:
+        """Game Boy functions the split ran on past their routine's end (into padding, data, or code with no entry
+        of its own) end there now: what's past it was never theirs, and no C writes it. Their best attempts were
+        against the longer bytes, so they start over."""
+        from ..rom import gb, sm83
+
+        limit = int((cfg.get("rom") or {}).get("size") or 0) or 1 << 23
+        with self.net.store.tx() as db:
+            for r, n in trims:
+                code, vram, bank = bytes(r["target"])[:n], r["vram"] or 0, (r["rom_offset"] or 0) // gb.BANK_SIZE
+                meta = {**json.loads(r["meta"] or "{}"), "trimmed_from": r["size"]}
+                db.execute("UPDATE functions SET target=?, size=?, n_insns=?, relocs=?, asm='', best_score=NULL, "
+                           "best_source=NULL, best_agent_id=NULL, meta=? WHERE id=? AND status='open'",
+                           (code, n, sum(1 for _ in sm83.disassemble(code, vram)),
+                            json.dumps([list(x) for x in gb.refs_of(code, vram, bank, limit)]), json.dumps(meta), r["id"]))
+                db.execute("UPDATE symbols SET size=? WHERE project_id=? AND name=?", (n, proj["id"], r["name"]))
+            self.net._event(db, proj["id"], None, "split", f"{len(trims)} functions end where their routine does now "
+                            "(the split had run them on into what follows)")
+        with self._lock:
+            self._prints.pop(proj["id"], None)
 
     def _full_running(self, slug: str) -> bool:
         return (job := self.jobs.get(slug)) is not None and job.state == "running"
@@ -412,6 +445,11 @@ class Twins:
         if (job := self.jobs.get(slug)) is not None and job.state == "running":
             return job
         if slug in self.net.links:  # a room member: the host's copy does this, and its matches come back here
+            proj = self.net.project_row(slug)
+            if proj["arch"] == "sm83" and not self.net.fork_slug(slug):
+                # but a Game Boy function's end and what's set aside come from its bytes alone: the same here as
+                # on the host (every member's copy is the host's game), so this copy's functions end where its do
+                threading.Thread(target=self.set_aside_asm, args=(proj,), daemon=True, name=f"asm-{slug}").start()
             return None
         job = Job()
         with self._lock:
