@@ -222,3 +222,45 @@ def test_codex_default_effort_is_the_users_own_setting(monkeypatch):
     assert agents._config_effort("claude") is None
     monkeypatch.setattr(agents, "_codex_config", lambda: {})
     assert agents._config_effort("codex") is None
+
+
+def test_opencode_own_install_beats_a_stale_copy_on_path(tmp_path, monkeypatch):
+    def exe(p):
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("#!/bin/sh\n")
+        p.chmod(0o755)
+        return str(p)
+    home, brew = tmp_path / "home", tmp_path / "brew"
+    home.mkdir()
+    monkeypatch.setattr(agents.Path, "home", lambda: home)
+    monkeypatch.setenv("PATH", str(brew))
+    on_path = exe(brew / "opencode")
+    assert agents._which("opencode") == on_path  # only the PATH copy: still found
+    own = exe(home / ".opencode" / "bin" / "opencode")
+    assert agents._which("opencode") == own
+
+
+def _opencode(tmp_path, name, run_help, version="1.18.2"):
+    exe = tmp_path / name
+    exe.write_text(f'#!/bin/sh\nif [ "$1" = "--version" ]; then echo {version}; exit 0; fi\n'
+                   f"if [ \"$1 $2\" = \"run --help\" ]; then cat <<'EOF'\n{run_help}\nEOF\nfi\n")
+    exe.chmod(0o755)
+    return str(exe)
+
+
+def test_opencode_log_level_is_spelled_the_way_that_opencode_accepts(tmp_path, monkeypatch):
+    """1.x lists DEBUG/INFO/WARN/ERROR and prints its help instead of running when given "error"; 2.x refuses "ERROR"."""
+    monkeypatch.setattr(agents, "_log_levels", {})
+    upper = '      --log-level    log level    [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]'
+    lower = '      --log-level    log level    [string] [choices: "debug", "info", "warn", "error"]'
+    assert agents.opencode_error_level(_opencode(tmp_path, "oc1", upper)) == "ERROR"
+    assert agents.opencode_error_level(_opencode(tmp_path, "oc2", lower, "2.0.3")) == "error"
+    assert agents.opencode_error_level(_opencode(tmp_path, "oc3", "usage: opencode run", "2.1.0")) == "error"  # by version
+    assert agents.opencode_error_level(_opencode(tmp_path, "oc4", "usage: opencode run", "1.18.2")) == "ERROR"
+    assert agents.opencode_error_level(str(tmp_path / "missing")) == "ERROR"  # can't ask: the long-standing spelling
+    m = _manager(tmp_path, monkeypatch, "opencode")
+    monkeypatch.setattr(agents, "opencode_error_level", lambda exe: "error")
+    s = agents.Session("opencode-1", "opencode", "o", "demo", "opencode-1", {})
+    (tmp_path / "oc-work").mkdir()
+    cmd, _, _ = m._command(s, "tok", tmp_path / "oc-work")
+    assert cmd[cmd.index("--log-level") + 1] == "error"
