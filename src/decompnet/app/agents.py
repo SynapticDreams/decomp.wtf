@@ -27,6 +27,7 @@ from pathlib import Path
 import httpx
 
 from ..scoring import MECHANICAL, NEAR_MISS, STALL_ATTEMPTS, stage  # noqa: F401 (the tiers' thresholds)
+from ..network import NetworkError
 from . import tools
 from .engine import RomNetwork
 
@@ -95,6 +96,17 @@ FOCUSES = {"quick": ("quick", "no small function (Quick Wins) is left to do here
                      "Quick Wins, small functions only"),
            "close": ("close", "no function at 90% match or better (Close Calls) is left to do here",
                      "Close Calls, functions already 90%+ matched only")}
+
+
+# A helper pinned to one function (the function drawer's "Work on this"): runs (agents' own loops) or calls (the lean
+# loop) without a gain before it stops; the effort steps an agent's own loop climbs when stuck; the permuter's turn on
+# the closest source between calls; the lean loop's methods, as the session says them.
+PIN_STALL_RUNS = 4
+EFFORT_LADDER = ("low", "medium", "high")
+POLISH_SECONDS = 20
+LEAN_KINDS = ("api", "codex")  # helpers that can answer the lean loop's short calls
+LEAN_NAMES = {"one": "one version per call", "several": "several versions per call",
+              "both": "one and several versions per call in turn (a test of the two)"}
 
 
 def kind_id(kind: str) -> str:
@@ -652,6 +664,14 @@ class Session:
     tier: str = ""  # ...which tier picked it (tier_for)
     tier_function: str = ""  # ...and the function it was picked for
     agent_id: int = 0  # the coordinator's agent id, once the run registered it
+    # pinned to one function (options "pin"): how the next attempts were asked for and what each cost, for their
+    # stamps; the lean loop (API helpers) and its state across runs; why the session is done; runs without a gain
+    method: str = ""
+    call_tokens: int | None = None
+    using_model: str = ""
+    lean: object = None
+    pin_done: str = ""
+    pin_stall: int = 0
 
     @property
     def tiered(self) -> bool:
@@ -668,6 +688,7 @@ class Session:
                 "effort": (self.routed_effort if self.tiered else self.options.get("effort")) or "",
                 "tiered": self.tiered, "tier": self.tier, "tier_function": self.tier_function,
                 "usd": round(self.usd, 4), "tokens": self.tokens, "only_starred": bool(self.options.get("only_starred")),
+                "pin": self.options.get("pin") or "", "lean": self.options.get("lean") or "",
                 "feed": [f for f in self.feed if f["seq"] > since]}
 
 
@@ -705,7 +726,12 @@ class Manager:
         if s.kind != "api":
             model = model or _config_model(s.kind) or "default"
             effort = effort or _config_effort(s.kind) or "default"
-        return {"kind": s.kind, "model": model, "effort": effort}
+        out = {"kind": s.kind, "model": s.using_model or model, "effort": effort}
+        if s.options.get("pin") or s.options.get("lean"):  # how it asked (1 or several per call, or the agent's own loop)
+            out["method"] = s.method or "agent"
+            if s.call_tokens is not None:
+                out["tokens"] = s.call_tokens
+        return out
 
     # -- control
 
@@ -717,6 +743,11 @@ class Manager:
             options.pop("effort", None)
         if kind not in KINDS:
             raise ValueError(f"unknown agent kind {kind!r}")
+        if options.get("lean") and kind not in LEAN_KINDS:
+            raise ValueError("the lean loop is for API helpers and Codex: other agents work their own way")
+        if options.get("pin"):
+            options["per_session"] = 1  # one function: each run a fresh session on it
+            count = 1
         if options.get("model") == TIERED:
             if kind != "claude":
                 raise ValueError("tiered models (Haiku, Sonnet or Opus per function) are for Claude Code helpers")
@@ -781,7 +812,7 @@ class Manager:
 
     def running(self) -> list[dict]:
         """The helpers that should keep working: resumed by the server after the app restarts."""
-        return [{"kind": s.kind, "slug": s.slug, "options": {k: v for k, v in s.options.items() if k != "api_key"}}
+        return [{"kind": s.kind, "slug": s.slug, "options": {k: v for k, v in s.options.items() if k not in ("api_key", "escalate")}}
                 for s in self.sessions.values() if s.state in ("starting", "working", "waiting") and not s.stop.is_set()]
 
     def stop(self, sid: str | None = None) -> None:
@@ -860,6 +891,12 @@ class Manager:
         if focus:
             self.net.focus[agent.id] = focus[0]
             s.push("info", f"focus: {focus[2]}")
+        pin = s.options.get("pin") or ""
+        if pin:
+            self.net.pinned[agent.id] = pin
+            s.push("info", f"pinned to {pin}" + (f": the lean loop, {LEAN_NAMES.get(s.options.get('lean'), '')}"
+                                                  if s.options.get("lean") else ""))
+            s.options.setdefault("base_effort", s.options.get("effort") or "")
         self.assignments[agent.id] = s.slug
         s.agent_id = agent.id
         workdir = self.home / "agents" / s.id
@@ -875,6 +912,11 @@ class Manager:
                            "(seconds; a minute the first time)")
             twins.ordered.wait(120)
         while not s.stop.is_set():
+            if pin and not s.pin_done:
+                s.pin_done = self._pin_check(s, pin)
+            if s.pin_done:  # (a lean helper also says so when nothing is left for it)
+                s.push("info", f"stopping: {s.pin_done}")
+                break
             if only_starred:
                 total, free = self._starred_left(s.slug, agent.id, s.started_at)
                 if total == 0:
@@ -886,7 +928,7 @@ class Manager:
                     s.state = "waiting"
                     s.stop.wait(30)
                     continue
-            elif self._left(s.slug) == 0:
+            elif not pin and self._left(s.slug) == 0:
                 s.push("info", "nothing left to decompile here 🎉")
                 break
             if focus and self.net.strategy_left(s.slug, focus[0], agent.id) == 0:
@@ -911,18 +953,26 @@ class Manager:
             s.runs += 1
             t0 = time.time()
             before = self._progress(agent.id)
+            pin_best = self._pin_best(s, pin) if pin else None
+            if pin and not s.options.get("lean"):
+                self._pin_effort(s)
             if s.tiered:  # the model for the function this session is about to claim
                 s.routed_model, s.routed_effort, s.tier, s.tier_function = self.tier(s)
                 s.push("info", f"session {s.runs}: {s.tier.replace('_', ' ')} \u2192 {s.routed_model} ({s.routed_effort} effort)"
                                + (f" for {s.tier_function}" if s.tier_function else ""))
             try:
-                ok = self._run_api(s, agent) if s.kind == "api" else self._run_cli(s, token, workdir)
+                if s.options.get("lean"):
+                    ok = self._run_lean(s, agent)
+                else:
+                    ok = self._run_api(s, agent) if s.kind == "api" else self._run_cli(s, token, workdir)
             except Fatal as e:  # needs the user first: retrying can't help
                 s.state, s.error = "error", str(e)
                 break
             except Exception as e:  # keep the runner alive; show what happened
                 s.push("error", f"{type(e).__name__}: {e}")
                 ok = False
+            if pin and not s.options.get("lean") and not s.stop.is_set():
+                self._pin_after(s, pin, pin_best)
             if ok and not s.stop.is_set() and self._progress(agent.id) == before:
                 s.error = "the session ended without compiling anything (check the agent's output)"
                 s.push("error", s.error)
@@ -964,13 +1014,85 @@ class Manager:
             db.execute("DELETE FROM claims WHERE agent_id=?", (agent.id,))
         self.net.starred_only.pop(agent.id, None)
         self.net.focus.pop(agent.id, None)
+        self.net.pinned.pop(agent.id, None)
+
+    # -- a helper pinned to one function
+
+    def _pin_check(self, s: Session, pin: str) -> str:
+        """Why a pinned helper is done before its next run ("" if it isn't): its function matched, set aside or gone,
+        or `stall` runs without a gain (agents' own loops; the lean loop counts its calls itself)."""
+        try:
+            fn = self.net._function(pin, s.slug)
+        except Exception:
+            return f"{pin} isn't in the project any more"
+        if fn["status"] == "matched":
+            return f"{pin} matched 🎉"
+        if fn["status"] != "open":
+            return f"{pin} isn't open any more ({fn['status']})"
+        stall = int(s.options.get("stall") or 0) or PIN_STALL_RUNS
+        if not s.options.get("lean") and s.pin_stall >= stall:
+            return f"no closer in {s.pin_stall} runs"
+        return ""
+
+    def _pin_best(self, s: Session, pin: str):
+        try:
+            return self.net._function(pin, s.slug)["best_score"]
+        except Exception:
+            return None
+
+    def _pin_effort(self, s: Session) -> None:
+        """Steering for an agent's own loop: a step up in effort (low, medium, high) every two runs without a gain,
+        back to the user's choice after one (Claude Code and Codex; a tiered helper's tier does this already)."""
+        if s.kind not in ("claude", "codex") or s.tiered:
+            return
+        base = s.options.get("base_effort") or ""
+        if s.pin_stall < 2:
+            s.options["effort"] = base
+            return
+        at = EFFORT_LADDER.index(base) if base in EFFORT_LADDER else 1
+        step = EFFORT_LADDER[min(len(EFFORT_LADDER) - 1, at + s.pin_stall // 2)]
+        if step != (s.options.get("effort") or ""):
+            s.push("info", f"no closer in {s.pin_stall} runs: {step} effort for the next")
+        s.options["effort"] = step
+
+    def _pin_after(self, s: Session, pin: str, before) -> None:
+        """After an agent's own run on its pinned function: the permuter's turn on the closest source (if wanted),
+        and whether the run got it closer."""
+        try:
+            fn = self.net._function(pin, s.slug)
+        except Exception:
+            return
+        if fn["status"] == "open" and fn["best_source"] and s.options.get("polish"):
+            self._polish(s, fn)
+            fn = self.net._function(pin, s.slug)
+        now = fn["best_score"] if fn["status"] == "open" else 0
+        gained = now is not None and (before is None or now < before)
+        s.pin_stall = 0 if gained else s.pin_stall + 1
+
+    def _polish(self, s: Session, fn) -> bool:
+        """The permuter on a pinned function's closest source, between calls (C): register and order rewrites, at no
+        token cost. True when it got closer."""
+        permuter = getattr(self.net, "permuter", None)
+        if permuter is None:
+            return False
+        before = fn["best_score"]
+        try:
+            after = permuter.polish(fn, float(s.options.get("polish_seconds") or POLISH_SECONDS), s.stop)
+        except Exception as e:  # a nicety: the helper goes on without it
+            s.push("info", f"permuter: {e}")
+            return False
+        if after is not None and before is not None and after < before:
+            s.push("info", f"permuter: score {before} -> {after}")
+            return True
+        return False
 
     def tier(self, s: Session) -> tuple[str, str, str, str]:
         """(model, effort, tier, function) for a tiered session's next run: the policy (tier_for) applied to the
         function it is about to claim. Nothing to look at (no function left, a store error): the fresh tier."""
         state, name = {}, ""
         try:
-            fn = next_function(self.net, s.slug, s.agent_id)
+            fn = (self.net._function(s.options["pin"], s.slug) if s.options.get("pin")  # pinned: its function
+                  else next_function(self.net, s.slug, s.agent_id))
         except Exception:  # routing is best-effort: a helper still starts
             fn = None
         if fn is not None:
@@ -1002,6 +1124,8 @@ class Manager:
 
     def _prompt(self, s: Session) -> str:
         ov = self.net.overview(s.slug)
+        if s.options.get("pin") and ov.get("kind") != "fork":
+            return tools.PIN_PROMPT.format(title=ov["title"], name=s.options["pin"], compiler_guide=compiler_guide(ov))
         if ov.get("kind") == "fork":
             guides = ["fork", "objdiff", *tools.PLATFORM_GUIDES.get(ov.get("platform") or "", [])]
             return tools.FORK_PROMPT.format(title=ov["title"], platform=ov.get("platform_name") or "its platform",
@@ -1161,6 +1285,97 @@ class Manager:
 
     # -- built-in agent for OpenAI-compatible APIs
 
+    def _run_lean(self, s: Session, agent) -> bool:
+        """A run of the lean loop (see lean.py): up to LEAN_CALLS calls. Pinned, on its one function (s.pin_done says
+        when it's done); otherwise on each function it claims the usual way (focus, ★ Next in line, easiest first) in
+        turn, moving on, with a note, when one stops getting closer. What it tried on a function, and the repeats it
+        knows, carry over from run to run."""
+        from . import lean
+
+        if s.kind == "api" and (not s.options.get("base_url") or not s.options.get("model")):
+            raise RuntimeError("set the API address and model first")
+        max_tokens = int(s.options.get("max_tokens") or LEAN_MAX_TOKENS)
+        pin = s.options.get("pin") or ""
+        before = self._progress(agent.id)
+        with httpx.Client(timeout=httpx.Timeout(300, connect=15)) as client:
+            def ask(messages, temperature, switch):
+                if s.kind == "codex":  # Codex picks its own sampling: the versions' directions do the varying
+                    text, tokens, model = codex_reply(messages, s.options.get("model") or "", s.options.get("effort") or "",
+                                                      self.home / "agents" / s.id / "lean")
+                else:
+                    opts = s.options.get("escalate") if switch and s.options.get("escalate") else s.options
+                    several = "one complete version" not in messages[-1]["content"]  # more room for several
+                    text, tokens, model = _chat(s, client, opts, messages, temperature, max_tokens * (2 if several else 1))
+                self._account(s, {"tokens": tokens})
+                return text, tokens, model
+
+            def stamp(method, tokens, model):
+                s.method, s.call_tokens, s.using_model = method, tokens, model
+
+            def loop_on(name: str):
+                return lean.Lean(self.net, agent, s.slug, name, ask, method=s.options.get("lean") or lean.SEVERAL,
+                                 variants=int(s.options.get("variants") or lean.VARIANTS),
+                                 stall=int(s.options.get("stall") or (lean.STALL if pin else LEAN_MOVE_ON)),
+                                 push=s.push, stamp=stamp,
+                                 polish=(lambda fn: self._polish(s, fn)) if s.options.get("polish") else None,
+                                 can_switch=bool(s.options.get("escalate")))
+
+            s.push("info", f"session {s.runs}: {s.options.get('model') or 'default model'}"
+                           + (f" via {s.options.get('base_url')}" if s.kind == "api" else f" ({KINDS[s.kind].name})"))
+            if pin:
+                if s.lean is None:
+                    s.lean = loop_on(pin)
+                for wait in range(13):  # the function first (the permuter's turn on it lasts a minute at most)
+                    try:
+                        self.net.claim_row(agent, s.slug, pin)
+                        break
+                    except NetworkError as e:
+                        if "claimed by" not in str(e):
+                            break  # matched or set aside meanwhile: the loop's first call says so
+                        if wait == 0:
+                            s.push("info", f"waiting for it: {e}")
+                        if s.stop.wait(10):
+                            return True
+            for _ in range(LEAN_CALLS):
+                if s.stop.is_set():
+                    break
+                if s.lean is None:  # the next function, the way agents claim theirs
+                    try:
+                        fn = self.net.claim_row(agent, s.slug, None, self.net.focus.get(agent.id) or "easiest")
+                    except NetworkError as e:  # (★ only: none of those left for it)
+                        s.pin_done = str(e)
+                        break
+                    if fn is None:
+                        s.pin_done = "nothing left to claim here 🎉"
+                        break
+                    s.lean = loop_on(fn["name"])
+                    s.push("info", f"on {fn['name']} ({fn['n_insns']} instructions)")
+                loop = s.lean
+                loop.ask, loop.stamp = ask, stamp  # this run's connection
+                done = loop.round()
+                if not done:
+                    continue
+                note = loop.summary() if "matched" not in done else ""
+                if pin:
+                    s.pin_done = done
+                    if note:
+                        self._note(agent, s.slug, note, pin)
+                    break
+                s.push("info", done)
+                s.lean = None
+                if "matched" not in done:  # moving on: the next agent finds what this one tried
+                    try:
+                        self.net.release(agent, loop.name, note or "no closer", s.slug)
+                    except NetworkError:
+                        pass
+        return self._progress(agent.id) != before or bool(s.pin_done)
+
+    def _note(self, agent, slug: str, text: str, function: str) -> None:
+        try:
+            self.net.add_note(agent, slug, text, function)
+        except Exception:  # a nicety: the helper goes on without it
+            pass
+
     def _run_api(self, s: Session, agent) -> bool:
         """The agent loop for any OpenAI-compatible API. The conversation is kept within the model's context
         (`context_tokens`, or what a local llama.cpp server says it has): older tool output is trimmed first, and
@@ -1227,6 +1442,87 @@ class Manager:
                 if len(messages) > 80:  # keep the conversation small: summarize by restarting fresh
                     return True
         return used_tool
+
+
+LEAN_MOVE_ON = 4  # a lean helper's calls without a gain before it moves on to its next function (not pinned)
+LEAN_CALLS = 20  # lean calls per run (between runs the session checks its budget, a room's host...)
+LEAN_MAX_TOKENS = 4096  # a reply's cap for one version (a reasoning model thinks inside it too)
+
+
+def _chat(s: Session, client, opts: dict, messages: list[dict], temperature: float, max_tokens: int) -> tuple[str, int, str]:
+    """One chat completion, no tools: (the reply's text, the tokens it used, the model that answered)."""
+    base = (opts.get("base_url") or "").rstrip("/")
+    headers = {"Content-Type": "application/json"}
+    if opts.get("api_key"):
+        headers["Authorization"] = f"Bearer {opts['api_key']}"
+    r = client.post(f"{base}/chat/completions", headers=headers,
+                    json={"model": opts.get("model"), "messages": messages, "temperature": temperature,
+                          "max_tokens": max_tokens})
+    if r.status_code != 200:
+        if (why := no_credit(r.text)) or r.status_code == 402:
+            raise Fatal(why or no_credit("payment required"))
+        s.throttled = r.status_code == 429 or bool(_THROTTLED.search(r.text))
+        raise RuntimeError(f"API error {r.status_code}: {r.text[:300]}")
+    reply = r.json()
+    choice = reply["choices"][0]
+    msg = choice.get("message") or {}
+    if msg.get("reasoning_content"):
+        s.push("think", msg["reasoning_content"][:2000])
+    usage = reply.get("usage") if isinstance(reply.get("usage"), dict) else {}
+    tokens = int(usage.get("total_tokens") or 0) or _tokens(messages) + _tokens(msg.get("content") or "")
+    if choice.get("finish_reason") == "length" and "```" not in (msg.get("content") or ""):
+        s.push("info", f"the reply ran out of room ({max_tokens} tokens) before any C: a reasoning model thinks first; "
+                       "raise the reply cap if this repeats")
+    return msg.get("content") or "", tokens, str(reply.get("model") or opts.get("model") or "")
+
+
+def codex_reply(messages: list[dict], model: str, effort: str, workdir: Path, timeout: float = 900) -> tuple[str, int, str]:
+    """One lean call through Codex CLI, on its own sign-in (a ChatGPT plan works): `codex exec` with none of
+    decomp.wtf's tools and the user's MCP servers off, read-only, in an empty folder, nothing kept. (The reply's last
+    message, the tokens the turn used, the model.)"""
+    exe = _which("codex")
+    if not exe:
+        raise RuntimeError("Codex CLI is not installed")
+    workdir.mkdir(parents=True, exist_ok=True)
+    cmd = [exe, "exec", "--json", "--skip-git-repo-check", "--ephemeral", "-C", str(workdir), "-s", "read-only",
+           "-c", 'approval_policy="never"']
+    for name in (_codex_config().get("mcp_servers") or {}):
+        if re.fullmatch(r"[A-Za-z0-9_-]+", name):
+            cmd += ["-c", f"mcp_servers.{name}.enabled=false"]
+    if model:
+        cmd += ["-m", model]
+    if re.fullmatch(r"[a-z]{2,16}", effort or ""):
+        cmd += ["-c", f'model_reasoning_effort="{effort}"']
+    cmd.append("-")
+    prompt = ("\n\n".join(m["content"] for m in messages)
+              + "\n\nAnswer in your reply: don't run commands or open files, everything you need is above.")
+    env = dict(os.environ)
+    if WIN:
+        env["PATH"] = search_path()
+    proc = subprocess.Popen(argv(cmd), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8", errors="replace", env=env)
+    try:
+        out, err = proc.communicate(prompt, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _terminate(proc)
+        raise RuntimeError(f"Codex took longer than {int(timeout)} s on one call") from None
+    text, tokens, errors = "", 0, []
+    for line in out.splitlines():
+        for kind, value in parse_line("codex", line):
+            if kind == "text":
+                text = value
+            elif kind == "usage":
+                tokens += int(json.loads(value).get("tokens") or 0)
+            elif kind == "error":
+                errors.append(value)
+    said = " ".join(errors) + " " + (err or "")[-600:]
+    if (why := no_credit(said)):
+        raise Fatal(why)
+    if _SIGNED_OUT.search(said):
+        raise Fatal(f"Codex isn't signed in: {signin(KINDS['codex'])}")
+    if not text and (errors or proc.returncode):
+        raise RuntimeError(f"Codex: {(errors[-1] if errors else (err or '').strip()[-300:]) or f'exit {proc.returncode}'}")
+    return text, tokens, model or _config_model("codex") or "default"
 
 
 def _tokens(obj) -> int:

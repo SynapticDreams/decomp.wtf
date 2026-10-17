@@ -68,6 +68,10 @@ MIGRATIONS = [
     ("attempts", "model", "TEXT"),
     ("attempts", "effort", "TEXT"),
     ("attempts", "stage", "TEXT"),
+    # a helper pinned to one function: how it asked (1 or several versions per call, or an agent's own loop), and
+    # what the call cost in tokens (shared among the versions it gave), so methods are compared per token too
+    ("attempts", "method", "TEXT"),
+    ("attempts", "tokens", "INTEGER"),
 ]
 
 
