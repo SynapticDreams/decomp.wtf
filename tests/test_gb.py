@@ -7,6 +7,8 @@ are exactly what the detector checks, so a generated ROM exercises the same path
 
 from __future__ import annotations
 
+import shutil
+
 import pytest
 
 from decompnet.rom import detect, gb, sm83
@@ -283,3 +285,32 @@ def test_import_creates_a_readable_project(tmp_path):
     assert all(f["asm"] and f["n_insns"] > 0 for f in fns)
     entry = net.store.one("SELECT * FROM functions WHERE project_id=? AND vram=256", proj["id"])
     assert entry is not None and "jp $0150" in entry["asm"]
+
+
+# ------------------------------------------------------------------ the page's own check of a dropped file
+
+@pytest.mark.skipif(not shutil.which("node"), reason="needs node")
+@pytest.mark.parametrize("cgb, platform", [(0x00, "gb"), (0x80, "gbc"), (0xC0, "gbc")])
+def test_the_page_recognises_a_dropped_game_boy_rom(tmp_path, cgb, platform):
+    """The drop zone reads the first bytes itself (nothing is uploaded until confirmed): it must agree with the
+    server's three checks, or a Game Boy ROM is turned away as 'not a game'."""
+    import json
+    import re
+    import subprocess
+    from pathlib import Path
+
+    js = (Path(__file__).resolve().parent.parent / "src" / "decompnet" / "app" / "static" / "app.js").read_text(encoding="utf-8")
+    fn = js[js.index("function identifyHead(head, file) {"):]
+    fn = fn[:re.search(r"\n}\n", fn).end()]
+    rom = make_rom(cgb=cgb)
+    head = list(rom[:0x200])
+    script = (f"function crc16() {{ return -1; }}\n{fn}\nconst head = new Uint8Array({json.dumps(head)});\n"
+              f"console.log(JSON.stringify(identifyHead(head, {{ name: 'Game.gb', size: {len(rom)} }})));")
+    out = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout
+    info = json.loads(out)
+    assert info["platform"] == platform and info["order"] == "cartridge" and info["cgb"] == cgb
+    broken = list(head)
+    broken[0x14D] ^= 0xFF  # a bad header checksum: not a Game Boy ROM
+    bad = json.loads(subprocess.run(["node", "-e", script.replace(json.dumps(head), json.dumps(broken))],
+                                    capture_output=True, text=True, check=True).stdout)
+    assert bad is None or bad["platform"] not in ("gb", "gbc")
