@@ -127,22 +127,29 @@ def _equates(symbols: dict[str, int] | None, defined: set[str] | None = None) ->
     return "\n".join(lines)
 
 
+# A line that leaves the function for good: `ret`, `reti`, `jp hl`, or an unconditional `jp`/`jr`. A conditional
+# return or jump (`ret nc`, `jr nz, label`: there is a comma or a condition) falls through, so code follows it.
+_TERMINATOR = re.compile(r"^(ret|reti|jp\s+hl|jp\s+[^,\s][^,]*|jr\s+[^,\s][^,]*)$", re.I)
+
+
 def parse_listing(text: str) -> dict[str, BuiltFunction]:
-    """Functions out of an `sdasgb -l` listing: each label starts a function, its instructions run to
-    the next label (trimmed after the terminating instruction, so trailing padding/next-function bytes
-    never leak in)."""
+    """Functions out of an `sdasgb -l` listing: each global label starts a function, its instructions run to
+    the next one (local labels such as `00102$` stay inside), trimmed after the last instruction that leaves the
+    function for good so trailing padding or the next function's bytes never leak in. A conditional return
+    or jump in the middle (`ret nc`, `jr nz, ...`) does not end it."""
     funcs: dict[str, BuiltFunction] = {}
     current: str | None = None
-    code = bytearray()
-    asm: list[str] = []
-    order: list[str] = []
+    lines: list[tuple[bytes, str]] = []  # (the line's bytes, its instruction text)
 
     def flush() -> None:
-        nonlocal current, code, asm
-        if current is not None and code:
-            built = BuiltFunction(name=current, code=bytes(code), asm="\n".join(asm))
+        nonlocal current, lines
+        if current is not None and lines:
+            end = max((i for i, (_, asm) in enumerate(lines) if _TERMINATOR.match(asm.split(";", 1)[0].strip())),
+                      default=len(lines) - 1)
+            kept = lines[:end + 1]
+            built = BuiltFunction(name=current, code=b"".join(b for b, _ in kept), asm="\n".join(a for _, a in kept))
             funcs[built.name] = built  # canonical name (SDCC's leading underscore stripped)
-        current, code, asm = None, bytearray(), []
+        current, lines = None, []
 
     for raw in text.splitlines():
         if raw.startswith("ASxxxx") or "Symbol Table" in raw or raw.startswith("Hexadecimal"):
@@ -151,18 +158,13 @@ def parse_listing(text: str) -> dict[str, BuiltFunction]:
         if label:
             flush()
             current = label.group(2)
-            order.append(current)
             continue
         if current is None:
             continue
         line = _LINE.match(raw)
         if not line:
             continue
-        for byte in line.group(2).split():
-            code.append(int(byte, 16))
-        asm.append(line.group(3).strip())
-        if re.match(r"^\s*(reti?|jp\s+hl|jr\s)", line.group(3)) and not line.group(3).strip().startswith("call"):
-            flush()  # a function ends at its terminating instruction
+        lines.append((bytes(int(byte, 16) for byte in line.group(2).split()), line.group(3).strip()))
     flush()
     return funcs
 
