@@ -1464,7 +1464,7 @@ function renderSessions(sessions) {
     const b = board.get(s.agent);
     const facts = [s.model ? esc(s.model) : "default model", s.runs ? `session ${s.runs}` : "", b && b.matched ? `<b class="ok">${b.matched} matched</b>` : "", b ? plural(b.compiles, "compile") : "",
       s.usd ? money(s.usd) : s.tokens ? `${(s.tokens / 1000).toFixed(0)}k tokens` : "", s.started_at ? `since ${clock(s.started_at).slice(0, 5)}` : ""].filter(Boolean);
-    return `<div class="session"><div class="session-top"><span class="dot ${dot}"></span><b>${esc(s.label)}</b>
+    return `<div class="session"><div class="session-top"><span class="dot ${dot}"></span><b>${esc(s.label)}</b>${s.only_starred ? `<span class="tag">only ★</span>` : ""}
         <span class="state ${s.state === "error" ? "err" : ""}">${esc(STATE_TEXT[s.state] || s.state)}</span>
         <button class="ghost" data-stop="${esc(s.id)}" data-remove="${live ? "" : "1"}" type="button">${live ? "Stop" : "Remove"}</button></div>
       <span class="facts-line">${facts.join(" · ")}</span>
@@ -1542,6 +1542,7 @@ async function startAgents(a, model, count, btn, extra = {}) {
     if (model && a.id !== "api") options.model = model;
     if (a.id === "codex" && LZ.effort) options.effort = LZ.effort;
     if (LZ.per) options.per_session = LZ.per;
+    if (LZ.starred && (S.ov?.priority || []).length) options.only_starred = true;
     await api("/api/agents/start", { method: "POST", body: { kind: a.id, slug: S.slug, count, options } });
     S.st.settings.launcher = { kind: a.id, model: model || "", count, ...(a.id === "codex" && LZ.effort ? { effort: LZ.effort } : {}) };
     if (model && a.id !== "api") {
@@ -1597,6 +1598,7 @@ function renderLauncher(box, compact = false) {
         ${compact ? "" : `<label class="field"><span>Functions per session</span><input data-f="per" type="number" min="1" max="20" value="${LZ.per || S.st.settings.per_session || 2}"></label>`}
         <span class="grow"></span>
         <button class="primary" data-act="start" type="button">${esc(launchLabel(a, LZ.model, LZ.count))}</button></div>
+      <label class="check"><input type="checkbox" data-f="starred" ${LZ.starred && (S.ov?.priority || []).length ? "checked" : ""} ${(S.ov?.priority || []).length ? "" : "disabled"}><span><b>Only ★ Next in line</b> (${plural((S.ov?.priority || []).length, "function")} marked): the helper works on those and stops when they're done</span></label>
         <p class="muted small">${a.id === "api" ? "A built-in agent loop drives the model through the decomp tools." : esc(a.signin)} Each agent takes a different function; a fresh session every few functions keeps its context small.</p>` : ""}
     </div>`;
   wireCopies(box);
@@ -1611,6 +1613,8 @@ function renderLauncher(box, compact = false) {
   box.querySelectorAll("[data-step]").forEach((b) => { b.onclick = () => { LZ.count = Math.max(1, Math.min(8, LZ.count + Number(b.dataset.step))); box.querySelector(".stepper output").textContent = LZ.count; label(); }; });
   const per = box.querySelector('[data-f="per"]');
   if (per) per.onchange = () => { LZ.per = Math.max(1, Math.min(20, Number(per.value) || 4)); };
+  const starred = box.querySelector('[data-f="starred"]');
+  if (starred) starred.onchange = () => { LZ.starred = starred.checked; };
   wireEndpointFields(box);
   box.querySelectorAll("[data-ep]").forEach((c) => { c.onchange = () => { LZ.eps = [...box.querySelectorAll("[data-ep]:checked")].map((x) => x.dataset.ep); label(); }; });
   const addEp = box.querySelector('[data-act="add-ep"]'), pickEp = box.querySelector('[data-act="pick-ep"]');
@@ -2108,8 +2112,12 @@ function renderList() {
     const best = st === "matched" ? `<span class="ok">100%</span>` : p == null ? `<span class="dim">–</span>` : pctText(p);
     const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">matched</span>` : st === "asm" ? `<span class="st" title="hand-written assembly: no C compiles to it">assembly</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
       : st === "tried" ? `<span class="st tried">tried</span>` : `<span class="st">to do</span>`;
+    const pinned = (S.ov?.priority || []).includes(f.name);
+    // ☆/★ right in the row: pin many functions for the agents without opening each one (not for done or git-project ones)
+    const star = fork || st === "matched" || st === "asm" ? (pinned ? `<span class="star" title="agents take it next">★</span>` : "")
+      : `<button type="button" class="star-btn ${pinned ? "on" : ""}" data-star="${esc(f.name)}" title="${pinned ? "Remove from Next in line" : "Agents take it next (★ Next in line)"}">${pinned ? "★" : "☆"}</button>`;
     return `<tr data-fn="${esc(f.name)}" class="${S.fn === f.name ? "sel" : ""}" tabindex="0"><td class="mono dim">${fork ? esc(f.unit || "") : hex8(f.vram)}</td>
-      <td class="mono name">${(S.ov && (S.ov.priority || []).includes(f.name)) ? `<span class="star" title="agents take it next">★</span>` : ""}${esc(f.name)}</td><td class="r mono">${f.insns.toLocaleString()}</td><td class="r mono">${best}</td>
+      <td class="mono name">${star}${esc(f.name)}</td><td class="r mono">${f.insns.toLocaleString()}</td><td class="r mono">${best}</td>
       <td class="r mono">${f.attempts || `<span class="dim">0</span>`}</td><td>${status}</td></tr>`;
   }).join("") || `<tr class="none"><td colspan="6">No function matches${q ? ` “${esc(L.q)}”` : ""}.</td></tr>`;
   $("fnShown").textContent = rows.length > L.limit ? `${L.limit.toLocaleString()} of ${rows.length.toLocaleString()} shown` : plural(rows.length, "function");
@@ -2122,7 +2130,11 @@ function renderList() {
 $("fnFilter").addEventListener("click", (e) => { const b = e.target.closest("[data-filter]"); if (b) { L.filter = b.dataset.filter; L.limit = 200; renderList(); } });
 $("fnSearch").addEventListener("input", () => { L.q = $("fnSearch").value; L.limit = 200; renderList(); });
 $("fnMore").onclick = () => { L.limit += 500; renderList(); };
-$("fnRows").addEventListener("click", (e) => { const tr = e.target.closest("tr[data-fn]"); if (tr) openFn(tr.dataset.fn); });
+$("fnRows").addEventListener("click", (e) => {
+  const star = e.target.closest("[data-star]");
+  if (star) { e.stopPropagation(); togglePrio(star.dataset.star, !star.classList.contains("on")); return; }
+  const tr = e.target.closest("tr[data-fn]"); if (tr) openFn(tr.dataset.fn);
+});
 $("fnRows").addEventListener("keydown", (e) => { const tr = e.target.closest("tr[data-fn]"); if (tr && e.key === "Enter") openFn(tr.dataset.fn); });
 document.querySelectorAll(".fn-table th[data-sort]").forEach((th) => {
   th.onclick = () => {

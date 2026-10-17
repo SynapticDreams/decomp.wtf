@@ -559,7 +559,7 @@ class Session:
         return {"id": self.id, "kind": self.kind, "label": self.label, "slug": self.slug, "agent": self.agent_name,
                 "state": self.state, "runs": self.runs, "error": self.error, "started_at": self.started_at,
                 "model": self.options.get("model") or "", "effort": self.options.get("effort") or "",
-                "usd": round(self.usd, 4), "tokens": self.tokens,
+                "usd": round(self.usd, 4), "tokens": self.tokens, "only_starred": bool(self.options.get("only_starred")),
                 "feed": [f for f in self.feed if f["seq"] > since]}
 
 
@@ -682,6 +682,18 @@ class Manager:
         row = self.net.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='open'", proj["id"])
         return row["n"]
 
+    def _starred_left(self, slug: str, agent_id: int, since: float = 0.0) -> tuple[int, int]:
+        """(★ Next in line functions still worth this helper's time: open and not released by it since `since`, how many
+        of those it could claim now: nobody else holds them)."""
+        proj = self.net.project_row(slug)
+        names = self.net.cfg(proj).get("priority", [])
+        names = [n for n in names if n not in self.net.released_since(agent_id, proj["id"], names, since)]
+        rows = [self.net.store.one(
+            "SELECT f.id, (SELECT agent_id FROM claims WHERE function_id=f.id) AS holder FROM functions f "
+            "WHERE f.project_id=? AND f.name=? AND f.status='open'", proj["id"], name) for name in names]
+        rows = [r for r in rows if r]
+        return len(rows), sum(1 for r in rows if r["holder"] in (None, agent_id))
+
     def _account(self, s: Session, usage: dict) -> None:
         """Add what a session spent to the session and to the project (kept in its config across restarts)."""
         usd, tokens = float(usage.get("usd") or 0), int(usage.get("tokens") or 0)
@@ -700,6 +712,11 @@ class Manager:
 
     def _run(self, s: Session) -> None:
         agent, token = self.net.local_agent(s.agent_name)
+        only_starred = bool(s.options.get("only_starred"))
+        if only_starred:
+            self.net.starred_only[agent.id] = s.started_at
+        else:
+            self.net.starred_only.pop(agent.id, None)
         self.assignments[agent.id] = s.slug
         workdir = self.home / "agents" / s.id
         workdir.mkdir(parents=True, exist_ok=True)
@@ -714,7 +731,18 @@ class Manager:
                            "(seconds; a minute the first time)")
             twins.ordered.wait(120)
         while not s.stop.is_set():
-            if self._left(s.slug) == 0:
+            if only_starred:
+                total, free = self._starred_left(s.slug, agent.id, s.started_at)
+                if total == 0:
+                    s.push("info", "no ★ Next in line function left to try: they're done, or you gave the rest back 🎉")
+                    break
+                if free == 0:
+                    if s.state != "waiting":
+                        s.push("info", "the ★ functions left are being worked on by others: waiting for them")
+                    s.state = "waiting"
+                    s.stop.wait(30)
+                    continue
+            elif self._left(s.slug) == 0:
                 s.push("info", "nothing left to decompile here 🎉")
                 break
             if (cap := self.over_budget(s.slug)) is not None:
@@ -783,9 +811,14 @@ class Manager:
                 pass
         with self.net.store.tx() as db:  # release any claim the agent still holds so others can take it
             db.execute("DELETE FROM claims WHERE agent_id=?", (agent.id,))
+        self.net.starred_only.pop(agent.id, None)
 
     def prompt(self, s: Session) -> str:
         text = self._prompt(s)
+        if s.options.get("only_starred"):
+            text += ("\nThis session is for the functions the user marked ★ Next in line, and only those: "
+                     "claim_function gives you the next one, and refuses anything else. When it says none is left, "
+                     "stop: the session ends by itself.\n")
         # the know-how every session reads first, given up front (saves each session its first tool calls)
         ov = self.net.overview(s.slug)
         if ov.get("kind") == "fork":
