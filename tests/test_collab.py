@@ -315,3 +315,23 @@ def test_a_members_app_starting_again_does_not_replay_the_room_as_news(built, tm
     assert _events(g, gslug) == seen
     assert g.live(gslug, since_event=seen[-1]["id"])["events"] == []  # nothing for the page to announce
     assert g._function("func_800007F4", gslug)["status"] == "matched"  # the state itself still arrives in full
+
+
+def test_the_host_bounds_a_request_before_it_knows_who_sent_it(built, tmp_path):  # noqa: F811
+    """A room is shared at a public address and a body is read before the sender is checked: its size has to be
+    bounded however it is sent, and a malformed length is an error answer, not a crash."""
+    host, slug, room, code, client = _host(built, tmp_path)
+    url = f"/collab/join?room={slug}"
+    json_h = {"content-type": "application/json"}
+    r = client.post(url, content=b"{}", headers={**json_h, "content-length": "abc"})
+    assert r.status_code == 400 and r.json()["error"] == "invalid request"
+    r = client.post(url, content=b" " * (collab.MAX_BODY + 1), headers=json_h)  # a length declared too big
+    assert r.status_code == 400 and r.json()["error"] == "request too large"
+    chunks = (b" " * 65536 for _ in range(collab.MAX_BODY // 65536 + 2))  # no length at all: counted as it arrives
+    r = client.post(url, content=chunks, headers=json_h)
+    assert r.status_code == 400 and r.json()["error"] == "request too large"
+    assert room.members() == []
+    sha1 = room.cfg["rom"]["sha1"]
+    pieces = iter([b'{"invite": "' + code.encode(), b'", "name": "chunky", "sha1": "' + sha1.encode(), b'"}'])
+    r = client.post(url, content=pieces, headers=json_h)  # a small chunked request still works
+    assert r.status_code == 200 and [m["name"] for m in room.members()] == ["chunky"]
