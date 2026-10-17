@@ -735,9 +735,10 @@ def join_room(net, link: str, name: str, rom: bytes | Path, log=print, client: h
         raise NetworkError("pick your own copy of the game to join")
     if hello.get("kind") == "fork":
         return _join_fork(net, http, url, code, hello, name, rom, log, client, start)
+    named = rom.name if isinstance(rom, Path) else ""  # a Master System ROM with no header is told by its name
     if isinstance(rom, Path):
         rom = rom.read_bytes()
-    picked = detect.identify(rom)
+    picked = detect.identify(rom, named)
     if picked.info["sha1"] != hello["sha1"]:
         raise NetworkError(f"this ROM isn't the same as the host's: the room is for {hello['title']} "
                            f"({hello['game_code']}, {hello['region']}), and every member needs their own copy of exactly that version")

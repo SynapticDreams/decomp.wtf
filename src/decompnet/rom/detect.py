@@ -8,11 +8,12 @@ from dataclasses import dataclass, field
 import struct
 from pathlib import Path
 
-from . import chd, gb, gba, n64, overlays, ps2, psx
+from . import chd, gb, gba, n64, overlays, ps2, psx, sms
 from .n64 import RomError
 
 PLATFORMS = {"n64": "Nintendo 64", "psx": "PlayStation", "ps2": "PlayStation 2",
-             "gba": "Game Boy Advance", "gb": "Game Boy", "gbc": "Game Boy Color"}
+             "gba": "Game Boy Advance", "gb": "Game Boy", "gbc": "Game Boy Color",
+             "sms": "Sega Master System", "gg": "Sega Game Gear"}
 SMALL = 64 * 1024 * 1024  # ROMs and programs are read whole; disc images are read from disk
 
 
@@ -32,6 +33,10 @@ def _program(data: bytes, name: str = "") -> Picked | None:
     if gb.is_gb(data):
         info = gb.read_info(data)
         return Picked(info["platform"], data, f"rom.{'gbc' if info['platform'] == 'gbc' else 'gb'}", info, False)
+    if sms.is_sms(data, name):
+        data = sms.strip_copier_header(data)
+        info = sms.read_info(data, name)
+        return Picked(info["platform"], data, f"rom.{info['platform']}", info, False)
     if data[:4] in n64.MAGIC:
         rom, info = n64.read_info(data)
         return Picked("n64", rom, "rom.z64", info.to_dict() | {"platform": "n64", "gp": 0}, True)

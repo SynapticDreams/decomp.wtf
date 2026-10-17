@@ -262,7 +262,7 @@ function parseRom(buf) {
 /* What the user dropped, from its first bytes (nothing is uploaded until they confirm). */
 const PLATFORM_NAME = { n64: "Nintendo 64", psx: "PlayStation", ps2: "PlayStation 2", playstation: "PlayStation 1 or 2",
   gc: "GameCube", wii: "Wii", gcwii: "GameCube or Wii", gba: "Game Boy Advance", gb: "Game Boy",
-  gbc: "Game Boy Color", nds: "Nintendo DS" };
+  gbc: "Game Boy Color", sms: "Sega Master System", gg: "Sega Game Gear", nds: "Nintendo DS" };
 const CW_PACK = {
   gcwii: { id: "mwcc", text: "Install CodeWarrior, the compilers GameCube and Wii games were built with (about 80 MB). It's proprietary software, kept by the decomp community: only if you accept that." },
   nds: { id: "mwccarm", text: "Install CodeWarrior for DS, the compilers DS games were built with (about 50 MB). It's proprietary software, kept by the decomp community: only if you accept that." },
@@ -277,6 +277,24 @@ function crc16(bytes, from, to) {
 }
 const MB = (n) => (n < 1048576 ? `${Math.max(1, Math.round(n / 1024))} KiB` : `${(n / 1048576).toFixed(n < 10485760 ? 1 : 0)} MiB`);
 
+/* Master System / Game Gear: `TMR SEGA` at 0x7FF0 (0x3FF0 or 0x1FF0 in a ROM of 16 or 8 KiB), the region in the high nibble
+   of its last byte (5 and up is Game Gear). A file named .sms or .gg is taken without a header. 512 bytes of copier header
+   in front are skipped. The same checks the server makes (rom/sms.py). */
+function identifySega(head, file, stem, byName) {
+  const skip = file.size % 0x4000 === 0x200 ? 0x200 : 0;
+  const size = file.size - skip;
+  if (size < 0x2000 || size > 0x400000 || size % 0x2000) return null;
+  if (!byName) {
+    const off = size >= 0x8000 ? 0x7ff0 : size >= 0x4000 ? 0x3ff0 : 0x1ff0;  // the size decides the place
+    const at = skip + off;
+    if (size >= off + 0x10 && head.length >= at + 0x10 && String.fromCharCode(...head.slice(at, at + 8)) === "TMR SEGA") {
+      return { platform: (head[at + 0xf] >> 4) >= 5 ? "gg" : "sms", order: "cartridge", code: "", title: stem, size, header: true };
+    }
+    return null;
+  }
+  const ext = file.name.toLowerCase().match(/\.(sms|gg)$/);
+  return ext ? { platform: ext[1], order: "cartridge", code: "", title: stem, size, header: false } : null;
+}
 function identifyHead(head, file) {
   const dv = new DataView(head.buffer);
   const text = (a, b) => String.fromCharCode(...head.slice(a, b));
@@ -297,6 +315,8 @@ function identifyHead(head, file) {
       return { ...base, platform: color ? "gbc" : "gb", order: "cartridge", code: "", title, cgb: flag };
     }
   }
+  const sega = identifySega(head, file, stem, false);
+  if (sega) return { ...base, ...sega };
   if (head.length > 0xc0 && head[0xb2] === 0x96 && head[3] === 0xea) {  // GBA: fixed byte, header checksum, ARM branch
     let sum = 0;
     for (let i = 0xa0; i < 0xbd; i++) sum += head[i];
@@ -324,7 +344,8 @@ function identifyHead(head, file) {
     }
     if (ok && used) return { ...base, platform: "gc", order: "program (DOL)", entry };
   }
-  return null;
+  const named = identifySega(head, file, stem, true);  // no header: the file's name decides
+  return named ? { ...base, ...named } : null;
 }
 
 /* Files people try that decomp.wtf can't start from: say what they are and why, not just "no". */
@@ -367,6 +388,9 @@ async function pickFile(file) {
     ? [["Platform", PLATFORM_NAME[p]], ["Format", info.order], ["Size", MB(info.size)],
        ["Cartridge", (info.cgb & 0x80) ? (info.cgb === 0xc0 ? "Color only" : "Color enhanced") : "original Game Boy"],
        ["Project", "mgbdis"]]
+    : (p === "sms" || p === "gg")
+    ? [["Platform", PLATFORM_NAME[p]], ["Format", info.order], ["Size", MB(info.size)],
+       ["Header", info.header ? "TMR SEGA" : "none (named by its extension)"], ["Project", "decomp.wtf"]]
     : [["Platform", PLATFORM_NAME[p]], ["Format", info.order], ["Size", MB(info.size)],
        info.code ? ["Game ID", info.code] : ["Entry", info.entry != null ? hex8(info.entry) : "from the disc"],
        ["Project", ["gc", "wii", "gcwii"].includes(p) ? "dtk-template" : p === "nds" ? "ds-decomp" : p === "gba" ? "luvdis" : "splat"]];
@@ -394,6 +418,10 @@ function setupCompilers(info) {
   else if (p === "gb" || p === "gbc") {
     $("compilerRow").hidden = true; note.hidden = false;
     note.textContent = "Game Boy and Game Boy Color games are matched with the pinned GBDK-2020 (SDCC) toolchain. Until it is installed (Setup), the game is imported read-only: every function is disassembled, searchable and briefable, but not handed out for matching.";
+  }
+  else if (p === "sms" || p === "gg") {
+    $("compilerRow").hidden = true; note.hidden = false;
+    note.textContent = "Master System and Game Gear games are matched with the pinned GBDK-2020 (SDCC) toolchain. Until it is installed (Setup), the game is imported read-only: every function is disassembled, searchable and briefable, but not handed out for matching.";
   }
   else if (p === "playstation") {
     $("compilerRow").hidden = true; note.hidden = false;

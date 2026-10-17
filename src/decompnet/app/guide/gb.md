@@ -36,7 +36,9 @@ name) so the next session starts ahead:
 - Local declaration order and first use change register allocation — reorder before rewriting.
 - Narrow types matter: SM83 arithmetic is 8-bit, and `u8`/`s8` locals versus `int` change the
   truncation SDCC emits.
-- SDCC's default here is `--opt-code-speed`; if a function looks compiled for size, say so in a note.
+- New projects build with `--fsigned-char` and no optimization flag, which is what GBDK's own `lcc` does. A game built
+  another way may need `--opt-code-size` or `--opt-code-speed` (the project's compiler flags): if a function's loops or
+  jumps come out in a different shape from the target, try those before rewriting, and say what worked in a note.
 
 ## Conventions
 

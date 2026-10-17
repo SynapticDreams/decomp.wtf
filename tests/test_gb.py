@@ -300,8 +300,8 @@ def test_the_page_recognises_a_dropped_game_boy_rom(tmp_path, cgb, platform):
     from pathlib import Path
 
     js = (Path(__file__).resolve().parent.parent / "src" / "decompnet" / "app" / "static" / "app.js").read_text(encoding="utf-8")
-    fn = js[js.index("function identifyHead(head, file) {"):]
-    fn = fn[:re.search(r"\n}\n", fn).end()]
+    start = js.index("function identifySega(")  # identifyHead calls it
+    fn = js[start:js.index("\n}\n", js.index("function identifyHead(head, file) {")) + 3]
     rom = make_rom(cgb=cgb)
     head = list(rom[:0x200])
     script = (f"function crc16() {{ return -1; }}\n{fn}\nconst head = new Uint8Array({json.dumps(head)});\n"

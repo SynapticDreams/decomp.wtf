@@ -185,7 +185,7 @@ def test_the_guide_tool_lists_every_guide_topic():
     assert all(topic in desc for topic in tools.GUIDES)
 
 
-@pytest.mark.parametrize("platform", ["n64", "psx", "ps2", "gba", "gb", "gbc"])
+@pytest.mark.parametrize("platform", ["n64", "psx", "ps2", "gba", "gb", "gbc", "sms", "gg"])
 def test_every_rom_platform_names_a_compiler_guide_that_exists(platform):
     from decompnet.app import agents, tools
     from decompnet.rom import detect
@@ -194,7 +194,8 @@ def test_every_rom_platform_names_a_compiler_guide_that_exists(platform):
     toolchain = {"n64": "gcc-2.7.2-kmc"}.get(platform, "gbdk-2020")
     guide = agents.compiler_guide({"platform": platform, "compiler": {"toolchain": toolchain}})
     assert guide in tools.GUIDES
-    assert guide == {"n64": "gcc-kmc", "psx": "psx", "ps2": "ps2", "gba": "agbcc", "gb": "gb", "gbc": "gb"}[platform]
+    assert guide == {"n64": "gcc-kmc", "psx": "psx", "ps2": "ps2", "gba": "agbcc", "gb": "gb", "gbc": "gb",
+                     "sms": "sms", "gg": "sms"}[platform]
     assert agents.compiler_guide({"platform": "n64", "compiler": {"toolchain": "ido-7.1"}}) == "ido"
 
 

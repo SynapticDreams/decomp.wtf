@@ -1,4 +1,5 @@
-"""Game Boy / Game Boy Color C build lane: SDCC (via the pinned GBDK-2020 toolchain) to SM83 bytes.
+"""Game Boy / Game Boy Color and Master System / Game Gear C build lane: SDCC (via the pinned GBDK-2020 toolchain)
+to SM83 or Z80 bytes. (Written for the Game Boy; `arch="z80"` runs the same steps with SDCC's Z80 back end.)
 
 The fork's other lanes compile a C file to an ELF object and read the function out of it with
 `elfobj`. SM83 has no ELF toolchain in this pipeline, so this module runs the same conceptual steps
@@ -36,6 +37,9 @@ PAYLOAD_MAGIC = b"GBOBJ1\n"
 
 #: The toolchain id used for the Game Boy C compiler (see toolchains.toml).
 TOOLCHAIN = "gbdk-2020"
+
+#: SDCC's flag and assembler for each architecture this lane builds. Both ship in the same GBDK-2020 archive.
+ARCHS = {"sm83": ("-msm83", "sdasgb"), "z80": ("-mz80", "sdasz80")}
 
 _LABEL = re.compile(r"^\s*([0-9A-Fa-f]{8})\s+\d+\s+([._A-Za-z][\w.$]*):{1,2}\s*$")
 _LINE = re.compile(r"^\s*([0-9A-Fa-f]{8})\s+((?:[0-9A-Fa-f]{2}\s+)+)\s*\[\s*\d+\]\s+\d+\s+(.*)$")
@@ -90,8 +94,8 @@ def toolchain_bin(name: str) -> Path | None:
     return None
 
 
-def available() -> bool:
-    return all(toolchain_bin(n) for n in ("sdcc", "sdasgb"))
+def available(arch: str = "sm83") -> bool:
+    return all(toolchain_bin(n) for n in ("sdcc", ARCHS[arch][1]))
 
 
 def toolchain_root() -> Path | None:
@@ -170,15 +174,16 @@ def parse_listing(text: str) -> dict[str, BuiltFunction]:
 
 
 def build_source(source: str, *, context_header: str = "", include_dirs: tuple[str, ...] = (),
-                 symbols: dict[str, int] | None = None, opt: str = "--opt-code-speed",
-                 timeout: float = 120.0) -> dict[str, BuiltFunction]:
-    """Compile candidate C and return every function it defines, with its exact SM83 bytes.
+                 symbols: dict[str, int] | None = None, opt: str | list[str] = "--fsigned-char",
+                 timeout: float = 120.0, arch: str = "sm83") -> dict[str, BuiltFunction]:
+    """Compile candidate C and return every function it defines, with its exact SM83 (or Z80) bytes.
 
     Raises RomError with the compiler/assembler output when the source cannot be built — a build
     failure is information for the caller, never a silent empty result."""
-    sdcc, sdasgb = toolchain_bin("sdcc"), toolchain_bin("sdasgb")
+    cpu_flag, assembler = ARCHS[arch]
+    sdcc, sdasgb = toolchain_bin("sdcc"), toolchain_bin(assembler)
     if sdcc is None or sdasgb is None:
-        raise RomError(f"the Game Boy C toolchain ({TOOLCHAIN}) is not installed: run `decomp setup`")
+        raise RomError(f"the Game Boy / Master System C toolchain ({TOOLCHAIN}) is not installed: run `decomp setup`")
     # The same source policy every other lane applies (compiler.check_source): matches must come from C,
     # so inline assembly, `__naked`, pragmas and system includes are refused here too. Without this the
     # Game Boy lane would be a loophole: `__asm("nop")` reproduces any single-instruction target.
@@ -201,9 +206,9 @@ def build_source(source: str, *, context_header: str = "", include_dirs: tuple[s
             body = source + "\n"
         (work / "func.c").write_text(body, encoding="utf-8", newline="\n")
 
-        argv = [sdcc, "-msm83", "-S", "-o", "func.asm"]
-        if opt:
-            argv.append(opt)
+        argv = [sdcc, cpu_flag, "-S", "-o", "func.asm"]
+        if opt:  # one flag, or the project's whole list
+            argv += [opt] if isinstance(opt, str) else [str(f) for f in opt]
         for d in (inc, root / "include" if root else None):
             if d is not None:
                 argv += ["-I", str(d)]
@@ -230,7 +235,7 @@ def build_source(source: str, *, context_header: str = "", include_dirs: tuple[s
         rc, log = _run([sdasgb, "-l", "-o", "func.rel", "func.asm"], work, timeout)
         lst = work / "func.lst"
         if rc != 0 or not lst.exists():
-            raise RomError(f"sdasgb could not assemble the candidate: {log.strip()[-600:]}")
+            raise RomError(f"{assembler} could not assemble the candidate: {log.strip()[-600:]}")
         # An external reference the assembler could not resolve assembles as zeros. That is exactly the
         # kind of "match" nobody wants, so refuse it and name the symbols (pass them in `symbols` with
         # the project's addresses to resolve them, which is how byte-identical matching works).
@@ -256,7 +261,7 @@ def build_payload(source: str, *, name: str | None = None, **kw) -> bytes:
                for n, f in funcs.items()}
     if name is not None and name not in payload:
         raise RomError(f"the candidate did not define {name!r} (defined: {', '.join(sorted(funcs))})")
-    return PAYLOAD_MAGIC + json.dumps({"arch": "sm83", "functions": payload}).encode("utf-8")
+    return PAYLOAD_MAGIC + json.dumps({"arch": kw.get("arch", "sm83"), "functions": payload}).encode("utf-8")
 
 
 def parse_payload(payload: bytes) -> dict:
@@ -275,7 +280,7 @@ def compile_function(source: str, name: str, *, symbols: dict[str, int] | None =
     if key is None:
         raise RomError(f"the candidate did not define {name!r} (defined: {', '.join(sorted(funcs))})")
     built = funcs[key]
-    return FunctionObj(name=name, arch="sm83", big_endian=False, code=built.code,
+    return FunctionObj(name=name, arch=kw.get("arch", "sm83"), big_endian=False, code=built.code,
                        relocs=list(built.relocs))
 
 
