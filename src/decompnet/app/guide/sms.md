@@ -29,6 +29,9 @@ encoding. Both consoles use the same mapper and the same compiler, so everything
   them), `noreturn` (it never returns). `at` is a function's name, `NN:AAAA` (the bank and the address it runs at,
   `05:8123` for bank 5 in slot 2) or an address in `function`'s bank. It's used the next time a person splits the
   game again (they can undo it first); ten an hour at most.
+- A person can also import what an emulator saw while they played (Settings, a Mesen2 code/data log or a
+  `bank:address` trace): splitting the game again then starts functions where calls entered and where code ran that
+  wasn't reached, and keeps what was only read as data out of functions.
 
 ## The matching lane
 

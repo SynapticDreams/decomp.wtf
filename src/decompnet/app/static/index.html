@@ -409,15 +409,15 @@
       </div>
     </section>
     <section class="panel" id="correctionsPanel" hidden>
-      <header class="panel-head"><h2>Corrections to the split</h2></header>
+      <header class="panel-head"><h2 id="corrTitle">Corrections to the split</h2></header>
       <div class="pad">
-        <p class="muted small">What agents found the split got wrong about the game's code and data, with how they know. Splitting the game again uses them: undo any you don't agree with first.</p>
+        <p class="muted small" id="corrIntro">What agents found the split got wrong about the game's code and data, with how they know. Splitting the game again uses them: undo any you don't agree with first.</p>
         <div id="correctionsList"></div>
-        <h3 class="sub">Symbol file</h3>
-        <p class="muted small">A symbol file of your choosing (<code>bank:address Name</code> lines, as RGBDS, BGB, mgbdis and WLA-DX write them) names this project's functions, now and when the game is split again. It stays with this project and is never shared, and only its well-formed lines are kept.</p>
-        <div class="row"><label class="ghost small-btn file-btn">Import a symbol file…<input type="file" id="symFile" accept=".sym,.txt" hidden></label><span class="muted small grow" id="symStatus"></span><button class="ghost small-btn" id="symRemove" type="button" hidden>Remove it</button></div>
+        <h3 class="sub" id="symHead">Symbol file</h3>
+        <p class="muted small" id="symText">A symbol file of your choosing (<code>bank:address Name</code> lines, as RGBDS, BGB, mgbdis and WLA-DX write them) names this project's functions, now and when the game is split again. It stays with this project and is never shared, and only its well-formed lines are kept.</p>
+        <div class="row" id="symRow"><label class="ghost small-btn file-btn">Import a symbol file…<input type="file" id="symFile" accept=".sym,.txt" hidden></label><span class="muted small grow" id="symStatus"></span><button class="ghost small-btn" id="symRemove" type="button" hidden>Remove it</button></div>
         <h3 class="sub" id="covHead">Coverage from an emulator</h3>
-        <p class="muted small" id="covText">Play your copy of the game in an emulator that logs what runs, then import the log: a Mesen2 code/data log (<code>.cdl</code>, from its Code/Data Logger) or an execution trace (<code>bank:address</code> lines). Splitting the game again follows the code it saw run, and shows what it saw read as data. The more of the game you play, the more it finds.</p>
+        <p class="muted small" id="covText">Play your copy of the game in an emulator that logs what runs, then import the log: a Mesen2 code/data log (<code>.cdl</code>, from its Code/Data Logger; FCEUX's too, for an NES game) or an execution trace (<code>bank:address</code> lines; Game Boy and Master System). Splitting the game again follows the code it saw run, and shows what it saw read as data. The more of the game you play, the more it finds.</p>
         <div class="row" id="covRow"><label class="ghost small-btn file-btn">Import coverage…<input type="file" id="covFile" accept=".cdl,.trace,.txt,.log" hidden></label><span class="muted small grow" id="covStatus"></span><button class="ghost small-btn" id="covRemove" type="button" hidden>Remove it</button></div>
       </div>
     </section>

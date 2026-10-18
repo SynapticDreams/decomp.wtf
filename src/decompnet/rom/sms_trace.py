@@ -144,6 +144,7 @@ class Found:
     # tables a function indexes itself before `jp (hl)`: (from flat, from cpu, table, the slots then, bound or None)
     indexed: list[tuple[int, int, int, tuple, int | None]] = field(default_factory=list)
     tails: dict[int, set] = field(default_factory=dict)  # function -> where its tail jumps go (None: not known)
+    code: dict[int, int] = field(default_factory=dict)  # every instruction followed: flat -> its length
     jumps: list[tuple[int, int, int, tuple]] = field(default_factory=list)  # (function, to flat, to cpu, slots)
     anchors: set[int] = field(default_factory=set)  # starts reached by something other than a jump (a call...)
     slot_writes: dict[int, int] = field(default_factory=dict)  # 1 | 2 -> mapper writes seen that pick that slot's bank
@@ -199,7 +200,14 @@ class Tracer:
         sms.functions): bytes that aren't code, routines that read bytes after their call or never return."""
         self.data, self.size = data, len(data)
         self.hints = hints or {}
-        self.data_spans = sorted(self.hints.get("data") or [])
+        cov = self.hints.get("coverage")  # (what an emulator only saw read is data too)
+        self.data_spans: list[tuple[int, int]] = []  # merged, in order
+        for a, n in sorted(list(self.hints.get("data") or []) + (cov.runs("read") if cov is not None else [])):
+            if self.data_spans and a <= sum(self.data_spans[-1]):
+                last = self.data_spans[-1]
+                self.data_spans[-1] = (last[0], max(sum(last), a + n) - last[0])
+            else:
+                self.data_spans.append((a, n))
         self.mask = bank_mask(self.size)
         self.mapper = self.size > 3 * BANK  # 48 KiB or less: the ROM is simply at 0x0000-0xBFFF
         self.unknown = (None if paged and 1 in paged else 1, None if paged and 2 in paged else 2)
@@ -234,7 +242,7 @@ class Tracer:
     def _round(self, seeds: dict[int, tuple[int, str]]) -> None:
         f = self.found
         prev, f.entered, f.starts, f.with_hl, f.jumps, f.anchors = f.entered, {}, {}, [], [], set()
-        f.indexed, f.tails = [], {}
+        f.indexed, f.tails, f.code = [], {}, {}
         queue = [(flat, cpu, why, (1, 2) if flat == 0 else None) for flat, (cpu, why) in sorted(seeds.items())]
         for flat, _cpu, _why, m in queue:
             if m is not None:
@@ -277,9 +285,9 @@ class Tracer:
             flat in self.prev_starts and flat not in f.returns)
 
     def in_data(self, flat: int) -> bool:
-        """In bytes a correction says aren't code."""
+        """In bytes a correction (or coverage) says aren't code."""
         k = bisect.bisect_right(self.data_spans, (flat, 1 << 30)) - 1
-        return k >= 0 and self.data_spans[k][0] <= flat < self.data_spans[k][0] + self.data_spans[k][1]
+        return k >= 0 and self.data_spans[k][0] <= flat < sum(self.data_spans[k])
 
     def _trace(self, entry: int, entry_cpu: int, st: State) -> list[tuple[int, int, tuple, str]]:
         """Follow one function; returns the functions it calls or jumps to: (flat, cpu, the banks mapped then,
@@ -297,6 +305,7 @@ class Tracer:
                 text, ln = _decode(data, flat, cpu)
                 if text.startswith("db "):
                     break
+                f.code[flat] = ln
                 st.n += 1
                 skip = 0  # bytes after a call that the routine called reads (a correction says how many)
                 kind, target = z80.flow(text)

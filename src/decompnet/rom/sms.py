@@ -20,6 +20,7 @@ the CPU address it runs at (`func_<bank>_<address>`), because two banks can hold
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import re
 from pathlib import Path
@@ -304,8 +305,8 @@ def candidates(data: bytes, limit: int = 4000, labels: dict | None = None,
     seeds.update({f: (cpu, "hint") for f, cpu in (hints.get("entries") or {}).items() if f < size})
     if labels:
         seeds.update({f: c for f, c in sms_trace.sym_seeds(labels, data).items() if f not in seeds})
-    spans = sorted(hints.get("data") or [])
-    in_data = (lambda flat: any(a <= flat < a + n for a, n in spans)) if spans else None
+    cov = hints.get("coverage")
+    in_data = _data_mask(size, list(hints.get("data") or []) + (cov.runs("read") if cov is not None else []))
     seeds.update({f: c for f, c in _swept(data, 0, 0, set(seeds), in_data).items() if f not in seeds})
     # a first pass learns which slots the game pages; then code entered from anywhere nothing was followed from
     # doesn't assume the power-on bank in those (a call there would land in a data bank)
@@ -317,6 +318,8 @@ def candidates(data: bytes, limit: int = 4000, labels: dict | None = None,
         if bank not in bases and (base := tracer.default_base(bank)) is not None:
             bases[bank] = base
     handlers = {f: c for f, c in _hint_tables(data, hints, bases).items() if f not in seeds}
+    if cov is not None:  # where calls entered while the game ran, at the address its bank runs at
+        handlers.update({f: (_cpu_at(f, bases, size), "ran") for f in sorted(cov.entries) if f not in seeds and f < size})
     if handlers:  # (the tables corrections name, read in the banks their code was found running at)
         seeds.update(handlers)
         found = sms_trace.Tracer(data, paged={s for s, n in probe.slot_writes.items() if n}, hints=hints).follow(seeds)
@@ -330,6 +333,13 @@ def candidates(data: bytes, limit: int = 4000, labels: dict | None = None,
     if len(more) > len(found.starts):
         found = sms_trace.Tracer(data, paged=paged, hints=hints).follow({**more, **seeds})
         bases = {**bases, **found.bank_base}
+    if cov is not None:  # code that ran but wasn't followed (reached through a pointer): where each run of it starts
+        ran = {f: (_cpu_at(f, bases, size), "ran") for f in range(size) if cov.code[f] and (f == 0 or not cov.code[f - 1])
+               and f not in found.code and f not in more and f not in seeds}
+        if ran:
+            more.update(ran)
+            found = sms_trace.Tracer(data, paged=paged, hints=hints).follow({**more, **seeds})
+            bases = {**bases, **found.bank_base}
     # code nothing points at (called through pointers kept in RAM, which this can't follow): what starts right where
     # a function ends, in a bank that has code, and reads like a function, is the next one. While that finds more.
     seeds = {**more, **seeds}
@@ -342,6 +352,23 @@ def candidates(data: bytes, limit: int = 4000, labels: dict | None = None,
         bases = {**bases, **found.bank_base}
     starts = dict(sorted(found.starts.items())[:limit])
     return starts, bases
+
+
+def _data_mask(size: int, spans: list[tuple[int, int]]):
+    """`flat -> bool` for bytes in `spans` ((flat, size) each), or None when there are none."""
+    if not spans:
+        return None
+    mask = bytearray(size)
+    for a, n in spans:
+        mask[a:a + n] = b"\x01" * max(0, min(n, size - a))
+    return lambda flat: 0 <= flat < size and mask[flat] == 1
+
+
+def _cpu_at(flat: int, bases: dict[int, int], size: int) -> int:
+    """The CPU address code at ROM offset `flat` runs at: bank 0 where it is, another bank where it was found running
+    (else where it most likely runs)."""
+    bank = flat // BANK_SIZE
+    return flat if bank == 0 else bases.get(bank, slot_base(bank, size)) + (flat & (BANK_SIZE - 1))
 
 
 def _hint_tables(data: bytes, hints: dict, bases: dict[int, int]) -> dict[int, tuple[int, str]]:
@@ -429,18 +456,23 @@ def functions(data: bytes, log=lambda *_: None, labels: dict | None = None,
     if not found:
         raise RomError("no code found in this ROM: every candidate address pointed outside it")
     size = len(data)
-    spans = sorted(hints.get("data") or [])
-    in_data = lambda flat: any(a <= flat < a + n for a, n in spans)  # noqa: E731
+    cov = hints.get("coverage")
+    read = cov.runs("read") if cov is not None else []
+    spans = sorted(list(hints.get("data") or []) + read)
+    in_data = _data_mask(size, spans) or (lambda _flat: False)
+    span_starts = [a for a, _n in spans]
     starts = sorted(f for f in found if not in_data(f))
     known = set(starts)
     inline = hints.get("inline") or {}
-    regions = [(a, n, "hint", "a correction says these bytes aren't code") for a, n in spans]
+    regions = [(a, n, "hint", "a correction says these bytes aren't code") for a, n in hints.get("data") or []]
+    regions += [(a, n, "read", "read as data while the game ran (coverage)") for a, n in read]
     taken: set[str] = set()
     out: list[gb.GbFunction] = []
     for i, start in enumerate(starts):
         cpu = found[start][0]
         hard = starts[i + 1] if i + 1 < len(starts) else min(start + MAX_FUNCTION, size)
-        hard = min([hard] + [a for a, _n in spans if start < a < hard])  # (a function stops where data starts)
+        k = bisect.bisect_right(span_starts, start)  # (a function stops where data starts)
+        hard = min(hard, span_starts[k]) if k < len(span_starts) else hard
         steps = list(_walk(data, start, cpu, hard, known, inline))
         code = data[start:steps[-1][0] + max(1, steps[-1][2])] if steps else b""
         operands = {cpu + off - start: n for off, text, n in steps if text == "db"}  # (CPU address: length)
@@ -489,4 +521,6 @@ def split(path: Path, workdir: Path, log=lambda *_: None, report: dict | None = 
                                                          if len(seeds) > len(labels) else ""))
     if hints and any(hints.get(k) for k in ("entries", "data", "tables", "inline", "noreturn")):
         log("with the project's corrections")
+    if hints and hints.get("coverage") is not None:
+        log("with what an emulator saw the game run")
     return functions(data, log=log, labels=labels, report=report, seeds=seeds, hints=hints)
