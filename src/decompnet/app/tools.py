@@ -215,6 +215,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "rename_symbol": lambda net, agent, slug, old, new, message="": net.rename_symbol(agent, slug, old, new, message),
     "split_function": lambda net, agent, slug, function, at, new_name="":
         net.split_function(agent, slug, function, at, new_name),
+    "merge_function": lambda net, agent, slug, function: net.merge_function(agent, slug, function),
     "read_data": lambda net, agent, slug, what, length=64, unit="": (net.forks.read_data(agent, slug, what, length)
                                                             if net.fork_slug(slug) else net.read_data(slug, what, length, unit)),
     "list_functions": lambda net, agent, slug, status="open", limit=40: net.list_functions(slug, status, limit),
@@ -232,7 +233,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
         net.forks.split_file(agent, _fork(net, slug, "split_file"), path, at, new_name, data),
 }
 
-ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function"}
+ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "merge_function"}
 FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file"}
 
 
@@ -348,6 +349,12 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         """Split a function the disassembler merged with the next one (e.g. after a function that never
         returns). `at` is the address where the second function starts."""
         return await run(ctx, "split_function", function=function, at=at, new_name=new_name)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def merge_function(ctx: Context, function: str) -> str:
+        """Join a function with its neighbour when the split cut one routine in two (Game Boy, Master System, NES):
+        it runs on (or jumps) into the next, or the one before runs on into it; nothing else may call the second."""
+        return await run(ctx, "merge_function", function=function)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def read_data(ctx: Context, what: str, length: int = 64, unit: str = "") -> str:
