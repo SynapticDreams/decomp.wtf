@@ -1832,11 +1832,12 @@ function modelOptions(a) {
   for (const r of recent) if (!opts.some((o) => o.id === r)) opts.push({ id: r, name: r, note: "used before" });
   return opts;
 }
-/* Codex: the reasoning efforts the chosen model supports (its default model's when none is chosen; every model's when
-   the name was typed in), with what "Default" means: the user's own setting, else the model's. */
-function effortOptions(a) {
+/* Codex (and Claude Code, in Work on this): the reasoning efforts the chosen model supports (its default model's when
+   none is chosen; every model's when the name was typed in), with what "Default" means: the user's own setting, else
+   the model's. */
+function effortOptions(a, model = LZ.model) {
   const models = a.models || [];
-  const m = models.find((x) => x.id === (LZ.model || a.default_model)) || (LZ.model ? null : models[0]);
+  const m = models.find((x) => x.id === (model || a.default_model)) || (model ? null : models.find((x) => (x.efforts || []).length));
   const efforts = m ? m.efforts || [] : [...new Set(models.flatMap((x) => x.efforts || []))];
   const base = a.default_effort || (m && m.effort) || "";
   return [{ id: "", name: base ? `Default · ${base}` : "Default" }, ...efforts.map((e) => ({ id: e, name: e }))];
@@ -2548,7 +2549,7 @@ function openPinHelper(name) {
   const kinds = (S.st.agents || []).filter((a) => a.installed && a.id !== "api");
   const last = S.st.settings.pin_helper || {};
   const choices = [...eps.map((e) => ({ key: `ep:${e.id}`, label: `${e.name} · ${e.model}`, ep: e.id })),
-    ...kinds.map((a) => ({ key: `k:${a.id}`, label: a.name, kind: a.id, lean: a.id === "codex" }))];
+    ...kinds.map((a) => ({ key: `k:${a.id}`, label: a.name, kind: a.id, lean: a.id === "codex", agent: a }))];
   if (!choices.length) {
     dialog(`Work on ${name}`, `<p>Add an API endpoint or install an agent first: <a class="link" href="#/agents" data-close>Agents &amp; models</a>.</p>`);
     return;
@@ -2556,7 +2557,13 @@ function openPinHelper(name) {
   const pick = choices.find((c) => c.key === last.who) || choices[0];
   const body = dialog(`Work on ${name} until it matches`, `<p class="muted">One helper on this function only. Each try starts from the closest version so far; it stops at a match, or when it stops getting closer, and leaves a note with what it tried.</p>
     <label class="field"><span>Helper</span><select id="phWho">${choices.map((c) => `<option value="${esc(c.key)}" ${c === pick ? "selected" : ""}>${esc(c.label)}</option>`).join("")}</select></label>
-    <div id="phLean">
+    <div id="phSetup" class="group">
+      <label class="field"><span>Model</span><select id="phModel"></select></label>
+      <input id="phCustom" class="lz-custom" hidden>
+      <label class="field" id="phEffortField"><span>Effort</span><select id="phEffort"></select></label>
+      <p class="muted small" id="phEffortNote">Two runs without getting closer and it tries one effort higher (up to high), back to this one after a gain.</p>
+    </div>
+    <div id="phLean" class="group">
       <label class="field"><span>How to ask</span><select id="phMethod"></select></label>
       <label class="field" id="phNField"><span>Versions per call</span><input id="phN" type="number" min="2" max="6" value="${esc(String(last.variants || 3))}"></label>
       <label class="field" id="phEscField"><span>When stuck, switch to</span><select id="phEsc"><option value="">Stay on this model</option>${eps.map((e) => `<option value="${esc(e.id)}" ${e.id === last.escalate ? "selected" : ""}>${esc(e.name)} · ${esc(e.model)}</option>`).join("")}</select></label>
@@ -2568,6 +2575,36 @@ function openPinHelper(name) {
   const which = () => choices.find((c) => c.key === $("phWho").value);
   const METHODS = { several: "Several versions per call (three by default: best in our tests)", one: "One version per call", both: "Test both: in turn, on this function" };
   const lean = () => $("phMethod").value !== "agent";
+  /* Each agent's model and effort, as last started here, else as the launcher last started it. An API endpoint has its
+     own model (Agents & models). */
+  const launcher = S.st.settings.launcher || {};
+  const setups = {};
+  const setupOf = (kind) => (setups[kind] ||= { model: "", effort: "", ...((last.setups || {})[kind] ||
+    (launcher.kind === kind ? { model: launcher.model || "", effort: launcher.effort || "" } : {})) });
+  const efforts = () => {  // Codex's per model; Claude Code's --effort, unless the tier picks it
+    const c = which(), cur = setupOf(c.kind);
+    return (c.kind === "codex" || c.kind === "claude") && cur.model !== "tiered" ? effortOptions(c.agent, cur.model) : [];
+  };
+  const fillEffort = () => {
+    const c = which(), cur = setupOf(c.kind), opts = efforts();
+    if (!opts.some((o) => o.id === cur.effort)) cur.effort = "";
+    $("phEffort").innerHTML = opts.map((o) => `<option value="${esc(o.id)}" ${o.id === cur.effort ? "selected" : ""}>${esc(o.name)}</option>`).join("");
+    $("phEffortField").hidden = opts.length < 2;
+    note();
+  };
+  const fillSetup = () => {
+    const c = which();
+    $("phSetup").hidden = !c.agent;
+    if (!c.agent) return;
+    const cur = setupOf(c.kind), opts = modelOptions(c.agent), known = opts.some((o) => o.id === cur.model);
+    $("phModel").innerHTML = opts.map((o) => `<option value="${esc(o.id)}" ${known && o.id === cur.model ? "selected" : ""}>${esc(o.name)}${o.note ? ` — ${esc(o.note)}` : ""}</option>`).join("")
+      + `<option value="__other" ${known ? "" : "selected"}>Another model…</option>`;
+    $("phCustom").hidden = known;
+    $("phCustom").value = known ? "" : cur.model;
+    $("phCustom").placeholder = `model name, as ${c.agent.name} calls it`;
+    fillEffort();
+  };
+  const note = () => { $("phEffortNote").hidden = $("phEffortField").hidden || (which().lean && lean()); };  // the lean loop keeps it
   const fill = () => {  // Codex can also work its own way (tools, a session per run); an API model only lean
     const c = which(), keep = $("phMethod").value || last.lean || "several";
     const opts = c.ep ? METHODS : { ...METHODS, agent: "Its own loop: tools, a fresh session per run" };
@@ -2581,10 +2618,21 @@ function openPinHelper(name) {
     const calls = on && lean();
     $("phUnit").textContent = calls ? "calls" : "runs";
     $("phStall").value = calls ? (last.stall_calls || 10) : (last.stall_runs || 4);
+    note();
   };
-  $("phWho").onchange = () => { fill(); sync(); };
+  $("phWho").onchange = () => { fill(); fillSetup(); sync(); };
   $("phMethod").onchange = sync;
+  $("phModel").onchange = () => {
+    const cur = setupOf(which().kind), other = $("phModel").value === "__other";
+    $("phCustom").hidden = !other;
+    cur.model = other ? $("phCustom").value.trim() : $("phModel").value;
+    if (other) $("phCustom").focus();
+    fillEffort();
+  };
+  $("phCustom").oninput = () => { setupOf(which().kind).model = $("phCustom").value.trim(); };
+  $("phEffort").onchange = () => { setupOf(which().kind).effort = $("phEffort").value; };
   fill();
+  fillSetup();
   sync();
   body.querySelector("#phGo").onclick = async () => {
     const c = which(), go = $("phGo");
@@ -2595,18 +2643,20 @@ function openPinHelper(name) {
       Object.assign(options, { endpoints: [c.ep], lean: $("phMethod").value, variants: Number($("phN").value) || 3 });
       if ($("phEsc").value) options.escalate = $("phEsc").value;
     } else {
-      const l = S.st.settings.launcher || {};
-      if (l.kind === c.kind && l.model) options.model = l.model;
-      if (l.kind === c.kind && l.effort) options.effort = l.effort;
+      const cur = setupOf(c.kind);
+      if (cur.model) options.model = cur.model;
+      if (cur.effort && !$("phEffortField").hidden) options.effort = cur.effort;
       if (c.lean && lean()) Object.assign(options, { lean: $("phMethod").value, variants: Number($("phN").value) || 3 });
     }
     go.disabled = true;
     try {
       await api("/api/agents/start", { method: "POST", body: { kind, slug: S.slug, count: 1, options } });
       S.st.settings.pin_helper = { who: c.key, lean: options.lean, variants: options.variants, escalate: options.escalate || "",
-        polish: options.polish, [options.lean ? "stall_calls" : "stall_runs"]: options.stall };
+        polish: options.polish, [options.lean ? "stall_calls" : "stall_runs"]: options.stall,
+        setups: { ...(last.setups || {}), ...(c.ep ? {} : { [kind]: { model: options.model || "", effort: options.effort || "" } }) } };
       $("dialog").hidden = true;
-      toast(`A helper is on <code>${esc(name)}</code>: watch it in Agents.`, "match");
+      const setup = [options.model && modelName(c.agent, options.model), options.effort && `${options.effort} effort`].filter(Boolean).join(", ");
+      toast(`A helper is on <code>${esc(name)}</code>${setup ? ` (${esc(setup)})` : ""}: watch it in Agents.`, "match");
       poll(false);
     } catch (e) { toast(esc(e.message), "err"); go.disabled = false; }
   };

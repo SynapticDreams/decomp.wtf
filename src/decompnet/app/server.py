@@ -986,21 +986,24 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 ids = manager.start(kind, slug, count, options)
         except (NetworkError, ValueError) as e:
             return fail(e)
-        if options.get("pin"):  # the drawer's "Work on this" remembers its own choices, not the launcher's
-            settings.data["pin_helper"] = (settings.data.get("pin_helper") or {}) | {
-                "who": f"ep:{picked[0]}" if kind == "api" and picked else f"k:{kind}", "lean": options.get("lean") or "",
-                "variants": options.get("variants") or 0, "escalate": options.get("escalate_endpoint") or "",
-                "polish": bool(options.get("polish")), ("stall_calls" if options.get("lean") else "stall_runs"): options["stall"]}
-            settings.save()
-            return JSONResponse({"started": ids})
         # remembered, so the next start is one click; models typed in come back as suggestions
         model = str(options.get("model") or "")
         effort = str(options.get("effort") or "")
-        settings.data["launcher"] = ({"kind": kind, "model": model, "count": count} | ({"effort": effort} if effort else {})
-                                     | ({"endpoints": picked} if picked else {}) | ({"lean": options["lean"]} if options.get("lean") else {}))
         if model and kind != "api" and model != agents.TIERED:  # "tiered" is offered already, not a typed name
             recent = settings.data.setdefault("recent_models", {}).setdefault(kind, [])
             settings.data["recent_models"][kind] = [model] + [m for m in recent if m != model][:7]
+        if options.get("pin"):  # the drawer's "Work on this" remembers its own choices, not the launcher's
+            saved = settings.data.get("pin_helper") or {}
+            setups = dict(saved.get("setups") or {}) | ({kind: {"model": model, "effort": effort}} if kind != "api" else {})
+            settings.data["pin_helper"] = saved | {
+                "who": f"ep:{picked[0]}" if kind == "api" and picked else f"k:{kind}", "lean": options.get("lean") or "",
+                "variants": options.get("variants") or 0, "escalate": options.get("escalate_endpoint") or "",
+                "polish": bool(options.get("polish")), ("stall_calls" if options.get("lean") else "stall_runs"): options["stall"],
+                "setups": setups}  # each agent's model and effort: an API endpoint has its own model
+            settings.save()
+            return JSONResponse({"started": ids})
+        settings.data["launcher"] = ({"kind": kind, "model": model, "count": count} | ({"effort": effort} if effort else {})
+                                     | ({"endpoints": picked} if picked else {}) | ({"lean": options["lean"]} if options.get("lean") else {}))
         settings.save()
         return JSONResponse({"started": ids})
 
