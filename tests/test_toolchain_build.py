@@ -62,3 +62,10 @@ def test_wla_dx_is_pinned_from_source_and_for_windows():
     unix = tc.parts_for("linux-x86_64")[0]
     assert unix["build"] and unix["binaries"] == ["build/binaries/wla-z80", "build/binaries/wlalink"]
     assert "build" not in tc.parts_for("windows-x86_64")[0]
+
+
+def test_cc65_is_pinned_from_source():
+    tc = toolchains.get("cc65")
+    assert tc.license == "Zlib"
+    part = tc.parts_for("linux-x86_64")[0]
+    assert part["build"] == [["make", "-C", "src", "ca65", "ld65"]] and part["binaries"] == ["bin/ca65", "bin/ld65"]
