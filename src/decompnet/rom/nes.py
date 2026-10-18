@@ -30,6 +30,7 @@ that each point at a function are taken as one.
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -289,13 +290,21 @@ def _clean(layout: Layout, start: int, code: bytes) -> int:
     return len(insns) if mos6502.is_return(insns[-1][1]) else 0
 
 
-def candidates(prg: bytes, layout: Layout, limit: int = 6000) -> dict[int, str]:
+def candidates(prg: bytes, layout: Layout, limit: int = 6000, coverage=None) -> dict[int, str]:
     """{PRG offset: how it was found} for every plausible function start: the vectors, then everything the code
     found calls or tail-jumps to (recursive descent), then `jsr` targets from code the descent never reached and
-    handler tables, each kept only when what it points at reads as a function."""
+    handler tables, each kept only when what it points at reads as a function. `coverage` (rom/coverage.py, by PRG
+    offset): where calls entered while the game ran start functions, and so does code that ran but wasn't reached;
+    nothing starts in what it only read as data."""
     found: dict[int, str] = {}
     for name, p in vectors(prg, layout).items():
         found.setdefault(p, name)
+    data = bytearray(len(prg))
+    for a, n in coverage.runs("read") if coverage is not None else ():
+        data[a:a + n] = b"\x01" * n
+    for p in sorted(coverage.entries) if coverage is not None else ():
+        if p < len(prg):
+            found.setdefault(p, "ran")
 
     def follow(start: int) -> None:
         todo = [start]
@@ -316,6 +325,15 @@ def candidates(prg: bytes, layout: Layout, limit: int = 6000) -> dict[int, str]:
 
     for p in list(found):
         follow(p)
+    if coverage is not None:  # code that ran but the descent didn't reach (through a pointer): each run's start
+        reached, known = bytearray(len(prg)), set(found)
+        for p in known:
+            n = len(_extent(prg, layout, p, len(prg), known))
+            reached[p:p + n] = b"\x01" * n
+        for p in range(len(prg)):
+            if coverage.code[p] and (p == 0 or not coverage.code[p - 1]) and not reached[p] and p not in found:
+                found[p] = "ran"
+                follow(p)
 
     # `jsr` anywhere in the ROM: a call from code the descent never reached still names a function. One call to a short
     # run of bytes is as likely data that happens to contain 0x20, so it needs a second caller or a few instructions.
@@ -323,7 +341,7 @@ def candidates(prg: bytes, layout: Layout, limit: int = 6000) -> dict[int, str]:
     for bank in range(layout.banks):
         lo, hi = bank * layout.unit, min((bank + 1) * layout.unit, len(prg))
         for off in range(lo, hi - 2):
-            if prg[off] == 0x20:
+            if prg[off] == 0x20 and not data[off]:
                 flat = layout.target(prg[off + 1] | (prg[off + 2] << 8), bank)
                 if flat is not None and flat not in found:
                     sites[flat] = sites.get(flat, 0) + 1
@@ -340,7 +358,7 @@ def candidates(prg: bytes, layout: Layout, limit: int = 6000) -> dict[int, str]:
         lo, hi = bank * layout.unit, min((bank + 1) * layout.unit, len(prg))
         for run in _address_runs(prg, layout, bank, lo, hi):
             _take_table(prg, layout, run, found, follow, limit)
-    return dict(sorted(found.items()))
+    return dict(sorted((p, how) for p, how in found.items() if not data[p]))
 
 
 def _address_runs(prg: bytes, layout: Layout, bank: int, lo: int, hi: int):
@@ -387,20 +405,29 @@ def refs_of(code: bytes, cpu: int, bank: int, layout: Layout) -> list[tuple[int,
     return out
 
 
-def functions(data: bytes, log=lambda *_: None) -> list[gb.GbFunction]:
+def functions(data: bytes, log=lambda *_: None, hints: dict | None = None,
+              report: dict | None = None) -> list[gb.GbFunction]:
     """Every discovered function, disassembled. (The record type is shared with the Game Boy lane.) Offsets in the
-    result are file offsets."""
+    result are file offsets. `hints`: {"coverage": what an emulator saw the game run and read}; `report` gets
+    {"regions": [(file offset, size, "read", why)]} for what it only read as data."""
     h = parse_header(data)
     layout = layout_of(h)
     prg = data[h["prg_off"]:h["prg_off"] + h["prg_size"]]
-    found = candidates(prg, layout)
+    cov = (hints or {}).get("coverage")
+    found = candidates(prg, layout, coverage=cov)
     if not found:
         raise RomError("no code found in this NES ROM: the reset vector doesn't point into it")
     starts = sorted(found)
     known = set(starts)
+    read = cov.runs("read") if cov is not None else []
+    read_starts = [a for a, _n in read]
+    if report is not None and read:
+        report["regions"] = [(h["prg_off"] + a, n, "read", "read as data while the game ran (coverage)") for a, n in read]
     out: list[gb.GbFunction] = []
     for i, start in enumerate(starts):
         hard = starts[i + 1] if i + 1 < len(starts) else len(prg)
+        k = bisect.bisect_right(read_starts, start)  # (a function stops where what was only read starts)
+        hard = min(hard, read_starts[k]) if k < len(read_starts) else hard
         code = _extent(prg, layout, start, hard, known)
         insns = list(mos6502.disassemble(code, layout.cpu(start)))
         if not insns:
@@ -414,8 +441,10 @@ def functions(data: bytes, log=lambda *_: None) -> list[gb.GbFunction]:
     return out
 
 
-def split(path: Path, workdir: Path, log=lambda *_: None, report: dict | None = None) -> list[gb.GbFunction]:
-    """A ROM file's functions. (`report` gets {"splitter": "built-in"}: there is no external tool for the 6502.)"""
+def split(path: Path, workdir: Path, log=lambda *_: None, report: dict | None = None,
+          hints: dict | None = None) -> list[gb.GbFunction]:
+    """A ROM file's functions. (`report` gets {"splitter": "built-in"}: there is no external tool for the 6502.)
+    `hints`: {"coverage": ...}, from a code/data log of the game being played (functions)."""
     if report is not None:
         report["splitter"] = "built-in"
     data = Path(path).read_bytes()
@@ -428,4 +457,6 @@ def split(path: Path, workdir: Path, log=lambda *_: None, report: dict | None = 
             "some at the wrong CPU address")
     if info["truncated"]:
         log("this ROM is shorter than its header says: reading what is there")
-    return functions(data, log=log)
+    if (hints or {}).get("coverage") is not None:
+        log("with what an emulator saw the game run")
+    return functions(data, log=log, hints=hints, report=report)

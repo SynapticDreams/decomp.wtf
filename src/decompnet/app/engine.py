@@ -23,6 +23,7 @@ import shutil
 import struct
 import threading
 import time
+import zlib
 from pathlib import Path
 
 from .. import scoring, seeds, similarity, toolchains
@@ -804,11 +805,7 @@ class RomNetwork(Network):
             raise NetworkError(f"the project's copy of the game ({cfg['rom']['file']}) isn't in its folder any more")
         lane = sms if arch == "z80" else nes if arch == "mos6502" else gb
         report: dict = {}
-        hints = self._hints(proj) if arch in ("sm83", "z80") else None
-        if hints is not None:
-            fns = lane.split(rom_path, root, log=log, report=report, hints=hints)
-        else:
-            fns = lane.split(rom_path, root, log=log, report=report)
+        fns = lane.split(rom_path, root, log=log, report=report, hints=self._hints(proj))
         old = self.store.all("SELECT * FROM functions WHERE project_id=?", proj["id"])
         by_off = {r["rom_offset"]: r for r in old if r["rom_offset"] is not None}
         kept, fresh = set(), []
@@ -2231,24 +2228,46 @@ class RomNetwork(Network):
         return None
 
     def _coverage(self, proj):
-        """The project's coverage, read against its copy of the game (rom/coverage.py), or None."""
-        from ..rom import coverage, gb_trace, sm83
+        """The project's coverage, read against its copy of the game (rom/coverage.py), or None. Indexed as the
+        project's split works: by ROM offset on the Game Boy and the Master System (a copier header left out), by
+        program ROM offset on the NES."""
+        from ..rom import coverage, gb_trace, nes, sm83, sms, z80
 
         path = self._coverage_path(proj)
         if path is None:
             return None
-        rom = (Path(proj["root"]) / self.cfg(proj)["rom"]["file"]).read_bytes()
+        arch = (self.cfg(proj).get("arch") or "").lower()
+        file = (Path(proj["root"]) / self.cfg(proj)["rom"]["file"]).read_bytes()
+        if arch == "mos6502":  # Mesen2 logs the program ROM; FCEUX the program and character ROM
+            h = nes.parse_header(file)
+            prg, chr_ = file[h["prg_off"]:h["prg_off"] + h["prg_size"]], file[h["prg_off"] + h["prg_size"]:]
+            if path.suffix != ".cdl":
+                raise coverage.CoverageError("an execution trace isn't read for NES games yet: save a code/data log "
+                                             "(Mesen2 or FCEUX) instead")
+            crcs = {zlib.crc32(x) for x in (prg, prg + chr_, file, file[16:])}
+            return coverage.read_cdl(path.read_bytes(), prg, crcs, fceux=len(prg) + len(chr_))
+        rom = sms.strip_copier_header(file) if arch == "z80" else file
         if path.suffix == ".cdl":
-            return coverage.read_cdl(path.read_bytes(), rom)
-        tracer = gb_trace.Tracer(rom)
+            return coverage.read_cdl(path.read_bytes(), rom, {zlib.crc32(rom), zlib.crc32(file)})
+        if arch == "z80":
+            def decode(flat):
+                text, ln = z80.decode(rom[flat:flat + 4], flat)
+                kind, target = z80.flow(text)
+                return text, ln, kind, target
 
-        def decode(flat):
-            text, ln = tracer.decode(flat)
-            kind, target = sm83.flow(text)
-            return text, ln, kind, target
+            def flat_of(bank, cpu):  # (slot 0, paged above its first KiB; slots 1 and 2)
+                return cpu if cpu < 0x0400 or (cpu < 0x4000 and not bank) else \
+                    bank * 0x4000 + (cpu & 0x3FFF) if cpu < 0xC000 else None
+        else:
+            tracer = gb_trace.Tracer(rom)
 
-        def flat_of(bank, cpu):
-            return cpu if cpu < 0x4000 else bank * 0x4000 + cpu - 0x4000 if cpu < 0x8000 and bank else None
+            def decode(flat):
+                text, ln = tracer.decode(flat)
+                kind, target = sm83.flow(text)
+                return text, ln, kind, target
+
+            def flat_of(bank, cpu):
+                return cpu if cpu < 0x4000 else bank * 0x4000 + cpu - 0x4000 if cpu < 0x8000 and bank else None
 
         return coverage.read_trace(path.read_text(encoding="utf-8", errors="replace"), rom, flat_of, decode)
 
@@ -2265,18 +2284,20 @@ class RomNetwork(Network):
 
     def import_coverage(self, slug: str, raw: bytes, name: str = "") -> dict:
         """Coverage the user recorded with an emulator while playing their copy of the game: a Mesen2 code/data log
-        (.cdl) or an execution trace (`bank:address` lines). Checked against the project's copy (a log for another
-        version is refused), kept next to it, and used when the game is split again (Game Boy for now)."""
+        (.cdl; FCEUX's too on the NES) or an execution trace (`bank:address` lines; Game Boy and Master System). Checked
+        against the project's copy (a log for another version is refused), kept next to it, and used when the game is
+        split again."""
         from ..rom import coverage
 
         proj = self._project(slug)
-        if (self.cfg(proj).get("arch") or "").lower() != "sm83" or self.fork_slug(slug):
-            raise NetworkError("coverage from an emulator is for Game Boy projects for now")
+        arch = (self.cfg(proj).get("arch") or "").lower()
+        if arch not in BANKED_ARCHS or self.fork_slug(slug):
+            raise NetworkError("coverage from an emulator is for Game Boy, Master System and NES projects")
         if slug in self.links:
             raise NetworkError("a room member's copy follows its host: the host imports it")
         rom_path = Path(proj["root"]) / self.cfg(proj)["rom"]["file"]
-        rom = rom_path.read_bytes()
-        cdl = raw[:5] == b"CDLv2" or len(raw) == len(rom)
+        # (a log is flags, a byte per byte of the game; a trace is lines of text)
+        cdl = raw[:5] == b"CDLv2" or not all(32 <= b < 127 or b in (9, 10, 13) for b in raw[:4096])
         target = rom_path.with_suffix(".cdl" if cdl else ".trace")
         old = self._coverage_path(proj)
         backup = old.read_bytes() if old is not None else None

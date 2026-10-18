@@ -8,7 +8,8 @@ Two forms are read:
 - a Mesen2 code/data log (`.cdl`): "CDLv2", the CRC32 of the ROM it was made for, then one flag byte per ROM byte:
   0x01 ran as code, 0x02 read as data, 0x04 a jump went there, 0x08 a call or an interrupt entered there. A log
   without the header (older files) is one flag byte per ROM byte. Mesen2 writes them for the Game Boy, the Master
-  System and the NES alike, indexed by where the byte is in the ROM (so its bank is known);
+  System and the NES alike, indexed by where the byte is in the ROM (so its bank is known); FCEUX's NES logs are
+  one byte per byte of program and character ROM, code and data in the same two bits;
 - an execution trace: one `bank:address` per instruction that ran (hex), as recompilers and emulator scripts write
   them. Calls and `rst`s that ran give where functions were entered.
 
@@ -58,22 +59,26 @@ class Coverage:
         return out
 
 
-def read_cdl(raw: bytes, rom: bytes) -> Coverage:
-    """A Mesen2 code/data log for `rom` (the bytes it indexes: the whole ROM on the Game Boy and the Master System, the
-    program ROM on the NES). Refused when it's for another version of the game."""
+def read_cdl(raw: bytes, rom: bytes, crcs: set[int] | None = None, fceux: int | None = None) -> Coverage:
+    """A code/data log for `rom` (the bytes it indexes: the whole ROM on the Game Boy and the Master System, the
+    program ROM on the NES). Refused when it's for another version of the game. `crcs`: the CRC32s a Mesen2 log for
+    this game may carry (it takes it over the game as it loaded it: by default `rom`'s). `fceux`: the size of an FCEUX
+    log for this game (NES: program and character ROM, the program's first; its bits above data say other things,
+    so it gives no entries)."""
+    plain = False
     if raw[:5] == b"CDLv2":
         crc, flags = int.from_bytes(raw[5:9], "little"), raw[9:]
         if len(flags) != len(rom):
             raise CoverageError(f"this log covers {len(flags):,} bytes, the game has {len(rom):,}: it's for another game")
-        if crc != zlib.crc32(rom):
+        if crc not in (crcs or {zlib.crc32(rom)}):
             raise CoverageError("this log is for another version of the game (its CRC32 differs)")
-    elif len(raw) == len(rom):
-        flags = raw
+    elif len(raw) == len(rom) or (fceux and len(raw) == fceux):
+        flags, plain = raw[:len(rom)], bool(fceux)
     else:
         raise CoverageError("not a code/data log: one starts with CDLv2, or has one byte per byte of the game")
     code = bytearray(1 if f & CODE else 0 for f in flags)
     read = bytearray(1 if f & DATA and not f & CODE else 0 for f in flags)
-    entries = {k for k, f in enumerate(flags) if f & ENTRY and f & CODE}
+    entries = set() if plain else {k for k, f in enumerate(flags) if f & ENTRY and f & CODE}
     if not any(code):
         raise CoverageError("this log has no code in it: play the game with the code/data logger on, then save it")
     return Coverage(code, read, entries, "cdl")

@@ -23,6 +23,9 @@ them, and score an attempt exactly. Functions compiled with SDCC or GBDK-2020 (h
   point at a function (also the address-minus-one form `rts` dispatch uses). **Not found:** code reached only through
   an indirect `jmp ($xxxx)`, through split high/low address tables, or by pushing an address and returning to it
   from computed values. Data inside a function's range is not told apart from code.
+- A person can import what an emulator saw while they played (Settings, a Mesen2 or FCEUX code/data log): splitting
+  the game again then starts functions where calls entered and where code ran that wasn't reached, and keeps what was
+  only read as data out of functions.
 
 ## The matching lane
 
