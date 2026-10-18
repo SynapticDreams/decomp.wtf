@@ -124,22 +124,36 @@ class Jobs:
 
 
 class Settings:
+    _saving = threading.Lock()
+
     def __init__(self, path: Path):
         self.path = path
         try:
             self.data = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
+        except OSError:
+            self.data = {}
+        except ValueError:  # garbled: kept aside, not overwritten by the next save (it has the endpoints and keys)
+            self.data = {}
+            try:
+                path.replace(path.with_name(f"{path.name}.broken-{int(time.time())}"))
+            except OSError:
+                pass
+        if not isinstance(self.data, dict):
             self.data = {}
         if not isinstance(self.data.get("endpoints"), list):  # one saved "api" before 0.10.1: the first endpoint
             old = self.data.get("api") if isinstance(self.data.get("api"), dict) else {}
             self.data["endpoints"] = [agents.endpoint_entry(old | {"id": "e1"})] if old.get("base_url") or old.get("provider") else []
 
     def save(self) -> None:
-        self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
-        try:
-            os.chmod(self.path, 0o600)
-        except OSError:
-            pass
+        """Whole or not at all: written next to the file and moved over it, one save at a time. Two saves at once could
+        leave it garbled, and a garbled file read back as no settings (endpoints, budget, helpers to resume)."""
+        with self._saving:
+            text = json.dumps(self.data, indent=2)
+            tmp = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)  # (it holds API keys)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.replace(tmp, self.path)
 
     # -- API endpoints: OpenAI-compatible servers for the built-in agent, each with its own address, model and key
 

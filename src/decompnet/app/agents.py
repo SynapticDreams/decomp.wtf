@@ -172,24 +172,69 @@ def is_local(base: str, resolve: bool = True) -> bool:
 _SIGNED_OUT = re.compile(r"not logged in|run /login|invalid api key|not authenticated|please (?:log|sign) ?in|"
                          r"auth(?:entication)? method", re.I)
 # what a model's provider says when the account has no credit left (DeepSeek: "Insufficient Balance", OpenAI:
-# "insufficient_quota", Anthropic: "credit balance is too low"), or a subscription's quota is used up until it resets
-# (Claude Code: "You've hit your session limit · resets 6pm"): trying again can't help until then
+# "insufficient_quota", Anthropic: "credit balance is too low"): trying again can't help until it's topped up
 _NO_CREDIT = re.compile(r"insufficient[ _](?:balance|credits?|funds|quota)|exceeded your current quota|"
-                        r"credit balance is too low|payment required|out of credits?|"
-                        r"hit your (?:session|usage|weekly|daily) limit[^\n]*", re.I)
+                        r"credit balance is too low|payment required|out of credits?", re.I)
+# and when a subscription's quota is used up until it resets (Claude Code: "You've hit your session limit · resets
+# 6pm (Europe/London)", Codex: "You've hit your usage limit ... try again in 2 hours 13 minutes"): its helpers wait
+_PLAN_LIMIT = re.compile(r"hit your (?:session|usage|weekly|daily|5-hour|five-hour) limit[^\n]*|"
+                         r"usage limit (?:reached|exceeded)[^\n]*", re.I)
+QUOTA_WAIT = 30 * 60  # how long to wait when the agent doesn't say when its plan's quota resets
 # and when it's asked too much at once (HTTP 429): it works again in a while
 _THROTTLED = re.compile(r"too many requests|rate[ _-]?limit|concurrency limit|\b429\b|overloaded", re.I)
 
 
 def no_credit(said: str) -> str | None:
-    """The helper's error when its model's provider says the account is out of credit or quota, else None."""
+    """The helper's error when its model's provider says the account is out of credit, else None."""
     if not (m := _NO_CREDIT.search(said)):
         return None
-    if "limit" in m.group(0).lower():
-        return (f"the agent's plan has used up its quota (\u201c{m.group(0).strip()}\u201d): start the agents again "
-                "once it resets")
     return (f"the model's provider says the account is out of credit (\u201c{m.group(0)}\u201d): top it up, then "
             "start the agents again")
+
+
+class PlanLimit(Exception):
+    """The agent's plan has used up its quota until `until` (a time): the helper waits for it, and so does every
+    helper on the same account."""
+
+    def __init__(self, said: str, until: float):
+        super().__init__(said)
+        self.said, self.until = said, until
+
+
+def plan_limit(said: str, now: float | None = None) -> PlanLimit | None:
+    """A PlanLimit when the agent says its plan's usage limit is reached, with when it resets as the agent says it
+    (a time of day in its zone, "in 2 hours 13 minutes", Claude Code's older "|<epoch>"), else QUOTA_WAIT from now."""
+    if not (m := _PLAN_LIMIT.search(said)):
+        return None
+    return PlanLimit(m.group(0).strip(), _reset_at(said[m.start():], time.time() if now is None else now))
+
+
+def _reset_at(text: str, now: float) -> float:
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    if (m := re.search(r"\|\s*(1\d{9})\b", text)):
+        return float(m.group(1))
+    if (m := re.search(r"(?:try again|resets?)\s+in\s+((?:\d+\s*(?:days?|d|hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)"
+                       r"\b[,\s]*(?:and\s+)?)+)", text, re.I)):
+        secs = sum(int(n) * (86400 if u[0] == "d" else 3600 if u[0] == "h" else 60 if u[0] == "m" else 1)
+                   for n, u in re.findall(r"(\d+)\s*([a-z]+)", m.group(1).lower()))
+        return now + secs + 60
+    if (m := re.search(r"(?:resets?|try again)\s+(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\b\.?\s*(?:\(([^)]+)\))?|"
+                       r"(?:resets?|try again)\s+(?:at\s+)?(\d{1,2}):(\d{2})\b\s*(?:\(([^)]+)\))?", text, re.I)):
+        hour, minute, half, zone = ((int(m.group(1)), int(m.group(2) or 0), m.group(3).lower(), m.group(4)) if m.group(1)
+                                    else (int(m.group(5)), int(m.group(6)), "", m.group(7)))
+        hour = hour % 12 + (12 if half == "p" else 0) if half else hour
+        try:
+            tz = ZoneInfo(zone.strip()) if zone else None
+        except Exception:
+            tz = None
+        base = datetime.fromtimestamp(now, tz) if tz else datetime.fromtimestamp(now).astimezone()
+        at = base.replace(hour=hour % 24, minute=minute, second=0, microsecond=0)
+        if at.timestamp() <= now:
+            at += timedelta(days=1)
+        return at.timestamp() + 60
+    return now + QUOTA_WAIT
 
 
 # ------------------------------------------------------------------- tiered Claude Code helpers
@@ -673,6 +718,10 @@ class Session:
     lean: object = None
     pin_done: str = ""
     pin_stall: int = 0
+    last_output: float = 0.0  # when the agent CLI last said anything (0: no CLI run going): the watchdog's clock
+    resume_note: str = ""  # for the next session's prompt: where the one the watchdog ended was
+    wait_until: float = 0.0  # waiting for its account: a plan's quota to reset, or the provider's limit of requests
+    wait_why: str = ""
 
     @property
     def tiered(self) -> bool:
@@ -683,7 +732,8 @@ class Session:
         self.feed.append({"seq": self.seq, "t": time.time(), "type": kind, "text": text[:4000]})
 
     def snapshot(self, since: int = 0) -> dict:
-        return {"id": self.id, "kind": self.kind, "label": self.label, "slug": self.slug, "agent": self.agent_name, "focus": self.options.get("focus") or "",
+        return {"last_output": self.last_output, "wait_until": self.wait_until, "wait_why": self.wait_why,
+                "id": self.id, "kind": self.kind, "label": self.label, "slug": self.slug, "agent": self.agent_name, "focus": self.options.get("focus") or "",
                 "state": self.state, "runs": self.runs, "error": self.error, "started_at": self.started_at,
                 "model": (self.routed_model if self.tiered else self.options.get("model")) or "",
                 "effort": (self.routed_effort if self.tiered else self.options.get("effort")) or "",
@@ -712,6 +762,11 @@ class Manager:
         self._prep: dict[str, threading.Event] = {}  # slug -> giving its code source files before agents claim
         self.on_stop = lambda: None  # set by the server: close tunnels when the app quits
         self.persist = lambda running: None  # set by the server: remember helpers to resume after a restart
+        # an account's helpers wait together: until its plan's quota resets, or after its provider said too many
+        # requests (each time a little longer, until a run goes through)
+        self.paused: dict[str, float] = {}
+        self.paused_why: dict[str, str] = {}
+        self.backoff: dict[str, int] = {}
         if net is not None:
             net.run_info = self.run_info  # each attempt says which helper setup made it
 
@@ -961,6 +1016,14 @@ class Manager:
                     pass
                 s.stop.wait(10)
                 continue
+            if (until := self.paused.get(self.account(s), 0.0)) > time.time():
+                if s.wait_until != until:
+                    s.wait_until, s.wait_why = until, self.paused_why.get(self.account(s), "")
+                    s.push("info", f"waiting until {time.strftime('%H:%M', time.localtime(until))}: {s.wait_why}")
+                s.state = "waiting"
+                s.stop.wait(min(60.0, until - time.time()))
+                continue
+            s.wait_until, s.wait_why = 0.0, ""
             s.state = "working"
             s.runs += 1
             t0 = time.time()
@@ -980,6 +1043,9 @@ class Manager:
             except Fatal as e:  # needs the user first: retrying can't help
                 s.state, s.error = "error", str(e)
                 break
+            except PlanLimit as e:  # every helper on this account waits for the reset, then carries on
+                self.pause(s, e.until, f"the plan's usage limit is used up (\u201c{e.said[:120]}\u201d)")
+                continue
             except Exception as e:  # keep the runner alive; show what happened
                 s.push("error", f"{type(e).__name__}: {e}")
                 ok = False
@@ -996,11 +1062,14 @@ class Manager:
                 break
             if s.throttled and throttles < 10:  # the provider's limit, not the agent's failure: wait it out
                 s.throttled, throttles = False, throttles + 1
-                s.state = "waiting"
-                s.push("info", "the model's provider says too many requests at once: trying again in a minute "
-                               "(fewer agents at once on this account would wait less)")
-                s.stop.wait(60)
+                key = self.account(s)  # with every helper on the account, a little longer each time
+                n = self.backoff[key] = self.backoff.get(key, 0) + 1
+                self.pause(s, time.time() + min(900, 60 * 2 ** (n - 1)),
+                           "the model's provider says too many requests at once (fewer helpers on this account "
+                           "would wait less)")
                 continue
+            if ok:
+                self.backoff.pop(self.account(s), None)
             throttles = 0 if ok else throttles
             failures = 0 if ok else failures + 1
             if failures >= 3:
@@ -1019,6 +1088,18 @@ class Manager:
         self.net.starred_only.pop(agent.id, None)
         self.net.focus.pop(agent.id, None)
         self.net.pinned.pop(agent.id, None)
+
+    def account(self, s: Session) -> str:
+        """Whose quota and request limits a helper uses: an agent CLI's sign-in on this computer (a lean Codex helper's
+        too), or an API endpoint."""
+        return f"api:{s.options.get('base_url') or ''}" if s.kind == "api" else s.kind
+
+    def pause(self, s: Session, until: float, why: str) -> None:
+        """This helper's account waits until `until`, and every helper on it with it."""
+        key = self.account(s)
+        if until > self.paused.get(key, 0.0):
+            self.paused[key], self.paused_why[key] = until, why
+        s.state = "waiting"
 
     def _free_claims(self, s: Session, agent) -> None:
         """Give back whatever the helper's agent still holds, so others can take it at once (not the function's fault:
@@ -1139,7 +1220,7 @@ class Manager:
                      f"add_note and no function):\n{learned}\n")
         if (wish := self.net.instructions(s.slug)):
             text += f"\nThe user's instructions for this project (they come first):\n{wish}\n"
-        return text
+        return text + s.resume_note
 
     def _prompt(self, s: Session) -> str:
         ov = self.net.overview(s.slug)
@@ -1239,6 +1320,7 @@ class Manager:
                 raise Fatal("Antigravity CLI only loads the MCP servers in your own settings: connect it to decomp.wtf "
                             "once (Connect your agent, or `decomp connect antigravity`), then start the helpers again")
         cmd, env, prompt = self._command(s, token, workdir)
+        s.resume_note = ""  # (told in this prompt)
         s.push("info", f"session {s.runs}: {KINDS[s.kind].name} started")
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if WIN else 0
         proc = subprocess.Popen(cmd, cwd=workdir, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -1256,15 +1338,30 @@ class Manager:
 
         def drain_err():
             for line in proc.stderr:
+                s.last_output = time.time()
                 if (text := clean_stderr(s.kind, line)) and (not errors or errors[-1] != text):
                     errors.append(text)
+
+        # An agent that says nothing for `idle` seconds is ended: Codex sessions were seen sitting an hour at 0% CPU,
+        # each holding its function. The next session is told where it was (prompt), and carries on from there.
+        idle, silent = agent_idle(), threading.Event()
+        s.last_output = time.time()
+
+        def watch():
+            while proc.poll() is None and not s.stop.wait(5):
+                if time.time() - s.last_output > idle:
+                    silent.set()
+                    _terminate(proc)
+                    return
         threading.Thread(target=feed_prompt, daemon=True).start()
         threading.Thread(target=drain_err, daemon=True).start()
+        threading.Thread(target=watch, daemon=True).start()
         saw_tool = False
         said: collections.deque = collections.deque(maxlen=20)
         state: dict = {}
         last_error = refused = ""
         for line in proc.stdout:
+            s.last_output = time.time()
             for kind, text in parse_line(s.kind, line, state):
                 if kind == "usage":
                     self._account(s, json.loads(text))
@@ -1280,10 +1377,25 @@ class Manager:
                 break
         code = proc.wait()
         s.proc = None
+        s.last_output = 0.0
+        if silent.is_set() and not s.stop.is_set():
+            held = self.net.store.one("SELECT f.name, f.best_score, f.n_insns FROM claims c JOIN functions f ON "
+                                      "f.id=c.function_id WHERE c.agent_id=?", s.agent_id) if s.agent_id else None
+            if held is not None:
+                best = ("nothing compiled yet" if held["best_score"] is None else
+                        f"best score so far {held['best_score']} of {max(1, held['n_insns'] or 0) * 100}")
+                s.resume_note = (f"\nYour previous session said nothing for {_span(idle)} and was ended while "
+                                 f"it held {held['name']} ({best}). claim_function gives it back to you: carry on from "
+                                 "the best attempt, or release it with notes if it's stuck.\n")
+            s.error = f"{KINDS[s.kind].name} said nothing for {_span(idle)}: ended it; the next session carries on"
+            s.push("error", s.error)
+            return False
         if refused and not s.stop.is_set():
             raise Fatal(refused)  # every retry would be refused the same way
         if code != 0 and not s.stop.is_set() and (why := no_credit(" ".join([*said, *errors]))):
             raise Fatal(why)  # every agent on this account fails the same way until it's topped up
+        if code != 0 and not s.stop.is_set() and (limit := plan_limit(" ".join([*said, *errors]))):
+            raise limit  # every helper on this account waits for the reset
         if code != 0 and not s.stop.is_set() and _THROTTLED.search(" ".join([*said, *errors])):
             s.throttled = True
         if code != 0 and not s.stop.is_set() and _SIGNED_OUT.search(" ".join([*said, *errors])):
@@ -1317,7 +1429,7 @@ class Manager:
         max_tokens = int(s.options.get("max_tokens") or LEAN_MAX_TOKENS)
         pin = s.options.get("pin") or ""
         before = self._progress(agent.id)
-        with httpx.Client(timeout=httpx.Timeout(300, connect=15)) as client:
+        with httpx.Client(timeout=httpx.Timeout(API_TIMEOUT, connect=15)) as client:
             def ask(messages, temperature, switch):
                 if s.kind == "codex":  # Codex picks its own sampling: the versions' directions do the varying
                     text, tokens, model = codex_reply(messages, s.options.get("model") or "", s.options.get("effort") or "",
@@ -1411,7 +1523,7 @@ class Manager:
         messages = [{"role": "system", "content": tools.INSTRUCTIONS},
                     {"role": "user", "content": self.prompt(s)}]
         used_tool = False
-        with httpx.Client(timeout=httpx.Timeout(300, connect=15)) as client:
+        with httpx.Client(timeout=httpx.Timeout(API_TIMEOUT, connect=15)) as client:
             window = context_window(client, base, s.options)
             s.push("info", f"session {s.runs}: {model} via {base} ({window // 1000}K tokens of context)")
             budget = int(window * 0.7) - _tokens(schema)  # room for the reply and the tools' definitions
@@ -1420,8 +1532,8 @@ class Manager:
                     return True
                 for _attempt in range(4):
                     fit(messages, budget)
-                    r = client.post(f"{base}/chat/completions", headers=headers,
-                                    json={"model": model, "messages": messages, "tools": schema, "tool_choice": "auto"})
+                    r = _post(s, client, f"{base}/chat/completions", headers=headers,
+                              json={"model": model, "messages": messages, "tools": schema, "tool_choice": "auto"})
                     if r.status_code == 200 or not _too_long(r):
                         break
                     budget = int(budget * 0.6)  # the server counts differently, or knows better: trim more
@@ -1464,6 +1576,35 @@ class Manager:
         return used_tool
 
 
+AGENT_IDLE = 15 * 60  # an agent CLI that says nothing this long is ended (DECOMP_AGENT_IDLE, in seconds, changes it)
+
+
+def agent_idle() -> float:
+    return float(os.environ.get("DECOMP_AGENT_IDLE") or AGENT_IDLE)
+
+
+def _span(seconds: float) -> str:
+    return f"{int(seconds // 60)} minutes" if seconds >= 120 else f"{int(seconds)} seconds"
+
+
+API_TIMEOUT = float(os.environ.get("DECOMP_API_TIMEOUT") or 600)  # seconds one reply may take (a slow box, a long think)
+API_RESENDS = 3  # a request sent again after a timeout or a dropped connection, before the run counts as failed
+API_RESEND_WAIT = 5.0  # seconds before the first resend (then twice, three times that)
+
+
+def _post(s: Session, client, url: str, **kw):
+    """POST to a model's server; after a timeout or a dropped connection the same request again, up to API_RESENDS
+    times: a slow model or a flaky box on the network isn't a failed session."""
+    for attempt in range(API_RESENDS + 1):
+        try:
+            return client.post(url, **kw)
+        except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as e:
+            if attempt == API_RESENDS or s.stop.is_set():
+                raise
+            s.push("info", f"no reply from the model ({type(e).__name__}): sending it again ({attempt + 1} of {API_RESENDS})")
+            s.stop.wait(API_RESEND_WAIT * (attempt + 1))
+
+
 LEAN_MOVE_ON = 4  # a lean helper's calls without a gain before it moves on to its next function (not pinned)
 LEAN_CALLS = 20  # lean calls per run (between runs the session checks its budget, a room's host...)
 LEAN_MAX_TOKENS = 4096  # a reply's cap for one version (a reasoning model thinks inside it too)
@@ -1475,9 +1616,9 @@ def _chat(s: Session, client, opts: dict, messages: list[dict], temperature: flo
     headers = {"Content-Type": "application/json"}
     if opts.get("api_key"):
         headers["Authorization"] = f"Bearer {opts['api_key']}"
-    r = client.post(f"{base}/chat/completions", headers=headers,
-                    json={"model": opts.get("model"), "messages": messages, "temperature": temperature,
-                          "max_tokens": max_tokens})
+    r = _post(s, client, f"{base}/chat/completions", headers=headers,
+              json={"model": opts.get("model"), "messages": messages, "temperature": temperature,
+                    "max_tokens": max_tokens})
     if r.status_code != 200:
         if (why := no_credit(r.text)) or r.status_code == 402:
             raise Fatal(why or no_credit("payment required"))
@@ -1538,6 +1679,8 @@ def codex_reply(messages: list[dict], model: str, effort: str, workdir: Path, ti
     said = " ".join(errors) + " " + (err or "")[-600:]
     if (why := no_credit(said)):
         raise Fatal(why)
+    if (limit := plan_limit(said)):
+        raise limit
     if _SIGNED_OUT.search(said):
         raise Fatal(f"Codex isn't signed in: {signin(KINDS['codex'])}")
     if not text and (errors or proc.returncode):

@@ -267,6 +267,12 @@ and tells you how to sign in. You pay your own provider; in our tests a small fu
 Big functions take many more attempts, and cheaper models often get stuck on them on register allocation, so expect
 the easy part of a game to go fast and the rest to take real time.
 
+**Left running.** When a plan's usage limit is reached (Claude Code, Codex), every helper on that account waits for the
+reset time the agent names and carries on; a provider that says too many requests at once makes them all wait a little
+longer each time. Only an account out of credit stops them. A helper that says nothing for 15 minutes is ended and the
+next session is told where it was (`DECOMP_AGENT_IDLE`, in seconds, changes that); its card says when it has gone quiet.
+An API model gets 10 minutes per reply (`DECOMP_API_TIMEOUT`), and a request that times out or drops is sent again.
+
 **Local models.** Start the model with at least 16K tokens of context (llama.cpp: `-c 16384`; Ollama:
 `OLLAMA_CONTEXT_LENGTH=16384`, or it quietly cuts the start of each request off; LM Studio: Context Length), choose
 its preset under **Agents & models → API key**, and set the context size there if it isn't llama.cpp (which says it
