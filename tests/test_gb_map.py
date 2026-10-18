@@ -116,6 +116,85 @@ def test_reached_code_no_function_covers_starts_one():
     assert 0x150 in found.starts
 
 
+def test_a_routine_that_reads_bytes_after_its_call_returns_past_them():
+    data = rom_with({0x400: "e1 2a 2a 2a e5 c9",  # pop hl · ld a,(hl+) x3 · push hl · ret
+                     0x150: "cd0004 112233 cd1004 18fe",  # call $0400 · db $11, $22, $33 · call $0410 · jr $
+                     0x410: "af c9"})
+    found = gb_trace.follow(data)
+    assert gb_trace.Tracer(data).inline_shape(0x400) == gb_trace.Inline(3)
+    assert found.inline[0x153][0] == 3 and 0x153 not in found.code
+    assert 0x410 in found.starts  # the code went on after the three bytes
+    assert any(r[:3] == (0x153, 3, "inline") for r in gb_trace.regions(data, found))
+
+
+def test_a_routine_that_reads_its_return_address_off_the_stack_counts_too():
+    # ld hl,sp+$00 · ld e,(hl) · inc hl · ld d,(hl) · (ld a,(de) · inc de) x3 · ld (hl),d · dec hl · ld (hl),e · ret
+    data = rom_with({0x400: "f800 5e 23 56 1a13 1a13 1a13 72 2b 73 c9"})
+    assert gb_trace.Tracer(data).inline_shape(0x400) == gb_trace.Inline(3)
+
+
+def test_a_far_call_with_its_bank_and_address_after_the_call_is_followed():
+    # pop hl · ld a,(hl+) · ld e,(hl) · inc hl · ld d,(hl) · inc hl · push hl · ld ($2000),a · ld h,d · ld l,e · jp hl
+    data = rom_with({0x400: "e1 2a 5e 23 56 23 e5 ea0020 62 6b e9",
+                     0x150: "cd0004 03 0041 18fe",  # call FarCall · db 3 · dw $4100 · jr $
+                     0xC100: "af c9"})  # bank 3, 0x4100
+    assert gb_trace.Tracer(data).inline_shape(0x400) == gb_trace.Inline(3, bank=0, addr=1)
+    found = gb_trace.follow(data)
+    assert 0xC100 in found.starts and 0x153 not in found.code
+
+
+def test_a_far_call_given_its_bank_in_a_and_address_in_hl_is_followed():
+    data = rom_with({0x400: "ea0020 e9",  # ld ($2000),a · jp hl
+                     0x150: "3e03 210041 cd0004 18fe",  # ld a,3 · ld hl,$4100 · call FarCall · jr $
+                     0xC100: "af c9"})
+    found = gb_trace.follow(data)
+    assert found.bank_arg.get(0x400) == "a" and found.calls_arg.get(0x400) == "hl"
+    assert 0xC100 in found.starts
+
+
+def test_registers_a_short_routine_doesnt_write_survive_its_call():
+    data = rom_with({0x150: "212004 cd0003 cd0004 18fe",  # ld hl,$0420 · call SetA · call SetState · jr $
+                     0x300: "3e01 c9",  # SetA: ld a,1 · ret (HL untouched)
+                     0x400: "7d ea10c8 7c ea11c8 c9",
+                     0x420: "3e05 c9"})
+    tracer = gb_trace.Tracer(data)
+    assert tracer.clobbers(0x300) == frozenset("a")
+    assert 0x420 in gb_trace.follow(data).starts
+
+
+def test_code_nothing_reached_that_calls_two_reached_functions_is_followed():
+    data = rom_with({0x150: "cd0003 cd1003 18fe", 0x300: "af c9", 0x310: "3e01 c9",
+                     0x4200: "cd0003 cd1003 cd0043 c9",  # unreached: call $0300 · call $0310 · call $4300 · ret
+                     0x4300: "3e02 c9"})
+    found = gb_trace.follow(data)
+    assert found.starts[0x4200][1] == "evidence" and 0x4300 in found.starts
+
+
+def test_rst_calls_are_no_evidence():
+    """`rst` is one byte, and data is full of them: rst $28 and rst $30 into reached vectors don't make code."""
+    data = rom_with({0x28: "c9", 0x30: "c9", 0x150: "ef f7 18fe",  # rst $28 · rst $30 · jr $
+                     0x4200: "ef f7 c9"})
+    assert 0x4200 not in gb_trace.follow(data).starts
+
+
+def test_bytes_after_a_call_in_code_nothing_reached_are_operands_not_data():
+    data = rom_with({0x400: "e1 2a 2a 2a e5 c9", 0x150: "cd0004 112233 18fe",
+                     0x4200: "cd0004 d3dde3 af c9"})  # unreached: the operands would read as no instruction
+    found = gb_trace.follow(data)
+    regs = gb_trace.regions(data, found)
+    assert any(r[:3] == (0x4203, 3, "inline") for r in regs)
+    assert not any(kind == "data" and lo <= 0x4206 < lo + n for lo, n, kind, _ in regs)
+
+
+def test_a_routine_only_jumped_to_right_after_another_ends_is_a_function():
+    data = rom_with({0x200: "af c9 3e01 c9",  # xor a · ret | ld a,1 · ret (something jumps to 0x202)
+                     0x300: "2002 af c9 3e01 c9"})  # jr nz past the ret: one routine
+    named = {(0, 0x202): "Jump_000_0202", (0, 0x304): "jr_000_0304"}
+    assert gb_mgbdis._tails(data, 0, [(0x200, "Call_000_0200")], named, []) == [
+        (0x200, "Call_000_0200"), (0x202, "Jump_000_0202")]
+    assert gb_mgbdis._tails(data, 0, [(0x300, "Call_000_0300")], named, []) == [(0x300, "Call_000_0300")]
+
+
 # ------------------------------------------------------------------ what wasn't reached
 
 def test_unreached_bytes_are_padding_data_or_left_as_code():
@@ -222,3 +301,13 @@ def test_import_keeps_the_data_regions_and_splitting_again_reports_them(tmp_path
     assert out["kept"] == out["before"] == out["after"]
     net.remove_project(slug)
     assert not net.store.all("SELECT * FROM data_regions WHERE project_id=?", proj["id"])
+
+
+def test_routines_that_take_their_return_address_or_stop_are_set_aside_with_a_reason():
+    from decompnet.handwritten import sm83_reason
+
+    assert "return address" in sm83_reason(bytes.fromhex("e12a2a2ae5c9"), 0x400)  # pop hl first
+    assert "return address" in sm83_reason(bytes.fromhex("f8005e23561a13722b73c9"), 0x400)  # ld hl, sp+$00 first
+    assert "speed switch" in sm83_reason(bytes.fromhex("3e01e04d1000c9"), 0x400)  # ld a,1 · ldh (KEY1),a · stop
+    assert sm83_reason(bytes.fromhex("c5e1c9"), 0x400) is None or "return address" not in sm83_reason(
+        bytes.fromhex("c5e1c9"), 0x400)  # push bc · pop hl: its own value, not the return address

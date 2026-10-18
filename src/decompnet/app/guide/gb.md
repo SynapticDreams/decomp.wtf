@@ -14,10 +14,13 @@ its own disassembler (`decompnet.rom.sm83`) and reads cartridges through `mgbdis
   hardware does. Automatic names are bank-scoped, so a function in bank 3 keeps its address inside
   that bank.
 - Before mgbdis disassembles it, the game's code is followed from its vectors with the bank it maps
-  (`ld a,N / ld ($2000),a`), through its jump tables and the handlers it stores in RAM. Tables,
-  padding and what the code never reaches and reads as no code would are shown as **data**, so they
-  are no longer functions; `read_data` reads them. Code nothing reached but that reads like code is
-  still split as before.
+  (`ld a,N / ld ($2000),a`), through its jump tables, its far calls (`ld a,BANK / ld hl,Func / rst $08`,
+  or `call FarCall / db BANK / dw Func`) and the handlers it stores in RAM. A routine that reads the
+  bytes after its call (it pops its return address, or reads it off the stack) returns past them:
+  those bytes are its operands, shown as data. Tables, padding and what the code never reaches and
+  reads as no code would are shown as **data**, so they are no longer functions; `read_data` reads
+  them. Code nothing reached but that reads like code is still split as before, and followed when it
+  calls two functions that were reached.
 
 ## The matching lane
 

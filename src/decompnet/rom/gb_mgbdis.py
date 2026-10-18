@@ -179,6 +179,43 @@ def blocks(text: str) -> dict[str, str]:
     return out
 
 
+def _end(data: bytes, bank: int, addr: int, hard: int) -> int:
+    """Where the routine at `addr` ends by its own code: its first return or jump that no earlier branch goes past
+    (the walk the Master System lane uses), never past `hard`."""
+    limit, off = addr, addr
+    while off < hard:
+        flat = gb.flat_offset(off, bank)
+        text, ln = sm83.decode(data[flat:flat + 3], off)
+        if text.startswith("db "):
+            return hard
+        kind, target = sm83.flow(text)
+        if target is not None and kind in ("jump", "cjump") and off < target < hard:
+            limit = max(limit, target)
+        off += ln
+        if kind in ("ret", "jump") and off > limit:
+            return off
+    return hard
+
+
+def _tails(data: bytes, bank: int, items: list[tuple[int, str]], named: dict, bounds: list[int]) -> list[tuple[int, str]]:
+    """`items` (a bank's function starts) and the routines right after a function's own end that have a label there
+    (something jumps to them, a tail call: mgbdis calls them `Jump_`), as functions of their own."""
+    out = list(items)
+    starts = {a for a, _ in out}
+    k = 0
+    while k < len(out):
+        addr = out[k][0]
+        nxt = out[k + 1][0] if k + 1 < len(out) else (0x8000 if bank else 0x4000)
+        j = bisect.bisect_right(bounds, addr)
+        hard = min(nxt, bounds[j]) if j < len(bounds) else nxt
+        end = _end(data, bank, addr, hard)
+        if end < hard and end not in starts and (bank, end) in named:
+            out.insert(k + 1, (end, named[(bank, end)]))
+            starts.add(end)
+        k += 1
+    return out
+
+
 def _trim_padding(code: bytes) -> bytes:
     """Drop a run of 0x00/0xFF padding at the end: labels cover data regions too, and padding is not
     part of the function."""
@@ -294,6 +331,12 @@ def split(rom_path: Path, workdir: Path, log=lambda *_: None, hints: dict | None
                 if current is None or (name.startswith(("Func_", "Call_")) and not current.startswith(("Func_", "Call_"))):
                     best[addr] = name
             by_bank[bank] = sorted(best.items())
+        named = {(bank, addr): name for bank, addr, name in symbols if "." not in name and not name.startswith(DATA_PREFIXES)}
+        data_bounds: dict[int, list[int]] = {}
+        for flat, n, _kind, _why in regs:
+            data_bounds.setdefault(flat // gb.BANK_SIZE, []).append(gb.cpu_address(flat))
+        for bank in by_bank:  # a routine only jumped to, right after another's end, is a function of its own
+            by_bank[bank] = _tails(data, bank, by_bank[bank], named, sorted(data_bounds.get(bank, [])))
 
         data_at: dict[int, list[int]] = {0: [HEADER_START]}  # bank -> where its data starts (a function ends there)
         for flat, _n, _kind, _why in regs:

@@ -39,6 +39,7 @@ SWITCH = 0x2100  # a bank register on every mapper (MBC2 wants bit 8 set)
 ARG = ("arg", "a")  # A as the function was entered with it: a function that maps it is a bank switcher
 
 _POP_RET = re.compile(r"^pop (hl|de|bc)$")
+_SP_HL = re.compile(r"^ld hl, sp\+\$([0-9a-f]{2})$")
 _THROUGH = {"hl": re.compile(r"\(hl[+-]?\)"), "de": re.compile(r"\(de\)"), "bc": re.compile(r"\(bc\)")}
 SELF_MOVE = re.compile(r"^ld ([abcdehl]), \1$")  # ld b, b: a register to itself (what 0x40 0x49 ... bytes decode to)
 R8 = frozenset("abcdehl")
@@ -48,6 +49,11 @@ _N16 = re.compile(r"^\$([0-9a-f]{4})$")
 _MEM = re.compile(r"^\(\$([0-9a-f]{4})\)$")
 _HMEM = re.compile(r"^\(\$ff00\+\$([0-9a-f]{2})\)$")
 ROM_END, RAM = 0x8000, ((0xA000, 0xE000), (0xFF80, 0xFFFF))
+_LOAD_A = re.compile(r"^(?:ld a, \(\$([0-9a-f]{4})\)|ldh a, \(\$ff00\+\$([0-9a-f]{2})\))$")
+
+
+def _addr(m) -> int:
+    return int(m.group(1), 16) if m.group(1) else 0xFF00 + int(m.group(2), 16)
 
 
 def _ram(addr: int) -> bool:
@@ -210,6 +216,24 @@ class Found:
     indexed: list[tuple[int, int, object, bool]] = field(default_factory=list)
     pointers: list[tuple[int, int, object]] = field(default_factory=list)  # (stored by, a ROM address, window bank)
     setters: dict[int, set] = field(default_factory=dict)  # function -> the pairs it stores as a word, as it's given them
+    bank_arg: dict[int, str] = field(default_factory=dict)  # function -> the register whose value it maps (a: switchers)
+    calls_arg: dict[int, str] = field(default_factory=dict)  # function -> the pair it's given that it jumps through
+    inline: dict[int, tuple[int, str]] = field(default_factory=dict)  # flat -> (size, what): operands after a call
+
+
+@dataclass(frozen=True)
+class Inline:
+    """A routine that reads bytes after its call through its return address and returns past them: how many, which of
+    them is the bank it maps (None: none), and where the address it then jumps to is among them (its low byte)."""
+
+    size: int
+    bank: int | None = None
+    addr: int | None = None
+
+    def why(self) -> str:
+        if self.addr is not None and self.bank is not None:
+            return f"the bank and address of a far call ({self.size} bytes after the call)"
+        return f"{self.size} byte{'s' if self.size != 1 else ''} the routine called reads after its call"
 
 
 class Tracer:
@@ -228,6 +252,10 @@ class Tracer:
         self.known: set[int] = set()
         self.prev_starts: set[int] = set()
         self._dec: dict[int, tuple[str, int]] = {}
+        self._shapes: dict[int, Inline | None] = {}
+        self._clobbers: dict[int, frozenset] = {}
+        for flat, n in self.hints.get("inline", {}).items():  # what a person or an agent established
+            self._shapes[flat] = Inline(int(n))
 
     # -- bytes
 
@@ -344,7 +372,7 @@ class Tracer:
     def _round(self, seeds: dict[int, tuple[int, str]]) -> None:
         f = self.found
         prev, f.entered, f.starts, f.with_hl, f.jumps, f.anchors = f.entered, {}, {}, [], [], set()
-        f.code, f.tables, f.mbc_writes, f.indexed, f.pointers, f.tails = {}, {}, 0, [], [], {}
+        f.code, f.tables, f.mbc_writes, f.indexed, f.pointers, f.tails, f.inline = {}, {}, 0, [], [], {}, {}
         queue = [(flat, cpu, why, 1 if flat == ENTRY else None) for flat, (cpu, why) in sorted(seeds.items())]
         for flat, _cpu, _why, m in queue:
             if m is not None:
@@ -378,6 +406,179 @@ class Tracer:
                 break
             flat = to
         return flat
+
+    _READ = re.compile(r"^ld ([abcdehl]), \((hl[+-]?|de|bc)\)$")
+
+    def inline_shape(self, flat: int) -> Inline | None:
+        """What a routine that takes its return address reads after its call, from its first instructions: the return
+        address popped into a pair, bytes read through it (`ld a,(hl+)`, `ld e,(hl)` / `inc hl`, also through a copy:
+        `ld d,h / ld e,l`), then the moved address pushed back (`push hl / ret`) or jumped to. Which byte it maps as a
+        bank, and which word it calls or jumps through, come along. None: not such a routine, or not one that can be
+        read."""
+        if flat in self._shapes:
+            return self._shapes[flat]
+        self._shapes[flat] = None  # (while it's worked out: a loop back into it isn't one)
+        r: dict[str, object] = {}
+        ptr: dict[str, int] = {}  # pair -> the offset after the call it points at
+        half: dict[str, tuple[str, int, int]] = {}  # register -> (pointer pair, 0 high / 1 low, offset) it was copied from
+        resume = bank = addr = back = None
+        pos, popped, pushes = flat, False, 0
+        stack_hl = None  # where HL points on the stack, from the return address's low byte (`ld hl, sp+$00`)
+
+        def written(reg: str) -> None:
+            for pair in [p for p in ptr if reg in PAIRS[p]]:
+                ptr.pop(pair)
+            half.pop(reg, None)
+
+        for _ in range(48):
+            if not 0 <= pos < self.size:
+                break
+            text, ln = self.decode(pos)
+            if text.startswith("db "):
+                break
+            op, _, rest = text.partition(" ")
+            args = [x.strip() for x in rest.split(",")] if rest else []
+            if (m := _SP_HL.match(text)):
+                stack_hl = int(m.group(1), 16) - 2 * pushes
+                pos += ln
+                continue
+            if text in ("inc hl", "dec hl") and stack_hl is not None and "hl" not in ptr:
+                stack_hl += 1 if text == "inc hl" else -1
+                pos += ln
+                continue
+            if not popped:
+                if (m := _POP_RET.match(text)) and pushes == 0:
+                    ptr[m.group(1)], popped = 0, True
+                elif op == "push":
+                    pushes += 1
+                elif op == "pop":
+                    pushes = max(0, pushes - 1)
+                elif (m := re.match(r"^ld ([bcde]), \(hl\)$", text)) and stack_hl in (0, 1):
+                    half[m.group(1)] = ("ret", 1 - stack_hl, 0)  # the return address read off the stack
+                    for pair, (hi, lo) in PAIRS.items():
+                        if half.get(hi) == ("ret", 0, 0) and half.get(lo) == ("ret", 1, 0):
+                            ptr[pair], popped = 0, True
+                elif op in ("call", "rst", "ret", "reti", "jp", "jr") or text == "ld sp, hl":
+                    break  # (what it pops or reads then isn't its return address)
+                elif op == "ld" and len(args) == 2 and args[0] in R8:
+                    r[args[0]] = r.get(args[1]) if args[1] in R8 else None
+                pos += ln
+                continue
+            if (m := re.match(r"^ld \(hl\), ([de])$", text)) and stack_hl in (0, 1) and "de" in ptr:
+                # the moved address written back over the return address (either byte first)
+                back = dict(back or {}, **{"e" if stack_hl == 0 else "d": ptr["de"]}) if m.group(1) == "ed"[stack_hl] else back
+                if back and back.get("e") is not None and back.get("e") == back.get("d"):
+                    resume = back["e"]
+                pos += ln
+                continue
+            if (m := self._READ.match(text)) and (pair := m.group(2).rstrip("+-")) in ptr:
+                off = ptr[pair]
+                written(m.group(1))
+                r[m.group(1)] = ("in", off)
+                if pair in ptr:
+                    ptr[pair] = off + (1 if m.group(2).endswith("+") else -1 if m.group(2).endswith("-") else 0)
+            elif op in ("inc", "dec") and args and args[0] in ptr:
+                ptr[args[0]] += 1 if op == "inc" else -1
+            elif op == "ld" and len(args) == 2 and args[0] in R8 and args[1] in R8:
+                dst, src = args
+                value = r.get(src)
+                copied = next(((p, PAIRS[p].index(src), o) for p, o in ptr.items() if src in PAIRS[p]), half.get(src))
+                written(dst)
+                r[dst] = value
+                if copied is not None:
+                    half[dst] = copied
+                for pair, (hi, lo) in PAIRS.items():  # both bytes of a pointer copied: that pair is the pointer too
+                    a, b = half.get(hi), half.get(lo)
+                    if a and b and a[0] == b[0] and (a[1], b[1]) == (0, 1) and a[2] == b[2] and pair not in ptr:
+                        ptr[pair] = a[2]
+            elif op == "push" and args and args[0] in ptr:
+                resume = ptr[args[0]]
+            elif (w := store(State(None, dict(r)), text)) is not None and w[0] < ROM_END and self.bank_register(w[0]):
+                if isinstance(w[1], tuple) and w[1][0] == "in":
+                    bank = w[1][1]
+            elif op in ("call", "rst"):
+                target = sm83.flow(text)[1]
+                to = self.resolve(target, pos, None) if target is not None else None
+                if to is None:
+                    break
+                to = self.through(to, None)
+                reg = self.found.bank_arg.get(to)
+                if reg and isinstance(r.get(reg), tuple) and r[reg][0] == "in":
+                    bank = r[reg][1]
+                if self.decode(to)[0] == "jp hl" and (w := self._word(r, "hl")) is not None:
+                    addr = w
+                for reg in self.clobbers(to):
+                    written(reg)
+                    r.pop(reg, None)
+            elif text == "jp hl":
+                if "hl" in ptr and resume is None:
+                    resume = ptr["hl"]
+                elif (w := self._word(r, "hl")) is not None:
+                    addr = w
+                break
+            elif op in ("ret", "reti") and not args:
+                break
+            elif op in ("jp", "jr") and "," not in rest:
+                target = sm83.flow(text)[1]
+                to = self.resolve(target, pos, None) if target is not None else None
+                if to is None or to // BANK != flat // BANK:
+                    break
+                pos = to
+                continue
+            else:
+                before = dict(r)
+                st = State(None, r)
+                step(st, text)
+                r = st.r
+                for reg in R8:
+                    if r.get(reg) != before.get(reg) or (op in ("pop", "add") and reg in "hlbcde" and args and
+                                                          args[0] in PAIRS and reg in PAIRS[args[0]]):
+                        written(reg)
+            pos += ln
+        shape = Inline(resume, bank, addr) if isinstance(resume, int) and 0 < resume <= 8 else None
+        self._shapes[flat] = shape
+        return shape
+
+    @staticmethod
+    def _word(r: dict, pair: str) -> int | None:
+        """The offset of the inline word a pair holds (its low byte at the offset, its high byte after), or None."""
+        hi, lo = (r.get(x) for x in PAIRS[pair])
+        if isinstance(lo, tuple) and isinstance(hi, tuple) and lo[0] == hi[0] == "in" and hi[1] == lo[1] + 1:
+            return lo[1]
+        return None
+
+    _ALL = frozenset(R8)
+
+    def clobbers(self, flat: int) -> frozenset:
+        """The registers a call to `flat` may change: what its straight-line code writes up to its return, for a
+        short routine with no calls of its own; every register otherwise."""
+        if flat in self._clobbers:
+            return self._clobbers[flat]
+        self._clobbers[flat] = self._ALL
+        out: set[str] = set()
+        pos = flat
+        for _ in range(24):
+            if not 0 <= pos < self.size:
+                return self._ALL
+            text, ln = self.decode(pos)
+            op, _, rest = text.partition(" ")
+            args = [x.strip() for x in rest.split(",")] if rest else []
+            if op in ("call", "rst", "reti") or text.startswith("db ") or text in ("jp hl", "ld sp, hl"):
+                return self._ALL
+            if op == "ret" and not args:
+                self._clobbers[flat] = frozenset(out)
+                return self._clobbers[flat]
+            if op in ("jp", "jr") and "," not in rest:
+                to = self.resolve(sm83.flow(text)[1], pos, None)
+                if to is None:
+                    return self._ALL
+                pos = to
+                continue
+            probe = State(None, {x: ("p", x) for x in R8})
+            step(probe, text)
+            out |= {x for x in R8 if probe.r.get(x) != ("p", x)}
+            pos += ln
+        return self._ALL
 
     def _returning(self) -> None:
         """A function returns when a path of it does: a return, a jump to code in RAM or in a bank that isn't known, a
@@ -420,8 +621,10 @@ class Tracer:
                         if not (val == 1 and entry == ENTRY):  # (start-up code setting the power-on bank isn't paging)
                             f.mbc_writes += 1
                         new = self._bank_value(reg, val, st.bank)
-                        if new == ARG:
-                            f.switchers.add(entry)
+                        if isinstance(val, tuple) and val[0] == "arg":  # the register it was given: callers pass a bank
+                            f.bank_arg.setdefault(entry, val[1])
+                            if val == ARG:
+                                f.switchers.add(entry)
                             new = None
                         st.bank = new
                     elif _ram(reg):
@@ -433,6 +636,11 @@ class Tracer:
                             for pair, (hi, low) in PAIRS.items():  # the pair it was given: its callers' are pointers
                                 if word == (("arg", low), ("arg", hi)):
                                     f.setters.setdefault(entry, set()).add(pair)
+                if (m := _LOAD_A.match(text)) and isinstance(st.mem.get(_addr(m)), (int, tuple)):
+                    st.r["a"] = st.mem[_addr(m)]  # a value it stored there itself (a bank kept for later)
+                    text_loaded = True
+                else:
+                    text_loaded = False
                 if text.startswith("push "):
                     pushes += 1
                     pair = text.split()[1]
@@ -444,6 +652,8 @@ class Tracer:
                     f.takes_return.add(entry)
                     popped = None
                 if text == "jp hl":
+                    if st.r.get("h") == ("arg", "h") and st.r.get("l") == ("arg", "l"):
+                        f.calls_arg.setdefault(entry, "hl")  # to the address it was given
                     if (hl := st.pair("hl")) is not None and hl < ROM_END:
                         kind, target = "jump", hl
                     else:
@@ -471,22 +681,39 @@ class Tracer:
                         else:
                             work.append((tflat, st.copy()))
                     if kind == "call":
-                        a_before = st.r.get("a")
+                        before = dict(st.r)
                         if tflat is not None:
                             tflat = self.through(tflat, st.bank)  # (what it is, not the vector it went through)
                         for pair in f.setters.get(tflat, ()) if tflat is not None else ():
                             if (addr := st.pair(pair)) is not None and 0x100 <= addr < ROM_END:
                                 f.pointers.append((flat, addr, st.bank))
-                        st.r = {}
+                        uncond = not text.startswith("call ") or "," not in text  # an unconditional call or rst
+                        shape = self.inline_shape(tflat) if tflat is not None and uncond else None
                         if tflat is not None:
-                            if tflat in f.switchers:
-                                st.bank = self._bank_value(SWITCH, a_before, st.bank)
-                            if not text.startswith("call ") or "," not in text:  # an unconditional call or rst
+                            self._far(entry, flat, ln, tflat, before, st, shape, out)
+                            keep = self.clobbers(tflat)
+                            st.r = {k: v for k, v in st.r.items() if k not in keep}
+                        else:
+                            st.r = {}
+                        if tflat is not None:
+                            if (reg := f.bank_arg.get(tflat)):
+                                st.bank = self._bank_value(SWITCH, before.get(reg), st.bank)
+                                if isinstance(before.get(reg), tuple) and before[reg][0] == "arg":
+                                    f.bank_arg.setdefault(entry, before[reg][1])  # it passes on a bank it was given
+                                if st.bank == ARG or isinstance(st.bank, tuple):
+                                    st.bank = None
+                            if (pair := f.calls_arg.get(tflat)) and all(
+                                    st.r.get(x, before.get(x)) == ("arg", x) for x in PAIRS[pair]):
+                                f.calls_arg.setdefault(entry, pair)
+                            if shape is not None:  # it returns past the bytes it reads: the code goes on after them
+                                f.inline[flat + ln] = (shape.size, shape.why())
+                                ln += shape.size
+                            elif uncond:
                                 if tflat in f.takes_return and tflat in f.dispatchers:
                                     f.indexed.append((flat, cpu_of(flat + ln), st.bank, True))  # `rst $28 / dw a, b`
                                 if self._no_return(tflat):
                                     break
-                else:
+                elif not text_loaded:
                     step(st, text)
                 if kind in ("ret", "jump"):
                     break
@@ -495,6 +722,33 @@ class Tracer:
                     break
                 flat = nxt
         return out
+
+    def _far(self, entry: int, flat: int, ln: int, callee: int, before: dict, st: State, shape: Inline | None,
+             out: list) -> None:
+        """A far call: to a routine that maps a bank it's given and jumps to an address it's given, in registers
+        (`ld a,BANK / ld hl,Func / rst $08`) or in the bytes after the call (`call FarCall / db BANK / dw Func`). The
+        function it reaches is followed with that bank."""
+        f = self.found
+        bank = addr = None
+        guess = False
+        if shape is not None and shape.addr is None and shape.bank is not None and shape.size == 3:
+            shape, guess = Inline(3, shape.bank, 1 if shape.bank == 0 else 0), True  # a bank and the word beside it
+        if shape is not None and shape.addr is not None:
+            at = flat + ln
+            addr = self.data[at + shape.addr] | self.data[at + shape.addr + 1] << 8 if at + shape.addr + 1 < self.size else None
+            bank = self.data[at + shape.bank] if shape.bank is not None and at + shape.bank < self.size else st.bank
+        elif (reg := f.bank_arg.get(callee)) and (pair := f.calls_arg.get(callee)):
+            v = before.get(reg)
+            hi, lo = (before.get(x) for x in PAIRS[pair])
+            if isinstance(v, int) and isinstance(hi, int) and isinstance(lo, int):
+                bank, addr = v, hi << 8 | lo
+        if addr is None or addr >= ROM_END:
+            return
+        if addr >= BANK and isinstance(bank, int):
+            bank = self._bank_value(SWITCH, bank, None) if self.kind != "none" else 1
+        to = self.resolve(addr, 0 if addr >= BANK else flat, bank)  # (as code in bank 0 with that bank mapped would)
+        if to is not None and to != entry and (not guess or self.plausible(to)):
+            out.append((to, addr, bank if isinstance(bank, int) else None, "call"))
 
     # -- what a round teaches the next
 
@@ -562,11 +816,21 @@ def seeds(data: bytes, hints: dict | None = None) -> dict[int, tuple[int, str]]:
     return out
 
 
-def follow(data: bytes, hints: dict | None = None) -> Found:
-    """The code reachable from the vectors and the entry point (and what `hints` add), followed with its banks."""
+def follow(data: bytes, hints: dict | None = None, rounds: int = 3) -> Found:
+    """The code reachable from the vectors and the entry point (and what `hints` add), followed with its banks. Then,
+    a few times over, from the code nothing reached that calls two functions that were (code reached through pointers
+    the following can't see): what that reaches, its far calls included, is followed too."""
     start = seeds(data, hints)
     probe = Tracer(data, hints=hints).follow(start)
-    return Tracer(data, paged=probe.mbc_writes > 0, hints=hints).follow(start)
+    paged = probe.mbc_writes > 0
+    found = Tracer(data, paged=paged, hints=hints).follow(start)
+    for _ in range(rounds):
+        more = {flat for flat in _sorted(data, found, hints)[2] if flat not in found.starts}
+        if not more:
+            break
+        start = {**{flat: (cpu_of(flat), "evidence") for flat in more}, **start}
+        found = Tracer(data, paged=paged, hints=hints).follow(start)
+    return found
 
 
 # ---------------------------------------------------------------- what wasn't reached
@@ -575,9 +839,10 @@ _TERMINAL = ("ret", "jump")
 
 
 def regions(data: bytes, found: Found, hints: dict | None = None) -> list[tuple[int, int, str, str]]:
-    """(flat, size, kind, why) for the stretches that aren't code: the tables the code reads (`table`), what a person or
-    an agent marked (`hint`), runs of padding (`padding`), and what the code never reached and reads as no code would
-    (`data`). Unreached bytes that read like code are left out: mgbdis still decodes them, as before.
+    """(flat, size, kind, why) for the stretches that aren't code: the tables the code reads (`table`), the bytes after a
+    call that the routine called reads (`inline`), what a person or an agent marked (`hint`), runs of padding
+    (`padding`), and what the code never reached and reads as no code would (`data`). Unreached bytes that read
+    like code are left out: mgbdis still decodes them, as before.
 
     Unreached bytes are cut into pieces as they decode from where the stretch begins (and from wherever code calls or
     jumps): straight-line code up to a return, a jump or a call to a routine that reads what follows its call. An
@@ -586,12 +851,22 @@ def regions(data: bytes, found: Found, hints: dict | None = None) -> list[tuple[
     straight line of code, but for what in it shows a sign of being code: reached code goes there (or code-like code
     that calls two functions the code reached), or it calls two itself (one can be bytes of data by chance). So is a code-like piece shorter than 8 bytes between two of
     data that nothing goes to (graphics decode to the odd `ret`)."""
+    return _sorted(data, found, hints)[0]
+
+
+def _sorted(data: bytes, found: Found, hints: dict | None = None):
+    """(regions, the unreached stretches' pieces, where code-like code with a sign of being code starts): see
+    `regions`."""
     size = len(data)
     t = Tracer(data, hints=hints)
+    t.found = found  # (what following the code learned: the routines that read bytes after their calls)
     out: list[tuple[int, int, str, str]] = []
-    claimed = bytearray(size)  # 1: reached code, 2: a table, a hint or the header
+    claimed = bytearray(size)  # 1: reached code, 2: a table, operands, a hint or the header
     for flat, ln in found.code.items():
         claimed[flat:flat + ln] = b"\x01" * min(ln, size - flat)
+    for flat, (n, why) in found.inline.items():
+        out.append((flat, n, "inline", why))
+        claimed[flat:flat + n] = b"\x02" * min(n, size - flat)
     for flat, n in found.tables.items():
         out.append((flat, 2 * n, "table", f"a table of {n} handler address{'es' if n != 1 else ''}"))
         claimed[flat:flat + 2 * n] = b"\x02" * min(2 * n, size - flat)
@@ -649,14 +924,22 @@ def regions(data: bytes, found: Found, hints: dict | None = None) -> list[tuple[
                 if (before == "data" and after in ("data", "edge")) or (before == "edge" and after == "data"):
                     p[2] = "data"
         for lo, hi, kind, _calls, _line in pieces:
-            if kind == "padding":
+            if kind == "inline":
+                out.append((lo, hi - lo, "inline", "bytes the routine called reads after its call"))
+            elif kind == "padding":
                 out.append((lo, hi - lo, "padding", "padding (00 or FF bytes)"))
             elif kind == "data":
                 if out and out[-1][2] == "data" and out[-1][0] + out[-1][1] == lo:
                     out[-1] = (out[-1][0], hi - out[-1][0], "data", out[-1][3])
                 else:
                     out.append((lo, hi - lo, "data", "never reached, and reads as no code would"))
-    return sorted(out)
+    evidence = set()
+    for pieces in gaps:  # code-like code that calls two reached functions, where its straight line (or it) starts
+        for k, p in enumerate(pieces):
+            if p[2] == "code" and p[3] >= SIGN and (k == 0 or pieces[k - 1][4] != p[4] or pieces[k - 1][2] == "data"):
+                if t.plausible(p[0]):
+                    evidence.add(p[0])
+    return sorted(out), gaps, evidence
 
 
 def _target(t: Tracer, flat: int, into: set[int]) -> None:
@@ -690,7 +973,7 @@ def _pieces(data: bytes, t: Tracer, lo: int, hi: int, cuts: list[int], found: Fo
         if ended or off in cuts_set(cuts):
             line += 1  # a new straight line of code: after a return, a jump, padding, or where code goes
         ended = False
-        start, calls = off, set()
+        start, calls, inline = off, set(), None
         k = bisect.bisect_right(cuts, off)
         stop = min(hi, cuts[k]) if k < len(cuts) else hi  # the next place code goes to
         text, ln = t.decode(off)
@@ -707,15 +990,22 @@ def _pieces(data: bytes, t: Tracer, lo: int, hi: int, cuts: list[int], found: Fo
                 stop = min(hi, cuts[k]) if k < len(cuts) else hi
             kind, target = sm83.flow(text)
             to = t.resolve(target, off, None) if target is not None else None
-            if to is not None and kind in ("call", "jump", "cjump") and to in found.starts:
-                calls.add(to)
+            if to is not None and kind in ("call", "jump", "cjump") and to in found.starts and ln == 3:
+                calls.add(to)  # (not an rst: one byte, which data holds all the time)
             off += ln
-            if kind in _TERMINAL or (kind == "call" and to is not None and t.through(to, None) in found.takes_return):
+            callee = t.through(to, None) if kind == "call" and to is not None else None
+            if callee is not None and "," not in text and (shape := t.inline_shape(callee)) is not None:
+                inline = shape
+                break
+            if kind in _TERMINAL or (callee is not None and callee in found.takes_return):
                 ended = True
                 break
             if off < stop and data[off] in (0x00, 0xFF) and data[off:off + 4] == bytes([data[off]]) * 4:
                 break  # padding follows
         pieces.append([start, off, "code", len(calls), line])
+        if inline is not None and off + inline.size <= hi:  # the bytes the routine it called reads: then code again
+            pieces.append([off, off + inline.size, "inline", 0, line])
+            off += inline.size
     return pieces
 
 
