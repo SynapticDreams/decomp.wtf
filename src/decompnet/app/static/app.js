@@ -2933,7 +2933,9 @@ function renderSource(ov) {
     $("srcState").innerHTML = "";
     return;
   }
-  $("srcText").innerHTML = ["sms", "gg"].includes(ov.platform)
+  $("srcText").innerHTML = ov.platform === "nes"
+    ? "decomp.wtf writes a ca65/ld65 project: where each function is and its name, what its agents found out, the routines documented in assembly, and <code>build.py</code>, which disassembles your copy (each PRG bank at the address it's shown at, code as instructions, the rest as bytes, the header and graphics included from your copy) and rebuilds it with cc65, each documented routine in place of its bytes. Then it builds it to prove it rebuilds your game <b>byte for byte</b>. Nearly every NES game was written in assembly, so this is its source: the base for mods, translations and ports. The game's bytes stay out of git, but documented routines are its code written out: share the tree only if you have the right to."
+    : ["sms", "gg"].includes(ov.platform)
     ? "decomp.wtf writes a WLA-DX project: where each function is and its name, what its agents found out, the routines documented in assembly, and <code>build.py</code>, which disassembles your copy (code as instructions, the rest as bytes) and rebuilds it with WLA-DX, each documented routine in place of its bytes. Then it builds it to prove it rebuilds your game <b>byte for byte</b>. Most Master System and Game Gear games were written in assembly, so this is their source: the base for mods, translations and ports. The game's bytes stay out of git, but documented routines are its code written out: share the tree only if you have the right to."
     : ["gb", "gbc"].includes(ov.platform)
     ? "decomp.wtf writes an RGBDS project: the game as assembly, with the project's names and what its agents found out as comments, and <code>build.py</code>, which disassembles your copy with mgbdis and rebuilds it, each routine documented in assembly in place of its bytes. Then it builds it to prove it rebuilds your game <b>byte for byte</b>. Most Game Boy games were written in assembly, so this is their source: the base for mods, translations and ports. Functions matched in C come along for reference. The game's bytes stay out of git, but documented routines are its code written out: share the tree only if you have the right to."
@@ -2941,7 +2943,7 @@ function renderSource(ov) {
   const stale = ex && ex.matched != null && ex.matched < ov.matched;
   $("srcState").innerHTML = !ex ? `<span class="muted small">Not exported yet.</span>`
     : `<div class="src-line ${ex.identical === false ? "bad" : "ok"}">${ex.identical === false ? "✕ the last rebuild differed" : "✓ rebuilds byte for byte"}</div>
-       <div class="src-line">${ex.matched != null ? `${ex.matched.toLocaleString()} of ${ex.functions.toLocaleString()} functions ${["gb", "gbc", "sms", "gg"].includes(ov.platform) ? "also matched " : ""}in C` : ""}${stale ? ` · <b>${ov.matched - ex.matched} new matches since</b>` : ""}</div>
+       <div class="src-line">${ex.matched != null ? `${ex.matched.toLocaleString()} of ${ex.functions.toLocaleString()} functions ${["gb", "gbc", "sms", "gg", "nes"].includes(ov.platform) ? "also matched " : ""}in C` : ""}${stale ? ` · <b>${ov.matched - ex.matched} new matches since</b>` : ""}</div>
        ${ex.documented != null ? `<div class="src-line">${plural(ex.documented, "routine")} documented in assembly, in place of their bytes${ex.left_out ? ` · ${ex.left_out} left as mgbdis has them (they no longer pass with today's names: see the export's log)` : ""}${(ov.documented || 0) > ex.documented + (ex.left_out || 0) ? ` · <b>${ov.documented - ex.documented - (ex.left_out || 0)} documented since</b>` : ""}</div>` : ""}
        ${ex.path ? `<div class="src-line">${esc(ex.path)}</div>` : ""}`;
   $("srcExport").textContent = ex ? "Export again" : "Export project";

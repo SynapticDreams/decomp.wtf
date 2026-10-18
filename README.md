@@ -325,7 +325,7 @@ the game.
 | **Nintendo DS** | Beta | ✓ ROM (.nds) | CodeWarrior for DS 1.2 – DSi 1.6 | ✓ ds-decomp | ✓ |
 | **Game Boy · Game Boy Color** | Beta | ✓ ROM (.gb, .gbc) | GBDK-2020 (SDCC) | ✓ RGBDS (assembly) | |
 | **Master System · Game Gear** | Beta | ✓ ROM (.sms, .gg) | GBDK-2020 (SDCC) | ✓ WLA-DX (assembly) | |
-| **NES** | Beta | ✓ ROM (.nes) | GBDK-2020 (SDCC) | | |
+| **NES** | Beta | ✓ ROM (.nes) | GBDK-2020 (SDCC) | ✓ ca65/ld65 (assembly) | |
 | **3DS · PSP · Switch · PC · Xbox · Xbox 360** | coming | | | | ✓ |
 
 **Recommended platforms: GameCube, Wii and Nintendo 64.** They're the most tested path from dropping in a game to a
@@ -376,7 +376,8 @@ every build, and GameCube and Wii files are linked as they're finished. Game cod
 and continued with any tool or agent. A Game Boy export is an RGBDS disassembly made from your copy at build time,
 with each routine documented in assembly put in place of its bytes; those routines are the game's code written out,
 so share such a tree only if you have the right to. A Master System or Game Gear export is the same with WLA-DX:
-the disassembly is made from your copy by its `build.py`, with decomp.wtf's own Z80 disassembler, which comes with it.
+the disassembly is made from your copy by its `build.py`, with decomp.wtf's own Z80 disassembler, which comes with it;
+an NES export likewise with ca65 and ld65, the header and graphics included from your copy at build time.
 
 **C and C++.** GameCube, Wii and DS games are often C++, and decomp.wtf handles it there: code with C++ symbol
 names goes into `.cpp` files, drafts come out as C++, and agents get a guide to classes, vtables, constructors,
