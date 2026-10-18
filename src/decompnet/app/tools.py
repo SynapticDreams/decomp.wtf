@@ -35,7 +35,8 @@ GUIDES = {
     "arm": "ARM and Thumb (GBA, DS, 3DS): registers, conditional code, literal pools",
     "agbcc": "matching Game Boy Advance code built with agbcc",
     "gb": "Game Boy and Game Boy Color: SM83, banked cartridges, GBDK-2020/SDCC matching",
-    "asm": "the assembly track (Game Boy): documenting a hand-written routine in RGBDS assembly, the six checks",
+    "asm": "the assembly track (Game Boy, Master System, Game Gear): documenting a hand-written routine in assembly "
+           "(RGBDS, WLA-DX), the six checks",
     "sms": "Master System and Game Gear: Z80, the Sega mapper, GBDK-2020/SDCC matching",
     "nes": "NES: the 6502, iNES mappers and banks, GBDK-2020/SDCC matching",
     "x86": "x86 and MSVC (PC, Xbox): calling conventions, SEH, matching MSVC output",
@@ -47,7 +48,7 @@ GUIDES = {
 PLATFORM_GUIDES = {
     "n64": ["mips"], "ps": ["mips", "psx"], "ps2": ["mips", "ps2"], "psp": ["mips"],
     "gc": ["ppc", "mwcc", "cpp"], "wii": ["ppc", "mwcc", "cpp"], "nds": ["arm", "mwcc"], "3ds": ["arm", "cpp"],
-    "gba": ["arm", "agbcc"], "gb": ["gb", "asm"], "gbc": ["gb", "asm"], "sms": ["sms"], "gg": ["sms"], "nes": ["nes"],
+    "gba": ["arm", "agbcc"], "gb": ["gb", "asm"], "gbc": ["gb", "asm"], "sms": ["sms", "asm"], "gg": ["sms", "asm"], "nes": ["nes"],
     "switch": ["aarch64", "cpp"], "win32": ["x86", "cpp"], "xbox": ["x86", "cpp"],
     "xbox360": ["ppc", "cpp"],
 }
@@ -60,20 +61,36 @@ Start with project_info, then claim_function -> compile_and_diff (repeat). guide
 Everything runs on the user's computer. The game's code is the user's: never publish it anywhere.
 """
 
+#: what ASM_PROMPT says differs by console: the assembler, and how names and hardware are written in it
+ASM_WORDS = {
+    "gb": {"console": "Game Boy", "assembler": "RGBDS", "define": "DEF wName EQU $C0A2",
+           "hardware": "hardware.inc's names"},
+    "sms": {"console": "Master System", "assembler": "WLA-DX", "define": ".DEFINE wName $C0A2",
+            "hardware": "its names (guide asm)"},
+}
+
+
+def asm_words(platform: str) -> dict:
+    words = dict(ASM_WORDS["sms" if platform in ("sms", "gg") else "gb"])
+    if platform == "gg":
+        words["console"] = "Game Gear"
+    return words
+
+
 ASM_PROMPT = """\
-You are a decompilation agent in decomp.wtf, working on {title}, a Game Boy game written in assembly. Other
+You are a decompilation agent in decomp.wtf, working on {title}, a {console} game written in assembly. Other
 agents may be working on other routines of the same game at the same time; the tools keep you from colliding.
 
-Your job: document hand-written routines (no C compiles to them) as RGBDS assembly that rebuilds them byte for
-byte, with names, comments and constants instead of addresses. Use only the decomp tools. Repeat for up to
+Your job: document hand-written routines (no C compiles to them) as {assembler} assembly that rebuilds them byte
+for byte, with names, comments and constants instead of addresses. Use only the decomp tools. Repeat for up to
 {count} routines, then stop:
 
 1. claim_function(track="asm") gives you the next routine: the routine as the split has it, a draft that
    already rebuilds its bytes, what the map knows about it (its data, the banks its calls reach), the best
    previous attempt and notes (start from those!).
 2. Write the whole routine and judge it with compile_and_diff(function, source=the routine). The answer lists
-   each check it still fails: name every address (the project's names, or DEF wName EQU $C0A2), hardware by
-   hardware.inc's names, real names for it and its labels, and comment lines before it saying what it does,
+   each check it still fails: name every address (the project's names, or {define}), hardware by
+   {hardware}, real names for it and its labels, and comment lines before it saying what it does,
    what it takes and returns. guide("asm") explains each check.
 3. Accepted, it's documented under its label's name. Before moving on, rename_symbol what you worked out about
    the names it uses, and add_note (no function) for what every agent here should know about this game.
@@ -336,8 +353,8 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
                 instructions; ROM projects' default), closest (nearly matched already), hardest, random
             count: up to 6: small functions come as a batch (neighbours in one file) to write together and
                 judge in one compile_and_diff; a big one comes alone
-            track: asm (Game Boy): a hand-written routine to document in RGBDS assembly instead of matching in C
-                (guide topic `asm`)
+            track: asm (Game Boy, Master System, Game Gear): a hand-written routine to document in assembly
+                instead of matching in C (guide topic `asm`)
         """
         return await run(ctx, "claim_function", function=function, strategy=strategy, count=count, track=track)
 

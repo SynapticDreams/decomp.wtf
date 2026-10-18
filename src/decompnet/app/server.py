@@ -715,7 +715,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         """You, editing a function in the GUI: judged like an agent's attempt (and credited to "you")."""
         agent, _ = net.local_agent("you")
         name, source = str(data.get("name", "")), str(data.get("source", ""))
-        if net._on_asm_track(name, slug):  # a hand-written Game Boy routine: its documented assembly, judged
+        if net._on_asm_track(name, slug):  # a hand-written routine: its documented assembly, judged
             text = net.document_function(agent, slug, name, source)
             return {"score": 0 if text.startswith("✅") else None, "matched": text.startswith("✅"), "text": text[-4000:]}
         res = net.attempt(agent, name, source, slug)
@@ -1026,7 +1026,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             if not left:
                 return fail(ValueError(f"Nothing to start on: {agents.FOCUSES[focus][1]}. Pick another focus."))
             options["focus"] = focus
-        if given.get("track") == "asm":  # the assembly track: hand-written Game Boy routines, documented
+        if given.get("track") == "asm":  # the assembly track: hand-written routines, documented
             try:
                 proj = net.project_row(slug)
             except NetworkError as e:
