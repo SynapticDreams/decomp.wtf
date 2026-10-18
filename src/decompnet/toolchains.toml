@@ -552,6 +552,29 @@ url = "https://github.com/mattcurrie/mgbdis/archive/refs/tags/v3.0.tar.gz"
 sha256 = "f0f3d3b276cbee792815bece448257d220e51ed9400a0a02e8a68ac2b33e6b2d"
 platforms = ["linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-arm64", "windows-x86_64"]
 
+["wla-dx"]
+name = "WLA-DX (wla-z80, wlalink)"
+kind = "tool"
+platform = "Master System / Game Gear"
+arch = "z80"
+license = "GPL-2.0-or-later"
+source = "vhelin/wla-dx v10.7"
+description = "The Z80 assembler and linker Master System and Game Gear disassemblies are written for. It assembles routines documented in assembly (the judge) and the exported project, and runs as its own program: nothing of it is part of decomp.wtf. Its project publishes builds for Windows only, so elsewhere it's built from its source when installed (needs CMake and a C compiler)."
+# the source, built on the computer it's installed on (CMake: binaries/ in its build folder)
+[["wla-dx".parts]]
+url = "https://github.com/vhelin/wla-dx/archive/refs/tags/v10.7.tar.gz"
+sha256 = "38296a96bc20be873d17e0e88be0c5b20a15ef2ec4da5279600e56af30ad925a"
+subdir = "wla-dx-10.7"
+build = [["cmake", "-S", ".", "-B", "build", "-DCMAKE_BUILD_TYPE=Release"],
+         ["cmake", "--build", "build", "--target", "wla-z80", "wlalink", "--parallel", "4"]]
+binaries = ["build/binaries/wla-z80", "build/binaries/wlalink"]
+platforms = ["linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-arm64"]
+[["wla-dx".parts]]
+url = "https://github.com/vhelin/wla-dx/releases/download/v10.7/wla_dx_v10.7_Win64.zip"
+sha256 = "82922a530ae989bd5f8057fa4cfef3d0022d7353b5aeb7858b9320eae9b56ebd"
+subdir = "wla_dx_v10.7_Win64"
+platforms = ["windows-x86_64"]
+
 ["rgbds"]
 name = "RGBDS (rgbasm, rgblink, rgbfix)"
 kind = "tool"
