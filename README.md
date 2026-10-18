@@ -373,7 +373,9 @@ or judged by objdiff inside the project's own build (GameCube, Wii, DS).
 assembly from splat or luvdis, a linker script and `build.py`) and proves it rebuilds your game byte for byte.
 GameCube and Wii projects are dtk-template projects and DS projects are ds-decomp projects; both rebuild the game on
 every build, and GameCube and Wii files are linked as they're finished. Game code and data stay out of git: they're regenerated from your own copy, so the tree can be shared
-and continued with any tool or agent.
+and continued with any tool or agent. A Game Boy export is an RGBDS disassembly made from your copy at build time,
+with each routine documented in assembly put in place of its bytes; those routines are the game's code written out,
+so share such a tree only if you have the right to.
 
 **C and C++.** GameCube, Wii and DS games are often C++, and decomp.wtf handles it there: code with C++ symbol
 names goes into `.cpp` files, drafts come out as C++, and agents get a guide to classes, vtables, constructors,

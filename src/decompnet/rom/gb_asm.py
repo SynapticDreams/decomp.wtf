@@ -328,6 +328,11 @@ def judge(r: Routine, text: str, tmp_root: Path | None = None) -> Verdict:
     own = {name for _n, name in labels} | {(_DEFINE.match(i.text).group(1) or _DEFINE.match(i.text).group(2))
                                            for i in items if i.kind == "def"}
     hw = hardware_names()
+    # a label that's already the project's name for something else would be two things at once in the exported build
+    taken = [n for n in globals_ if n in r.symbols and n != r.name and not r.cpu <= r.symbols[n] < r.cpu + len(r.code)]
+    if taken:
+        return Verdict(False, 0, 0, [f"6. {', '.join(taken)} already name{'s' if len(taken) == 1 else ''} something else "
+                                     "in the project: pick another name"], label)
     if (clash := sorted(own & hw)):
         return Verdict(False, 0, 0, [f"{', '.join(clash)} already name{'s' if len(clash) == 1 else ''} hardware "
                                      "(hardware.inc): pick another name"], label)

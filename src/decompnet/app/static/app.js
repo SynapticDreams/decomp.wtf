@@ -2934,12 +2934,13 @@ function renderSource(ov) {
     return;
   }
   $("srcText").innerHTML = ["gb", "gbc"].includes(ov.platform)
-    ? "decomp.wtf writes an RGBDS project: the game as assembly, with the project's names and what its agents found out as comments, and <code>build.py</code>, which disassembles your copy with mgbdis and rebuilds it. Then it builds it to prove it rebuilds your game <b>byte for byte</b>. Most Game Boy games were written in assembly, so this is their source: the base for mods, translations and ports. Functions matched in C come along for reference. Game code and data stay out of git, so the tree is safe to put in a repository."
+    ? "decomp.wtf writes an RGBDS project: the game as assembly, with the project's names and what its agents found out as comments, and <code>build.py</code>, which disassembles your copy with mgbdis and rebuilds it, each routine documented in assembly in place of its bytes. Then it builds it to prove it rebuilds your game <b>byte for byte</b>. Most Game Boy games were written in assembly, so this is their source: the base for mods, translations and ports. Functions matched in C come along for reference. The game's bytes stay out of git, but documented routines are its code written out: share the tree only if you have the right to."
     : "decomp.wtf writes a complete decompilation project: the matched functions as C, everything else as assembly, a linker script and <code>build.py</code>. Then it builds it to prove it rebuilds your game <b>byte for byte</b>. It's the base for ports and mods; game code and data stay out of git, so the tree is safe to put in a repository.";
   const stale = ex && ex.matched != null && ex.matched < ov.matched;
   $("srcState").innerHTML = !ex ? `<span class="muted small">Not exported yet.</span>`
     : `<div class="src-line ${ex.identical === false ? "bad" : "ok"}">${ex.identical === false ? "✕ the last rebuild differed" : "✓ rebuilds byte for byte"}</div>
        <div class="src-line">${ex.matched != null ? `${ex.matched.toLocaleString()} of ${ex.functions.toLocaleString()} functions ${["gb", "gbc"].includes(ov.platform) ? "also matched " : ""}in C` : ""}${stale ? ` · <b>${ov.matched - ex.matched} new matches since</b>` : ""}</div>
+       ${ex.documented != null ? `<div class="src-line">${plural(ex.documented, "routine")} documented in assembly, in place of their bytes${ex.left_out ? ` · ${ex.left_out} left as mgbdis has them (they no longer pass with today's names: see the export's log)` : ""}${(ov.documented || 0) > ex.documented + (ex.left_out || 0) ? ` · <b>${ov.documented - ex.documented - (ex.left_out || 0)} documented since</b>` : ""}</div>` : ""}
        ${ex.path ? `<div class="src-line">${esc(ex.path)}</div>` : ""}`;
   $("srcExport").textContent = ex ? "Export again" : "Export project";
 }
