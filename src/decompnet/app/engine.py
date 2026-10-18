@@ -1225,8 +1225,17 @@ class RomNetwork(Network):
         shared = self._extra_brief_shared(fn, proj)
         if self.cfg(proj).get("platform") == "psx":
             from ..psx_gte import count, enabled
+            from ..rom import psx_traits
 
             n = count(fn["target"] or b"")
+            syms = self.symbols(proj["id"], fn["unit"])
+            tables = []
+            for _, _, address in json.loads(fn["relocs"] or "[]"):
+                name, _ = syms.name_at(address)
+                symbol = syms.by_name.get(name)
+                if symbol and (symbol.kind == "jtbl" or name.startswith("jtbl_")):
+                    tables.append(name)
+            shared += psx_traits.brief(psx_traits.analyze(fn["target"] or b"", tables))
             debug = json.loads(fn["meta"] or "{}").get("debug")
             bios = json.loads(fn["meta"] or "{}").get("bios")
             if bios:
@@ -1266,7 +1275,7 @@ class RomNetwork(Network):
             lines.append("called by: " + ", ".join(syms.label(a) for a in callers[:30]))
         used = sorted(x["uses"].get(fn["vram"], ()))
         if used:
-            lines += ["", "### Data it uses (declare what you need as extern in your source, or in context.h)"]
+            lines += ["", "### Data it uses (check the access mode before choosing declarations in source or context.h)"]
             prev = {r["name"]: r for r in self.store.all("SELECT name, kind, size, preview FROM symbols WHERE project_id=?", proj["id"])}
             for a in used[:40]:
                 name, off = syms.name_at(a)
