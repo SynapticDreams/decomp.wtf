@@ -151,6 +151,10 @@ class LocalScorer:
             if tc.proprietary:
                 raise toolchains.ToolchainError(f"{tc.id} is proprietary; install it yourself if you accept its license")
             toolchains.install(tc.id, log=log)
+        if job.get("aspsx"):
+            for dependency in ("maspsx", "binutils-mips"):
+                if toolchains.installed(dependency) is None:
+                    toolchains.install(dependency, log=log)
         self._tmp = tempfile.TemporaryDirectory(prefix="decompnet-worker-")
         inc = Path(self._tmp.name)
         for rel, text in job.get("include_files", {}).items():
@@ -161,7 +165,7 @@ class LocalScorer:
             dest.write_text(text, encoding="utf-8", newline="\n")
         # the coordinator's own way to run the toolchain (on Windows, Linux-only ones go through WSL)
         compiler = {"toolchain": tc.id, "include_dirs": [str(inc)]}
-        compiler.update({k: job[k] for k in ("cmd", "flags") if job.get(k) is not None})
+        compiler.update({k: job[k] for k in ("cmd", "flags", "aspsx") if job.get(k) is not None})
         self.cc = compiler_config(inc, {"compiler": compiler})
         t = job["target"]
         self.target = FunctionObj(job["function"], t["arch"], t["big_endian"], base64.b64decode(t["code"]),

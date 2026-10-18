@@ -3043,6 +3043,7 @@ class RomNetwork(Network):
             # what built a banked game, as its bytes say (rom/fingerprint.py): None, most likely assembly; absent, not read
             "built_with": cfg.get("built_with", False) if cfg.get("arch") in BANKED_ARCHS else False,
             "compiler": {"toolchain": tc.id, "name": SHORT_NAMES.get(tc.id, tc.name), "flags": cfg["compiler"]["flags"],
+                         "aspsx": cfg["compiler"].get("aspsx", ""),
                          "units": cfg["compiler"].get("units", {}),
                          "unit_names": [r["unit"] for r in self.store.all(
                              "SELECT DISTINCT unit FROM functions WHERE project_id=? ORDER BY unit", proj["id"])],
@@ -3587,7 +3588,8 @@ class RomNetwork(Network):
         return {"events": [dict(e) for e in reversed(events)], "attempts": [dict(t) for t in reversed(attempts)],
                 "claims": claims, "overview": self.overview(slug)}
 
-    def set_compiler(self, slug: str, toolchain: str, flags: list[str] | None = None) -> None:
+    def set_compiler(self, slug: str, toolchain: str, flags: list[str] | None = None,
+                     aspsx: str | None = None) -> None:
         if self.fork_slug(slug):
             raise NetworkError("a fork builds with the project's own compilers and flags")
         proj = self._project(slug)
@@ -3596,10 +3598,13 @@ class RomNetwork(Network):
         if tc.id != cfg["compiler"].get("toolchain"):
             cfg["compiler"].pop("cmd", None)
         cfg["compiler"] = cfg["compiler"] | {"toolchain": tc.id, "flags": tc.flags if flags is None else flags}
+        if aspsx is not None:
+            self._check_aspsx(tc.id, aspsx)
+            cfg["compiler"]["aspsx"] = aspsx
         self._save_compiler(proj, cfg)
 
     def set_unit_compiler(self, slug: str, unit: str, toolchain: str | None = None,
-                          flags: list[str] | None = None) -> None:
+                          flags: list[str] | None = None, aspsx: str | None = None) -> None:
         """Set a source unit's compiler, or remove its override when no settings are supplied."""
         if self.fork_slug(slug):
             raise NetworkError("a fork builds with the project's own compilers and flags")
@@ -3610,18 +3615,35 @@ class RomNetwork(Network):
             raise NetworkError("flags must be a list of strings")
         cfg = self.cfg(proj)
         units = cfg["compiler"].setdefault("units", {})
-        profile = {}
+        profile = dict(units.get(unit, {})) if toolchain is not None or flags is not None or aspsx is not None else {}
         if toolchain is not None:
             profile["toolchain"] = toolchains.get(toolchain).id
         if flags is not None:
             profile["flags"] = flags
+        if aspsx is not None:
+            self._check_aspsx(toolchain or cfg["compiler"]["toolchain"], aspsx)
+            profile["aspsx"] = aspsx
         if profile:
             units[unit] = profile
         else:
             units.pop(unit, None)
         self._save_compiler(proj, cfg, unit)
 
+    @staticmethod
+    def _check_aspsx(toolchain: str, aspsx: str) -> None:
+        from ..psx_compile import validate_version
+
+        if aspsx:
+            validate_version(aspsx)
+            if toolchains.get(toolchain).platform != "PS1":
+                raise NetworkError("ASPSX emulation requires a PS1 compiler")
+            toolchains.require("maspsx")
+            toolchains.require("binutils-mips")
+
     def _save_compiler(self, proj, cfg: dict, unit: str | None = None) -> None:
+        for name in [None, *cfg["compiler"].get("units", {})]:
+            settings = compiler_settings(cfg, name)
+            self._check_aspsx(settings["toolchain"], settings.get("aspsx", ""))
         proposed = dict(proj) | {"config": json.dumps(cfg)}
         affected = self.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched'", proj["id"])
         if unit is not None:

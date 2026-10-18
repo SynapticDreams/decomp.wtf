@@ -99,6 +99,19 @@ def compiler_config(root: Path, cfg: dict, unit: str | None = None) -> CompilerC
             cmd = [a.replace(f"{{tc:{dep}}}", wsl.path(where) if linux else str(where)) for a in cmd]
     else:
         cmd = list(c["cmd"])
+    if c.get("aspsx"):
+        from .psx_compile import validate_version
+
+        version = validate_version(c["aspsx"])
+        if "toolchain" not in c or toolchains.get(c["toolchain"]).platform != "PS1":
+            raise ProjectRejected("ASPSX emulation requires a pinned PS1 GCC toolchain")
+        driver = Path(__file__).with_name("psx_compile.py").resolve()
+        maspsx = toolchains.require("maspsx")
+        assembler = toolchains.require("binutils-mips")
+        ro_paths += [str(driver), str(maspsx), str(assembler)]
+        locate = (lambda p: wsl.path(p)) if linux else str
+        cmd = ["/usr/bin/python3", locate(driver), "--maspsx", locate(maspsx / "maspsx.py"),
+               "--assembler", locate(assembler / "mips-ps2-decompals-as"), "--aspsx-version", version, "--", *cmd]
     return CompilerConfig(
         cmd=cmd,
         timeout=float(c.get("timeout", 15)),

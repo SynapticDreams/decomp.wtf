@@ -3080,6 +3080,8 @@ function fillCompilerSettings() {
   const tc = override.toolchain || c.toolchain;
   fillCompilers($("setTc"), tc, { n64: "N64", psx: "PS1", ps2: "PS2", gba: "GBA" }[S.ov.platform]);
   $("setFlags").value = (override.flags || (tc === c.toolchain ? c.flags : [])).join(" ");
+  $("setAspsxField").hidden = S.ov.platform !== "psx";
+  $("setAspsx").value = override.aspsx ?? c.aspsx ?? "";
   $("setUnitReset").hidden = !unit;
 }
 $("setCompilerUnit").onchange = fillCompilerSettings;
@@ -3093,7 +3095,7 @@ $("setUnitReset").onclick = async () => {
 $("setTcSave").onclick = async () => {
   try {
     const flags = $("setFlags").value.trim();
-    S.ov = await api("/api/compiler", { method: "POST", body: { slug: S.slug, unit: $("setCompilerUnit").value, toolchain: $("setTc").value, flags: flags ? flags.split(/\s+/) : null } });
+    S.ov = await api("/api/compiler", { method: "POST", body: { slug: S.slug, unit: $("setCompilerUnit").value, toolchain: $("setTc").value, flags: flags ? flags.split(/\s+/) : null, aspsx: $("setAspsx").value } });
     renderStats(S.ov);
     renderProjectSettings();
     toast("Compiler settings saved.");

@@ -34,3 +34,21 @@ share a load address. The generated build and single-function checks resolve the
 The local HTTP API accepts `POST /api/compiler` with a project `slug`, `unit`, optional `toolchain` and optional
 `flags`. Omitting both settings removes that unit's override. Omitting `unit` changes the project default while
 retaining unit overrides. Forks use their existing project build scripts.
+
+## Optional ASPSX emulation
+
+The **Assembler** selector in PS1 project Settings enables maspsx for a selected ASPSX version. Install the pinned
+`maspsx` and `binutils-mips` tools first. The bundled GNU assembler remains the default.
+
+The profile field `"aspsx": "2.56"` selects that emulation; `"aspsx": ""` selects the bundled assembler, including
+when overriding a project that uses maspsx. Unit profiles inherit this field like other settings. HTTP compiler
+updates accept the same optional `aspsx` field. Omitting it retains the current selection.
+
+The optional pipeline runs GCC with `-S`, processes the resulting assembly with maspsx and assembles it using the
+pinned modern MIPS binutils. It enables division expansion and passes the compilation's last `-G` threshold to
+maspsx. Every stage runs within the existing compilation sandbox, and a failed stage fails the build. Exported
+builds and donated workers use the same driver and pinned tools.
+
+ASPSX versions can produce different bytes for the same compiler output. For example, the regression fixtures
+check constant loading across 2.21 and 2.56 and division guards across several versions. A version choice is a
+matching hypothesis; the normal byte comparison remains authoritative.

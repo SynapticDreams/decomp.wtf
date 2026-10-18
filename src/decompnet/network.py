@@ -432,6 +432,8 @@ class Network:
                  f"context.h v{ctx['version']} ({len(ctx['header'].splitlines())} lines)"]
         compiler = compiler_settings(json.loads(proj["config"]), fn["unit"])
         lines.append(f"compiler {compiler.get('toolchain', 'project command')}, flags: {' '.join(compiler.get('flags', []))}")
+        if compiler.get("aspsx"):
+            lines.append(f"assembler: maspsx emulating ASPSX {compiler['aspsx']}")
         if claim:
             who = "you" if agent and claim["agent_id"] == agent.id else self._agent_name(claim["agent_id"])
             lines.append(f"claimed by {who}, lease expires in {int(claim['expires_at'] - time.time()) // 60} min "
