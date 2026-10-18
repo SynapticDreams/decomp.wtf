@@ -1187,6 +1187,8 @@ class RomNetwork(Network):
     def read_data(self, project: str | None, what: str, length: int = 64, unit: str = "") -> str:
         self._rom_only(project, "read_data")
         proj = self._project(project)
+        if (self.cfg(proj).get("arch") or "").lower() in BANKED_ARCHS:
+            return self._read_banked(proj, what, length, unit)
         syms = self.symbols(proj["id"], unit)
         m = _ADDRESS.match(what.strip())
         addr = int(m.group(1), 16) if m else syms.resolve(what.strip())
@@ -1213,6 +1215,47 @@ class RomNetwork(Network):
         floats = [struct.unpack(e + "f", struct.pack(e + "I", w))[0] for w in words[:8]]
         if any(1e-6 < abs(f) < 1e7 for f in floats):
             out.append("as f32: " + ", ".join(f"{f:g}" for f in floats))
+        return "\n".join(out)
+
+    def _read_banked(self, proj, what: str, length: int, unit: str) -> str:
+        """read_data on the Game Boy, Master System and NES: an address as these games write it (`0xC0A0`, `$C0A0`,
+        `C0A0`), or a bank's (`05:4ABC`), or a symbol. Banks share CPU addresses: the bank `unit` names (`bank005`,
+        the segment a brief shows) is read, else the first that has it, and the answer says which."""
+        syms = self.symbols(proj["id"])
+        text = what.strip()
+        bank = None
+        if (m := re.fullmatch(r"(?:0x|\$)?([0-9A-Fa-f]{1,3}):(?:0x|\$)?([0-9A-Fa-f]{1,4})", text)):
+            bank, addr = int(m.group(1), 16), int(m.group(2), 16)
+        elif (m := re.fullmatch(r"(?:0x|\$)?([0-9A-Fa-f]{1,8})", text)) and not syms.by_name.get(text):
+            addr = int(m.group(1), 16) & 0xFFFF
+        else:
+            addr = syms.resolve(text)
+            if addr is None:
+                raise NetworkError(f"`{what}` is not an address (0xC0A0, or 05:4ABC with its bank) or a known symbol")
+        if unit and bank is None and (m := re.fullmatch(r"bank0*(\d+)", unit.strip())):
+            bank = int(m.group(1))
+        length = max(4, min(int(length), 512))
+        rom, segs = self._rom(proj)
+        holders = [s for s in segs if s.contains(addr, length)]
+        if bank is not None:
+            holders = [s for s in holders if s.name == f"bank{bank:03d}"]
+        head = f"{syms.label(addr)} at ${addr:04X}"
+        if not holders:
+            if addr >= 0xC000 or (addr >= 0x8000 and proj["arch"] == "sm83"):
+                return f"{head}: RAM (or hardware registers), not the ROM: its values are set while the game runs."
+            return f"{head}: not in {'that bank' if bank is not None else 'the ROM'} as the project maps it."
+        seg = holders[0]
+        at = seg.rom_start + addr - seg.vram
+        data = rom[at:at + length]
+        shared = [s.name for s in segs if s.contains(addr, 1) and s is not seg]
+        out = [f"{head} in {seg.name} (ROM offset 0x{at:X})"
+               + (f"; banks share this address: `read_data(what=\"NN:{addr:04X}\")` reads bank NN's"
+                  if shared and bank is None else "")]
+        for i in range(0, len(data), 16):
+            chunk = data[i:i + 16]
+            out.append(f"  {addr + i:04X}: {chunk.hex(' '):<47}  {''.join(chr(c) if 32 <= c < 127 else '.' for c in chunk)}")
+        words = [int.from_bytes(data[i:i + 2], "little") for i in range(0, min(len(data), 32) - 1, 2)]
+        out.append("as 16-bit words: " + " ".join(f"${w:04X}" for w in words))
         return "\n".join(out)
 
     def split_function(self, agent: Agent, project: str | None, function: str, at: str, new_name: str = "") -> str:
@@ -1552,6 +1595,15 @@ class RomNetwork(Network):
         if not (IDENT.match(old) and IDENT.match(new)):
             raise NetworkError("old and new must be C identifiers")
         syms = self.symbols(proj["id"])
+        if old not in syms.by_name and (m := re.fullmatch(r"func_(\d{3})_([0-9a-fA-F]{4})", old)):
+            # an automatic name from an older listing (the function has a name now): banks share CPU addresses,
+            # so its bank finds it, and what it's called now is what's renamed
+            row = self.store.one("SELECT name FROM functions WHERE project_id=? AND vram=? AND unit=?", proj["id"],
+                                 int(m.group(2), 16), f"bank{int(m.group(1)):03d}")
+            if row is not None and row["name"] != old:
+                if row["name"] == new:
+                    return f"✅ {old} is already called {new}"
+                old = row["name"]
         addr = syms.resolve(old)
         if addr is None:
             raise NetworkError(f"`{old}` is not a symbol of this ROM: use a name from the assembly (func_/D_...) "

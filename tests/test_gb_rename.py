@@ -53,3 +53,36 @@ def test_a_bank_cpu_name_resolves_to_its_cpu_address():
 
     assert SymbolTable().resolve("func_003_4abc") == 0x4ABC
     assert SymbolTable().resolve("func_80012340") == 0x80012340
+
+
+def test_both_banks_names_resolve_and_an_old_automatic_name_still_renames(net):
+    """Two banks' functions at one CPU address: both names resolve (a call by name compiles, the rename's check has
+    both), and a name from an older listing finds its function by its bank."""
+    syms = net.symbols(1)
+    assert syms.resolve("func_001_4000") == syms.resolve("func_002_4000") == 0x4000
+    alice = net.authenticate(net.register_agent("alice"))
+    assert net.rename_symbol(alice, "gbgame", "func_002_4000", "DrawMap").startswith("✅")
+    assert net.rename_symbol(alice, "gbgame", "func_002_4000", "DrawWorldMap").startswith("✅")  # the old name
+    names = {r["id"]: r["name"] for r in net.store.all("SELECT id, name FROM functions WHERE project_id=1")}
+    assert names == {1: "func_001_4000", 2: "DrawWorldMap"}
+    assert net.rename_symbol(alice, "gbgame", "func_002_4000", "DrawWorldMap").startswith("✅ func_002_4000 is already")
+
+
+def test_read_data_takes_the_addresses_these_games_write_and_says_which_bank(net, tmp_path):
+    rom = bytearray(0xC000)
+    rom[0x4100:0x4104] = b"\x11\x22\x33\x44"  # bank 1 at $4100
+    rom[0x8100:0x8104] = b"\xaa\xbb\xcc\xdd"  # bank 2 at $4100
+    (tmp_path / "work").mkdir(exist_ok=True)
+    (tmp_path / "work" / "game.gb").write_bytes(bytes(rom))
+    cfg = json.loads(net.project_row("gbgame")["config"])
+    cfg["rom"] = {"file": "game.gb", "size": len(rom)}
+    cfg["segments"] = [{"name": f"bank{b:03d}", "rom_start": b * 0x4000, "rom_end": (b + 1) * 0x4000,
+                        "vram": 0 if b == 0 else 0x4000} for b in range(3)]
+    with net.store.tx() as db:
+        db.execute("UPDATE projects SET config=? WHERE id=1", (json.dumps(cfg),))
+    for what in ("0x4100", "$4100", "4100"):
+        out = net.read_data("gbgame", what, 16)
+        assert "11 22 33 44" in out and "bank001" in out and 'read_data(what="NN:4100")' in out, what
+    assert "aa bb cc dd" in net.read_data("gbgame", "02:4100", 16)
+    assert "aa bb cc dd" in net.read_data("gbgame", "$4100", 16, unit="bank002")
+    assert "RAM" in net.read_data("gbgame", "0xC0A0", 16)
