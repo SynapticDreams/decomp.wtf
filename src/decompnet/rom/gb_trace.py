@@ -219,6 +219,7 @@ class Found:
     bank_arg: dict[int, str] = field(default_factory=dict)  # function -> the register whose value it maps (a: switchers)
     calls_arg: dict[int, str] = field(default_factory=dict)  # function -> the pair it's given that it jumps through
     inline: dict[int, tuple[int, str]] = field(default_factory=dict)  # flat -> (size, what): operands after a call
+    edges: dict[int, int] = field(default_factory=dict)  # a call or jump from bank 0 into the window -> where it went
 
 
 @dataclass(frozen=True)
@@ -375,7 +376,8 @@ class Tracer:
     def _round(self, seeds: dict[int, tuple[int, str]]) -> None:
         f = self.found
         prev, f.entered, f.starts, f.with_hl, f.jumps, f.anchors = f.entered, {}, {}, [], [], set()
-        f.code, f.tables, f.mbc_writes, f.indexed, f.pointers, f.tails, f.inline = {}, {}, 0, [], [], {}, {}
+        f.code, f.tables, f.mbc_writes, f.indexed, f.pointers, f.tails, f.inline, f.edges = ({}, {}, 0, [], [], {}, {},
+                                                                                            {})
         queue = [(flat, cpu, why, 1 if flat == ENTRY else None) for flat, (cpu, why) in sorted(seeds.items())]
         for flat, _cpu, _why, m in queue:
             if m is not None:
@@ -670,6 +672,8 @@ class Tracer:
                     tflat = self.resolve(target, flat, st.bank)
                     if tflat is None and kind != "call":
                         f.tails.setdefault(entry, set()).add(None)
+                    if tflat is not None and flat < BANK <= target < 2 * BANK:
+                        f.edges[flat] = tflat  # (which bank it reached is the follower's to know)
                     if tflat is not None:
                         inside = (tflat // BANK == entry // BANK and tflat != entry and tflat not in self.known)
                         if kind != "call" and tflat != entry:
@@ -752,6 +756,8 @@ class Tracer:
         to = self.resolve(addr, 0 if addr >= BANK else flat, bank)  # (as code in bank 0 with that bank mapped would)
         if to is not None and to != entry and (not guess or self.plausible(to)):
             out.append((to, addr, bank if isinstance(bank, int) else None, "call"))
+            if addr >= BANK:
+                self.found.edges[flat] = to
 
     # -- what a round teaches the next
 

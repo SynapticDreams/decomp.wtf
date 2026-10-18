@@ -90,6 +90,16 @@ BANKED_TOOLS = {"sm83": ("gbdk-2020", "rgbds", "mgbdis"), "z80": ("gbdk-2020",),
 _GENERATED = re.compile(r"^(?:Call|Func|Jump|jr)_[0-9a-f]{3}_[0-9a-f]{4}$|^RST_[0-9a-f]{2}$|Interrupt$|^Boot$")
 
 
+def _with_edges(meta: str | None, edges: dict | None) -> str | None:
+    """A function's meta with where its calls into the Game Boy's switchable bank go (offset -> ROM offset)."""
+    m = json.loads(meta or "{}")
+    if edges:
+        m["edges"] = {str(k): v for k, v in sorted(edges.items())}
+    else:
+        m.pop("edges", None)
+    return json.dumps(m) if m else None
+
+
 def _set_aside(meta: str | None) -> dict:
     """Why a function is set aside, for the page: a rule's reason, or an agent's for a person (`review`)."""
     m = json.loads(meta or "{}")
@@ -751,12 +761,13 @@ class RomNetwork(Network):
                     name = f"{name}_{f.rom:06x}"
                 names.add(name)
                 db.execute(
-                    "INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,status) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,status,"
+                    "meta) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     # vram is the CPU address the ROM's instructions use; rom_offset the flat file offset;
                     # the unit is the bank, so briefs and context edits read per bank.
                     (pid, name, f.size, f.n_insns, f.code, json.dumps([list(r) for r in f.refs or []]),
-                     f.asm, None, f"bank{f.bank:03d}", f.vram, f.rom, "open" if matchable else "asm"))
+                     f.asm, None, f"bank{f.bank:03d}", f.vram, f.rom, "open" if matchable else "asm",
+                     _with_edges(None, getattr(f, "edges", None))))
                 db.execute("INSERT INTO symbols(project_id,name,address,size,kind,preview) VALUES(?,?,?,?,?,?)",
                            (pid, name, f.vram, f.size, "func", None))
             db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
@@ -842,10 +853,14 @@ class RomNetwork(Network):
                     name = f"{f.name}_{f.rom:06x}" if f.name in names else f.name
                 names.add(name)
                 new_ids[f.rom] = db.execute(
-                    "INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,status) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,status,"
+                    "meta) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (proj["id"], name, f.size, f.n_insns, f.code, json.dumps([list(x) for x in f.refs or []]), f.asm,
-                     None, f"bank{f.bank:03d}", f.vram, f.rom, "open")).lastrowid
+                     None, f"bank{f.bank:03d}", f.vram, f.rom, "open", _with_edges(None, getattr(f, "edges", None)))).lastrowid
+            for f in fns:  # a function that stays: where its calls into the window go, as this split followed them
+                r = by_off.get(f.rom)
+                if r is not None and r["id"] in kept and (getattr(f, "edges", None) or "edges" in (r["meta"] or "")):
+                    db.execute("UPDATE functions SET meta=? WHERE id=?", (_with_edges(r["meta"], f.edges), r["id"]))
                 db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind,preview) VALUES(?,?,?,?,?,?)",
                            (proj["id"], name, f.vram, f.size, "func", None))
             for r in gone:  # its notes go to whatever covers its start now
@@ -2248,6 +2263,94 @@ class RomNetwork(Network):
             path.unlink()
         self._update_cfg(slug, lambda cfg: cfg.pop("coverage", None))
         return self.corrections(slug)
+
+    # ------------------------------------------------------------------ the assembly track (Game Boy)
+
+    #: set-aside reasons that say a function isn't code at all: not for the assembly track either
+    NOT_CODE = ("padding", "the split ran", "bytes that are no instruction", "which SDCC never writes: data")
+
+    def asm_track(self, fn) -> bool:
+        """Whether a function is the assembly track's: a Game Boy routine set aside as hand-written code (not data, not
+        padding, not one the split couldn't bound)."""
+        if fn["status"] != "asm":
+            return False
+        why = _set_aside(fn["meta"]).get("why") or ""
+        return not any(k in why for k in self.NOT_CODE)
+
+    def _routine(self, proj, fn):
+        """What the assembly judge needs about a Game Boy function (rom/gb_asm.Routine)."""
+        from ..rom import gb_asm, gb_hw
+
+        flat, size = fn["rom_offset"] or 0, fn["size"] or 0
+        symbols = {r["name"]: r["address"] for r in self.store.all(
+            "SELECT name, address FROM symbols WHERE project_id=?", proj["id"]) if r["address"] is not None}
+        functions = {r["rom_offset"]: r["name"] for r in self.store.all(
+            "SELECT name, rom_offset FROM functions WHERE project_id=? AND rom_offset IS NOT NULL", proj["id"])}
+        data = [(r["rom_offset"], r["size"], r["kind"]) for r in self.store.all(
+            "SELECT * FROM data_regions WHERE project_id=? AND rom_offset<? AND rom_offset+size>?",
+            proj["id"], flat + size, flat)]
+        edges = {int(k): v for k, v in json.loads(fn["meta"] or "{}").get("edges", {}).items()}
+        return gb_asm.Routine(fn["name"], flat // 0x4000, fn["vram"] or 0, bytes(fn["target"] or b""), symbols,
+                              functions, data, edges, gb_hw.mapper_of(self.cfg(proj)["rom"].get("mbc") or ""))
+
+    def document_function(self, agent: Agent, project: str | None, function: str, text: str) -> str:
+        """An agent's documented assembly for a hand-written Game Boy routine, judged (rom/gb_asm.py: the same bytes,
+        the shift test, names from the right bank, data only where the map has it, hardware by name, real names and a
+        header comment). Accepted, the function is documented: its text is kept, its DEF names become the project's,
+        and its label becomes its name."""
+        from ..rom import gb_asm
+
+        self._require_budget(agent)
+        fn = self._function(function, project)
+        proj = self._project(project) if project else self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        if (self.cfg(proj).get("arch") or "").lower() != "sm83":
+            raise NetworkError("documented assembly is for Game Boy projects for now")
+        if fn["status"] == "documented":
+            raise NetworkError(f"{fn['name']} is documented already")
+        if not self.asm_track(fn):
+            raise NetworkError(f"{fn['name']} isn't a hand-written routine set aside from C ({fn['status']}): "
+                               "it's matched in C (compile_and_diff), or isn't code")
+        claim = self.store.one("SELECT agent_id FROM claims WHERE function_id=?", fn["id"])
+        if claim is not None and claim["agent_id"] != agent.id:
+            raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(claim['agent_id'])}")
+        if not gb_asm.available():
+            raise NetworkError("RGBDS isn't installed: install it from Setup")
+        try:
+            verdict = gb_asm.judge(self._routine(proj, fn), text)
+        except gb_asm.AsmError as e:
+            raise NetworkError(str(e)) from None
+        score = 0 if verdict.ok else (len(verdict.problems) if verdict.same == len(fn["target"] or b"") else
+                                      1000 + len(fn["target"] or b"") - verdict.same)
+        now = time.time()
+        with self.store.tx() as db:
+            db.execute("INSERT INTO attempts(function_id,agent_id,score,compiled,context_version,source,created_at,via) "
+                       "VALUES(?,?,?,?,?,?,?,?)", (fn["id"], agent.id, score, int(verdict.size > 0),
+                                                   self._context(proj["id"], fn["unit"])["version"], text, now, "asm"))
+            db.execute("UPDATE functions SET attempts=attempts+1 WHERE id=?", (fn["id"],))
+            db.execute("UPDATE functions SET best_score=?, best_source=?, best_agent_id=? WHERE id=? AND status='asm' "
+                       "AND (best_score IS NULL OR best_score > ?)", (score, text, agent.id, fn["id"], score))
+            if verdict.ok:
+                db.execute("UPDATE functions SET status='documented', matched_source=?, matched_agent_id=?, matched_at=? "
+                           "WHERE id=? AND status='asm'", (verdict.text, agent.id, now, fn["id"]))
+                for name, value in verdict.defines.items():
+                    db.execute("INSERT OR IGNORE INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
+                               (proj["id"], name, value, 0, "data" if value >= 0x100 else "const"))
+                db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))
+                self._event(db, proj["id"], agent.id, "documented", fn["name"])
+        if not verdict.ok:
+            return (f"❌ not yet ({len(fn['target'] or b'')} bytes, {verdict.same} the same):\n"
+                    + "\n".join(f"- {p}" for p in verdict.problems))
+        name = fn["name"]
+        if verdict.label and verdict.label != name:
+            try:
+                if self.rename_symbol(agent, proj["slug"], name, verdict.label, "documented").startswith("✅"):
+                    name = verdict.label
+            except NetworkError:
+                pass
+        for cache in (self._syms, self._xrefs):
+            cache.pop(proj["id"], None)
+        return (f"✅ DOCUMENTED: {name} rebuilds byte for byte, with names, and is kept"
+                + (f"; {', '.join(verdict.defines)} named for the project" if verdict.defines else "") + ".")
 
     def give_to_agents(self, project: str | None, function: str) -> dict:
         """A person gives a set-aside function back to agents: a set-aside rule was wrong about it, or a review found
