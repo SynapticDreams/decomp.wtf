@@ -270,12 +270,12 @@ class RomNetwork(Network):
             key = (project_id, tuple(sorted(units)))
             if key not in self._syms:
                 owners = cfg["mapping"]["symbol_units"]
-                rows = self.store.all("SELECT name,address,size,kind FROM symbols WHERE project_id=?", project_id)
+                rows = self.store.all("SELECT name,address,size,kind FROM symbols WHERE project_id=? ORDER BY kind='alias' DESC", project_id)
                 self._syms[key] = SymbolTable([Symbol(r["name"], r["address"], r["size"], r["kind"])
                                               for r in rows if owners.get(r["name"]) in units])
             return self._syms[key]
         if project_id not in self._syms:
-            rows = self.store.all("SELECT name, address, size, kind FROM symbols WHERE project_id=?", project_id)
+            rows = self.store.all("SELECT name, address, size, kind FROM symbols WHERE project_id=? ORDER BY kind='alias' DESC", project_id)
             self._syms[project_id] = SymbolTable([Symbol(r["name"], r["address"], r["size"], r["kind"]) for r in rows])
         return self._syms[project_id]
 
@@ -317,6 +317,14 @@ class RomNetwork(Network):
         try:
             return super()._function(name, project)
         except NetworkError as e:
+            if name and project:
+                aliases = self.store.all(
+                    "SELECT f.* FROM functions f JOIN projects p ON p.id=f.project_id "
+                    "JOIN symbols s ON s.project_id=f.project_id AND s.address=f.vram "
+                    "WHERE p.slug=? AND s.name=? AND s.kind='alias' AND json_extract(f.meta,'$.debug.unit')=f.unit",
+                    project, name)
+                if len(aliases) == 1:
+                    return aliases[0]
             rows = self._loose_functions(name, project) if name else []
             if len(rows) == 1:
                 return rows[0]
@@ -619,6 +627,11 @@ class RomNetwork(Network):
                                                   None, "basic types", now, ""))
             self._event(db, pid, None, "import", f"{len(res.functions)} functions from {info['title']}")
         log(f"ready: {len(res.functions)} functions to decompile")
+        if picked.debug_files:
+            try:
+                self.import_psx_debug(slug, picked.debug_files, apply=True)
+            except ValueError as exc:
+                log(f"debug information skipped: {exc}")
         if picked.platform == "psx" and self.auto_probe_compilers and (
                 (seeds.available() and toolchains.installed(toolchain)) or
                 any((self.workspace / ".decomp" / "psyq-signatures").glob("*.json"))):
@@ -1209,6 +1222,12 @@ class RomNetwork(Network):
             from ..psx_gte import count, enabled
 
             n = count(fn["target"] or b"")
+            debug = json.loads(fn["meta"] or "{}").get("debug")
+            if debug:
+                details = debug.get("details", {})
+                shared += ["", "Debug evidence (verify types before editing context): " + json.dumps(
+                    {k: v for k, v in debug.items() if k != "details"}, ensure_ascii=True),
+                           json.dumps(details, ensure_ascii=True)[:12000]]
             if n and enabled(self.cfg(proj), fn["unit"]):
                 shared += ["", f"GTE: {n} coprocessor instructions. Trusted gte_* macros are supplied by the compiler; "
                            "read guide('psx') for the helpers. Raw assembly submissions are rejected."]
@@ -1799,7 +1818,7 @@ class RomNetwork(Network):
             # The function `old` names; by address only when that is unambiguous (Game Boy banks share CPU
             # addresses: another bank's function at the same address must keep its name)
             row = db.execute("SELECT id FROM functions WHERE project_id=? AND name=?", (proj["id"], old)).fetchone()
-            if row is None:
+            if row is None and not (old in syms.by_name and syms.by_name[old].kind == "alias"):
                 at = db.execute("SELECT id FROM functions WHERE project_id=? AND vram=?", (proj["id"], addr)).fetchall()
                 row = at[0] if len(at) == 1 else None
             if row is not None:
@@ -3684,6 +3703,52 @@ class RomNetwork(Network):
         except Exception:
             logging.getLogger(__name__).debug("automatic PS1 compiler probe unavailable", exc_info=True)
 
+    def import_psx_debug(self, slug: str, files: list[tuple[str, bytes]], apply: bool = False,
+                         unit: str | None = None) -> dict:
+        from ..rom import psyqsym
+
+        proj = self._project(slug)
+        if self.fork_slug(slug) or self.cfg(proj).get("platform") != "psx":
+            raise NetworkError("debug information import requires a PS1 ROM project")
+        if self._link(slug) is not None:
+            raise NetworkError("import debug information on the room's host copy")
+        image, segments = self._rom(proj)
+        report = psyqsym.inspect(files, [(s.name, image[s.rom_start:s.rom_end], s.vram) for s in segments],
+                                 [dict(f) for f in self.store.all("SELECT * FROM functions WHERE project_id=?", proj["id"])], unit)
+        report["applied"] = 0
+        if apply:
+            with self.store.tx() as db:
+                for hit in report["hits"]:
+                    fid = hit["function_id"]
+                    if fid and db.execute("SELECT 1 FROM claims WHERE function_id=?", (fid,)).fetchone():
+                        continue
+                    existing = db.execute("SELECT address FROM symbols WHERE project_id=? AND name=?", (proj["id"], hit["name"])).fetchone()
+                    if existing and existing["address"] != hit["address"]:
+                        continue
+                    # Keep canonical names and all source intact; aliases resolve at the same linked address.
+                    db.execute("INSERT OR IGNORE INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?, 'alias')",
+                               (proj["id"], hit["name"], hit["address"], hit.get("size", 0)))
+                    if fid:
+                        fn = db.execute("SELECT meta FROM functions WHERE id=?", (fid,)).fetchone()
+                        meta = json.loads(fn["meta"] or "{}")
+                        meta["debug"] = {k: v for k, v in hit.items() if k != "function_id"}
+                        db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta), fid))
+                    report["applied"] += 1
+            self._layout_changed(proj["id"])
+            for key in list(self._syms):
+                if isinstance(key, tuple) and key[0] == proj["id"]:
+                    self._syms.pop(key, None)
+        summary = {**report, "hits": report["hits"][:100]}
+        def save(cfg):
+            cfg["debug_information"] = summary
+            if apply and cfg.get("mapping"):
+                owners = cfg["mapping"]["symbol_units"]
+                for hit in report["hits"]:
+                    owners.setdefault(hit["name"], hit["unit"])
+
+        self._update_cfg(slug, save)
+        return summary
+
     def small_data_evidence(self, slug: str) -> dict:
         from ..rom import small_data
 
@@ -3693,7 +3758,7 @@ class RomNetwork(Network):
             raise NetworkError("small-data inspection requires a PS1 ROM project")
         report = small_data.analyze(
             [dict(r) for r in self.store.all("SELECT * FROM functions WHERE project_id=? AND status IN ('open','matched')", proj["id"])],
-            [dict(r) for r in self.store.all("SELECT * FROM symbols WHERE project_id=? AND kind<>'func'", proj["id"])], cfg.get("gp", 0))
+            [dict(r) for r in self.store.all("SELECT * FROM symbols WHERE project_id=? AND kind NOT IN ('func','alias')", proj["id"])], cfg.get("gp", 0))
         report["gp_source"] = "header" if cfg.get("rom", {}).get("gp") else "entry" if cfg.get("gp") else "unused or unresolved"
         for unit, row in report["units"].items():
             profile = compiler_settings(cfg, unit)

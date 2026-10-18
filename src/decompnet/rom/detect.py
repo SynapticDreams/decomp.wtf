@@ -25,6 +25,7 @@ class Picked:
     info: dict
     big_endian: bool
     overlays: list = field(default_factory=list)  # (name, bytes, load address): code in other files on the disc
+    debug_files: list = field(default_factory=list)  # sanitized basename and local debug bytes
 
 
 def _program(data: bytes, name: str = "") -> Picked | None:
@@ -88,6 +89,12 @@ def _from_disc(src) -> Picked:
     if picked is None:
         raise RomError(f"the disc's program {boot} isn't a PlayStation executable this app can read")
     if picked.platform == "psx":
+        from .psyqsym import discover
+
+        try:
+            picked.debug_files = discover(psx._Disc(src))
+        except (RomError, struct.error, IndexError):
+            pass
         main = (picked.info["load"], picked.info["load"] + picked.info["size"] - 0x800)
     else:
         segs = overlays._elf_segments(raw) or []
