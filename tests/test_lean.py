@@ -361,7 +361,7 @@ def test_the_permuter_polishes_a_pinned_function_without_taking_it(tmp_path, mon
                    ("void f(void) {\n    u8 a = 1;\n    u8 b = 2;\n    x = a + b;\n}",))
     tried = []
 
-    def score(agent, proj, fn, source, best, fork):
+    def score(agent, proj, fn, source, best, fork, st=None):
         tried.append(source)
         return 250 if len(tried) == 3 else best + 10
 

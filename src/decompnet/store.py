@@ -72,6 +72,10 @@ MIGRATIONS = [
     # what the call cost in tokens (shared among the versions it gave), so methods are compared per token too
     ("attempts", "method", "TEXT"),
     ("attempts", "tokens", "INTEGER"),
+    # the permuter's turns on a function, and the best score they were spent at (a better best starts them over):
+    # kept, so a restart doesn't hand it the same near misses again
+    ("functions", "permuter_turns", "INTEGER NOT NULL DEFAULT 0"),
+    ("functions", "permuter_best", "INTEGER"),
 ]
 
 

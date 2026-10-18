@@ -155,6 +155,7 @@ class RomNetwork(Network):
         self.rooms: dict = {}  # slug -> collab.Room, for projects this computer shares
         self._remote_ids: dict[str, int] = {}
         self._ops: dict[int, dict] = {}  # project id -> look-alike index
+        self._batch = threading.local()  # a batch's one compile, for each function it judges (attempt_many)
         self._diffs: dict[tuple, dict] = {}  # (function, source, context, compiler) -> diff for the GUI
         self.autopilots: dict[str, dict] = {}  # slug -> progress of trying every function's machine draft
         self.starred_only: dict[int, float] = {}  # helper agent id -> when its session began (★ Next in line only)
@@ -740,6 +741,17 @@ class RomNetwork(Network):
         return slug
 
     def _compile(self, proj, header: str, source: str):
+        """Within a batch (attempt_many) the same source compiles once: the build holds every function it defines,
+        and each is judged from it. Otherwise every call compiles."""
+        memo = getattr(self._batch, "memo", None)
+        if memo is None:
+            return self._compile_now(proj, header, source)
+        key = (proj["id"], header, source)
+        if key not in memo:
+            memo[key] = self._compile_now(proj, header, source)
+        return memo[key]
+
+    def _compile_now(self, proj, header: str, source: str):
         """Game Boy and Master System candidates go through gb_build (SDCC + its assembler) instead of the ELF pipeline: the
         project's own symbol table is injected, so the candidate's call/jump addresses are the ROM's and
         `_evaluate` can compare bytes directly. The payload carries every function the source defines;
@@ -1638,14 +1650,18 @@ class RomNetwork(Network):
         definitions taken out, as its file gets them one by one), in order."""
         fork = self.fork_slug(project)
         out, matched = [], 0
-        for name in names:
-            try:
-                one = self.forks.one_definition(fork, source, name, [n for n in names if n != name]) if fork else source
-                res = self.attempt(agent, name, one, project)
-            except NetworkError as e:
-                res = {"text": f"❌ {e}", "matched": False}
-            matched += bool(res.get("matched"))
-            out.append(f"### {name}\n{res['text']}")
+        self._batch.memo = {} if not fork else None  # one compile for the batch (a fork's build takes them one by one)
+        try:
+            for name in names:
+                try:
+                    one = self.forks.one_definition(fork, source, name, [n for n in names if n != name]) if fork else source
+                    res = self.attempt(agent, name, one, project)
+                except NetworkError as e:
+                    res = {"text": f"❌ {e}", "matched": False}
+                matched += bool(res.get("matched"))
+                out.append(f"### {name}\n{res['text']}")
+        finally:
+            self._batch.memo = None
         return f"{matched} of {len(names)} matched.\n\n" + "\n\n".join(out)
 
     def _yield_autopilot(self, function: str | None, project: str | None) -> None:
