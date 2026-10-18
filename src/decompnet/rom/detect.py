@@ -100,7 +100,9 @@ def _from_disc(src) -> Picked:
         segs = overlays._elf_segments(raw) or []
         main = (min((a for a, _ in segs), default=0), max((a + len(d) for a, d in segs), default=0))
     try:
-        picked.overlays = overlays.find(psx._Disc(src), boot, picked.platform, main)
+        discovery = {}
+        picked.overlays = overlays.find(psx._Disc(src), boot, picked.platform, main, discovery)
+        picked.info["overlay_discovery"] = discovery
     except (RomError, struct.error, IndexError):  # an odd disc: the program alone still works
         picked.overlays = []
     return picked

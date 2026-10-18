@@ -15,6 +15,16 @@ def run(args):
     from .engine import RomNetwork
 
     try:
+        if args.action == "discover":
+            from ..rom.overlay_discovery import discover
+
+            result = discover(args.image)
+            profile = result.pop("profile")
+            if profile:
+                with args.profile.open("x", encoding="utf-8") as output:
+                    output.write(json.dumps(profile, indent=2) + "\n")
+            print(json.dumps(result, indent=2))
+            return 0
         if args.profile.stat().st_size > 1024 * 1024:
             raise MappingError("profile exceeds 1 MiB")
         text = args.profile.read_text(encoding="utf-8")
