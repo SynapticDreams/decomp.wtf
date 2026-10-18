@@ -351,7 +351,9 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     # rooms this computer belongs to reconnect (members keep their place; their agents wait while the host is away)
     net.restore_links()
 
-    # helpers that were working when the app last stopped carry on
+    # what a crash left running is stopped first; then helpers that were working when the app last stopped carry on
+    for name in manager.stop_strays():
+        logging.getLogger("decomp.wtf").info("stopped %s, a helper the last run left running", name)
     resume = [r for r in settings.data.get("running_agents", []) if isinstance(r, dict)]
     for r in resume:
         try:
@@ -721,8 +723,9 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         return {"message": net.add_note(agent, slug, text[:2000], str(data.get("function", "")) or None)}
 
     def p_autopilot(slug, request, data):
-        if data.get("action") == "stop":
+        if data.get("action") == "stop":  # the permuter too: the panel shows them as one, and Stop means both
             net.stop_autopilot(slug)
+            net.permuter.stop(slug)
         else:
             net.start_autopilot(slug)
         return net.overview(slug)

@@ -206,9 +206,12 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "project_info": lambda net, agent, slug: project_info(net, slug),
     "claim_function": lambda net, agent, slug, function="", strategy="", count=1:
         _claim(net, agent, slug, function, strategy, count),
-    "get_function": lambda net, agent, slug, function: net.get_function(function, slug, agent),
+    "get_function": lambda net, agent, slug, function, start_line=0: (
+        net.forks.get_function(agent, slug, function) if net.fork_slug(slug)
+        else net.get_function(function, slug, agent, int(start_line or 0))),
     "compile_and_diff": lambda net, agent, slug, function, source: _compile(net, agent, slug, function, source),
-    "release_function": lambda net, agent, slug, function, notes: net.release(agent, function, notes, slug),
+    # (`text` and `notes` both: models spell the note either way, and a refused call is a wasted turn)
+    "release_function": lambda net, agent, slug, function, notes="", text="": net.release(agent, function, notes or text, slug),
     "get_context": lambda net, agent, slug, function="": net.get_context(slug, function or None),
     "edit_context": lambda net, agent, slug, old, new, message, function="":
         net.edit_context(agent, slug, old, new, message, function or None),
@@ -219,7 +222,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "read_data": lambda net, agent, slug, what, length=64, unit="": (net.forks.read_data(agent, slug, what, length)
                                                             if net.fork_slug(slug) else net.read_data(slug, what, length, unit)),
     "list_functions": lambda net, agent, slug, status="open", limit=40: net.list_functions(slug, status, limit),
-    "add_note": lambda net, agent, slug, text, function="": net.add_note(agent, slug, text, function or None),
+    "add_note": lambda net, agent, slug, text="", function="", notes="": net.add_note(agent, slug, text or notes,
+                                                                                    function or None),
     "search_notes": lambda net, agent, slug, query: net.search_notes(slug, query),
     "find_similar": lambda net, agent, slug, function, limit=5: net.find_similar(slug, function, limit),
     "guide": lambda net, agent, slug, topic="": _guide(topic),
@@ -305,10 +309,11 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "claim_function", function=function, strategy=strategy, count=count)
 
     @mcp.tool(meta=ALWAYS_LOAD)
-    async def get_function(ctx: Context, function: str) -> str:
+    async def get_function(ctx: Context, function: str, start_line: int = 0) -> str:
         """Show any function (by name or address): assembly, status, best attempt, notes. Read matched
-        functions to learn how this codebase is written."""
-        return await run(ctx, "get_function", function=function)
+        functions to learn how this codebase is written. A long function's assembly comes in parts: start_line
+        shows the part from that line on."""
+        return await run(ctx, "get_function", function=function, start_line=start_line)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def compile_and_diff(ctx: Context, function: str, source: str) -> str:
@@ -322,10 +327,10 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "compile_and_diff", function=function, source=source)
 
     @mcp.tool(meta=ALWAYS_LOAD)
-    async def release_function(ctx: Context, function: str, notes: str) -> str:
+    async def release_function(ctx: Context, function: str, notes: str = "", text: str = "") -> str:
         """Give up a function you're stuck on. Notes are required: what you tried, what is left. Your best
         attempt is kept for the next agent."""
-        return await run(ctx, "release_function", function=function, notes=notes)
+        return await run(ctx, "release_function", function=function, notes=notes or text)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def get_context(ctx: Context, function: str = "") -> str:
@@ -369,9 +374,9 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "list_functions", status=status, limit=limit)
 
     @mcp.tool(meta=ALWAYS_LOAD)
-    async def add_note(ctx: Context, text: str, function: str = "") -> str:
+    async def add_note(ctx: Context, text: str = "", function: str = "", notes: str = "") -> str:
         """Leave a note for other agents, on a function or the whole project."""
-        return await run(ctx, "add_note", text=text, function=function)
+        return await run(ctx, "add_note", text=text or notes, function=function)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def search_notes(ctx: Context, query: str) -> str:
