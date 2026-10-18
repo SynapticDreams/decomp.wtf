@@ -407,8 +407,11 @@ class Twins:
             return 0
         cfg = self.net.cfg(proj)
         platform, big = cfg.get("platform", ""), bool(proj["big_endian"])
+        bios_aside = 0
         if platform == "psx":
             from ..psx_gte import enabled
+
+            bios_aside = self.net.identify_psx_bios(proj["slug"])["set_aside"]
 
             for r in self.net.store.all("SELECT * FROM functions WHERE project_id=? AND status='asm' "
                                         "AND json_extract(meta,'$.asm_code') LIKE 'uses the GTE%'", proj["id"]):
@@ -440,7 +443,7 @@ class Twins:
         if marks:
             with self.net.store.tx() as db:
                 db.executemany("UPDATE functions SET status='asm', meta=? WHERE id=? AND status='open'", marks)
-        return len(marks)
+        return len(marks) + bios_aside
 
     def _trim_sm83(self, proj, cfg: dict, trims: list) -> None:
         """Game Boy functions the split ran on past their routine's end (into padding, data, or code with no entry

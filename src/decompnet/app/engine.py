@@ -321,7 +321,10 @@ class RomNetwork(Network):
                 aliases = self.store.all(
                     "SELECT f.* FROM functions f JOIN projects p ON p.id=f.project_id "
                     "JOIN symbols s ON s.project_id=f.project_id AND s.address=f.vram "
-                    "WHERE p.slug=? AND s.name=? AND s.kind='alias' AND json_extract(f.meta,'$.debug.unit')=f.unit",
+                    "WHERE p.slug=? AND s.name=? AND s.kind='alias' "
+                    "AND ((json_extract(f.meta,'$.debug.unit')=f.unit AND json_extract(f.meta,'$.debug.name')=s.name) "
+                    "OR (json_extract(f.meta,'$.bios.unit')=f.unit AND "
+                    "s.name IN (json_extract(f.meta,'$.bios.alias'),json_extract(f.meta,'$.bios.original_name'))))",
                     project, name)
                 if len(aliases) == 1:
                     return aliases[0]
@@ -627,6 +630,8 @@ class RomNetwork(Network):
                                                   None, "basic types", now, ""))
             self._event(db, pid, None, "import", f"{len(res.functions)} functions from {info['title']}")
         log(f"ready: {len(res.functions)} functions to decompile")
+        if picked.platform == "psx":
+            self.identify_psx_bios(slug)
         if picked.debug_files:
             try:
                 self.import_psx_debug(slug, picked.debug_files, apply=True)
@@ -1223,6 +1228,9 @@ class RomNetwork(Network):
 
             n = count(fn["target"] or b"")
             debug = json.loads(fn["meta"] or "{}").get("debug")
+            bios = json.loads(fn["meta"] or "{}").get("bios")
+            if bios:
+                shared += ["", f"BIOS dispatch: {bios['name']}. {bios['note']}"]
             if debug:
                 details = debug.get("details", {})
                 shared += ["", "Debug evidence (verify types before editing context): " + json.dumps(
@@ -3702,6 +3710,60 @@ class RomNetwork(Network):
             self.probe_compiler(slug, log=lambda _: None)
         except Exception:
             logging.getLogger(__name__).debug("automatic PS1 compiler probe unavailable", exc_info=True)
+
+    def identify_psx_bios(self, slug: str) -> dict:
+        from ..rom.psx_bios import recognize
+
+        proj = self._project(slug)
+        cfg = self.cfg(proj)
+        if cfg.get("platform") != "psx" or self.fork_slug(slug):
+            raise NetworkError("BIOS dispatch recognition requires a PS1 ROM project")
+        if self._link(slug) is not None:
+            return {"recognized": 0, "renamed": 0, "set_aside": 0}
+        recognized, renamed, aside, owners = 0, 0, 0, {}
+        with self.store.tx() as db:
+            rows = db.execute("SELECT * FROM functions WHERE project_id=? AND size BETWEEN 12 AND 32 "
+                              "AND json_extract(meta,'$.bios') IS NULL", (proj["id"],)).fetchall()
+            for fn in rows:
+                meta = json.loads(fn["meta"] or "{}")
+                if meta.get("for_agents") or meta.get("review") or db.execute(
+                        "SELECT 1 FROM claims WHERE function_id=?", (fn["id"],)).fetchone():
+                    continue
+                bios = recognize(fn["target"] or b"")
+                if bios is None:
+                    continue
+                bios["unit"] = fn["unit"]
+                desired = bios["name"]
+                if db.execute("SELECT 1 FROM symbols WHERE project_id=? AND name=? UNION ALL "
+                              "SELECT 1 FROM functions WHERE project_id=? AND name=?",
+                              (proj["id"], desired, proj["id"], desired)).fetchone():
+                    desired = re.sub(r"\W", "_", fn["unit"]) + "_" + desired + f"_{fn['vram']:08X}"
+                if not db.execute("SELECT 1 FROM symbols WHERE project_id=? AND name=?", (proj["id"], desired)).fetchone():
+                    automatic = bool(re.search(r"(?:^|_)func_[0-9A-Fa-f]{8}$", fn["name"]))
+                    rename = automatic and fn["status"] in ("open", "asm") and not fn["best_source"] and not fn["matched_source"] and not cfg.get("mapping")
+                    if rename:
+                        db.execute("UPDATE symbols SET kind='alias' WHERE project_id=? AND name=?", (proj["id"], fn["name"]))
+                        db.execute("UPDATE functions SET name=? WHERE id=?", (desired, fn["id"]))
+                        renamed += 1
+                    db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
+                               (proj["id"], desired, fn["vram"], fn["size"], "func" if rename else "alias"))
+                    owners[desired] = fn["unit"]
+                bios["alias"], bios["original_name"] = desired, fn["name"]
+                meta["bios"] = bios
+                meta["kind"] = "library"
+                meta["asm_code"] = f"BIOS dispatch wrapper {bios['gate']}:{bios['slot']:02X} ({bios['api'] or 'unlabelled slot'})"
+                db.execute("UPDATE functions SET meta=?, status=CASE WHEN status='open' THEN 'asm' ELSE status END WHERE id=?",
+                           (json.dumps(meta), fn["id"]))
+                recognized += 1
+                aside += fn["status"] == "open"
+        if recognized:
+            self._layout_changed(proj["id"])
+            if cfg.get("mapping"):
+                self._update_cfg(slug, lambda c: c["mapping"]["symbol_units"].update(owners))
+            for key in list(self._syms):
+                if isinstance(key, tuple) and key[0] == proj["id"]:
+                    self._syms.pop(key, None)
+        return {"recognized": recognized, "renamed": renamed, "set_aside": aside}
 
     def import_psx_debug(self, slug: str, files: list[tuple[str, bytes]], apply: bool = False,
                          unit: str | None = None) -> dict:
