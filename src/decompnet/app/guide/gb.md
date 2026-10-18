@@ -28,6 +28,10 @@ Matching is done with the pinned **GBDK-2020** toolchain: `sdcc -msm83` for C, `
 The app installs it when a game is imported (every download is pinned by sha256 per platform), and Setup lists it with
 mgbdis and rgbds, which split the ROM.
 
+Listings name the hardware the way [hardware.inc 6.0](https://github.com/gbdev/hardware.inc) does: `ldh [rLCDC], a`,
+`ld [rROMB0], a` for the cartridge's bank register, `ld hl, $9800 ; TILEMAP0`. In C those are still addresses
+(`*(volatile u8 *)0xff40`), the same bytes.
+
 A Game Boy ROM's bytes contain **absolute** call and jump addresses, so the lane compiles in absolute
 symbol mode: the build emits `.equ` lines that pin SDCC's references to the ROM's own addresses, and
 scores the result with the same judge as every other platform.
