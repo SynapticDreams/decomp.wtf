@@ -10,7 +10,7 @@ import pytest
 from decompnet import scoring
 from decompnet.app.engine import RomNetwork
 from decompnet.elfobj import FunctionObj
-from decompnet.rom import detect, gb_build, mos6502, nes
+from decompnet.rom import detect, gb_build, nes
 from decompnet.rom.n64 import RomError
 
 from .test_gb import make_rom as make_gb_rom
