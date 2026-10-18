@@ -206,6 +206,25 @@ def is_return(text: str) -> bool:
     return text in ("ret", "reti") or text.startswith(("ret ", "jp hl", "jr "))
 
 
+def flow(text: str) -> tuple[str, int | None]:
+    """How an instruction moves control: ret | jump (both end straight-line flow) | cret | cjump | call | plain, and
+    its target's CPU address when it has one. `jp hl` leaves with no known target; `rst n` calls `n`."""
+    mnemonic, _, ops = text.partition(" ")
+    ops = ops.strip()
+    if mnemonic in ("ret", "reti"):
+        return ("cret" if ops else "ret"), None
+    if mnemonic == "jp" and ops == "hl":
+        return "ret", None
+    target = int(ops.rsplit("$", 1)[1], 16) if "$" in ops and mnemonic in ("jp", "jr", "call") else None
+    if mnemonic in ("jp", "jr"):
+        return ("cjump" if "," in ops else "jump"), target
+    if mnemonic == "call":
+        return "call", target
+    if mnemonic == "rst":
+        return "call", int(ops.lstrip("$"), 16) if ops.lstrip("$") else None
+    return "plain", None
+
+
 def terminates(code: bytes, addr: int) -> bool:
     """True when the instruction at `addr` ends a function's straight-line flow."""
     text, _ = decode(code[addr:], addr)

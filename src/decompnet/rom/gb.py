@@ -1,16 +1,12 @@
 """Game Boy (.gb) and Game Boy Color (.gbc) ROMs: detection, cartridge header, banking and function
 discovery, on top of the fork's own SM83 disassembler (see `sm83.py` for why one is needed).
 
-Status (honest scope): **reading, disassembly, function discovery and inspection work end to end**;
-byte-identical *matching* needs a C toolchain lane for the LR35902 (SDCC/GBDK) and a bank-aware
-relocation model, which this module does not provide yet — see benchmarks/ROADMAP.md. Importing a
-Game Boy ROM therefore creates a real project with real functions and assembly, and `diff` answers
-with an explicit "no compiler profile for Game Boy" message rather than pretending to match.
+The split is mgbdis's (rom/gb_mgbdis) with the code followed first (rom/gb_trace); this module's own sweep is the
+fallback when those tools aren't installed. Matching is SDCC (GBDK-2020) through rom/gb_build, in absolute-symbol
+mode: a function's calls and data are pinned to the addresses the ROM has them at.
 
-Addressing note: functions are addressed by their **flat ROM offset** for now (bank 0 is 0x0000-0x3FFF,
-bank 1 is 0x4000-0x7FFF, and so on). The Game Boy's CPU-visible bank window (0x4000-0x7FFF switched by
-the MBC) is not modelled yet, so two different banks can legitimately contain the same CPU address:
-flat offsets avoid that ambiguity until the bank-aware lane lands.
+Addressing note: a function is identified by its **flat ROM offset** (bank 0 is 0x0000-0x3FFF, bank 1 is
+0x4000-0x7FFF, and so on) and runs at its CPU address (`cpu_address`): two banks can hold the same CPU address.
 """
 
 from __future__ import annotations
@@ -252,13 +248,14 @@ def functions(data: bytes, log=lambda *_: None) -> list[GbFunction]:
 
 
 def split(path: Path, workdir: Path, log=lambda *_: None, prefer_mgbdis: bool = True,
-          report: dict | None = None) -> list[GbFunction]:
+          report: dict | None = None, hints: dict | None = None) -> list[GbFunction]:
     """A ROM file's functions.
 
-    Preferred: **mgbdis + rgbds** (rom/gb_mgbdis), a real disassembler with code/data separation whose
-    output reassembles the ROM byte for byte — the check that the split is faithful. Falls back to the
-    built-in call-graph sweep when those tools are not installed, or when asked not to use them. `report`, if given,
-    gets {"splitter": "mgbdis" | "built-in"}: the sweep is approximate, and the caller records that."""
+    Preferred: **mgbdis + rgbds** (rom/gb_mgbdis), a real disassembler whose output reassembles the ROM byte for
+    byte (the check that the split is faithful), told the game's code from its data by following the code
+    (rom/gb_trace). Falls back to the built-in call-graph sweep when those tools are not installed, or when asked not
+    to use them. `report`, if given, gets {"splitter": "mgbdis" | "built-in"} (the sweep is approximate, and the
+    caller records that) and the regions that aren't code (`regions`); `hints` are corrections (rom/gb_trace)."""
     data = Path(path).read_bytes()
     if not is_gb(data):
         raise RomError("this isn't a Game Boy or Game Boy Color ROM")
@@ -269,11 +266,12 @@ def split(path: Path, workdir: Path, log=lambda *_: None, prefer_mgbdis: bool = 
 
         if gb_mgbdis.available():
             try:
-                fns, meta = gb_mgbdis.split(path, workdir, log=log)
+                fns, meta = gb_mgbdis.split(path, workdir, log=log, hints=hints)
                 if meta["faithful"]:
                     log(f"split by mgbdis: {meta['functions']} functions, reassembly byte-identical")
                     if report is not None:
                         report["splitter"] = "mgbdis"
+                        report["regions"] = meta.get("regions") or []
                     return fns
                 log(f"mgbdis split did NOT rebuild the ROM byte for byte ({meta['rebuilt_bytes']} vs "
                     f"{meta['original_bytes']} bytes): using the built-in split instead")

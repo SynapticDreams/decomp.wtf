@@ -1,18 +1,25 @@
-"""Game Boy split by mgbdis + rgbds: real code/data separation, and verifiable.
+"""Game Boy split by mgbdis + rgbds, with the code told from the data, and verifiable.
 
 The built-in split (`gb.functions`) walks the ROM with the decoder and cuts functions at call targets.
-That is a guess. [mgbdis](https://github.com/mattcurrie/mgbdis) does a proper sweep — reachability,
-jump tables, code/data separation, RGBDS labels — and its output, assembled by
+That is a guess. [mgbdis](https://github.com/mattcurrie/mgbdis) writes RGBDS source whose output, assembled by
 [rgbds](https://github.com/gbdev/rgbds), **rebuilds the ROM byte for byte**. That reassembly check is
 what makes this split trustworthy: if the disassembly did not cover the ROM exactly, the rebuild would
 differ, and we report that instead of pretending.
 
+mgbdis itself decodes every byte as code unless its symbol file says otherwise (graphics come out as instructions,
+the `call`-like bytes in them as labels, and those as functions). So the game's code is followed first with the banks
+it maps (rom/gb_trace.py), and mgbdis is handed what that found: a `.code` block and a label at every function start
+it reached, and a `.data` block for tables, padding and what the code never reached and reads as no code would. A
+symbol file next to the ROM (`rom.sym`: pret, BGB and Emulicious write them) comes after, so its names and blocks win.
+When that disassembly doesn't rebuild the ROM, the plain one is used instead.
+
 Pipeline (all in a temp dir):
 
-    mgbdis.py <rom> --output-dir out        # out/bank_XXX.asm + game.asm + Makefile
+    mgbdis.py rom.gbc --output-dir out      # out/bank_XXX.asm + game.asm + Makefile (reads rom.sym)
     rgbasm -o game.o game.asm               # assemble every bank
     rgblink -n game.sym -o game.gbc game.o  # link, writing the symbol file
-    rgbfix -v -p 255 game.gbc               # the padding a released cartridge has
+    rgbfix -p 255 game.gbc                  # the padding a released cartridge has (not -v: the header's checksums
+                                            # are in the disassembly as the ROM has them, right or wrong)
     cmp game.gbc <rom>                      # faithful? (reported, and required for confidence)
 
 `game.sym` is `bank:address Name` per line; those labels are the function starts, with the bytes read
@@ -21,6 +28,7 @@ from the original ROM (the rebuild is only the proof, never the source of truth)
 
 from __future__ import annotations
 
+import bisect
 import re
 import shutil
 import subprocess
@@ -43,6 +51,7 @@ INTERRUPT_SUFFIX = "Interrupt"
 DATA_PREFIXES = ("Data_", "Unknown_", "Gfx_", "Pal_", "Map_", "Text_", "String_", "Ptr_", "Table_",
                  "Tileset_", "Tilemap_", "Music_", "SFX_", "Obj_", "Header")
 MAX_FUNCTION = 0x400
+HEADER_START = 0x104  # the cartridge header (logo, title, checksums) up to 0x150: data, in mgbdis's own symbols
 
 
 @dataclass
@@ -148,7 +157,7 @@ def is_code(name: str) -> bool:
         return False
     if name.startswith(FUNCTION_PREFIXES):
         return True
-    return name.endswith(INTERRUPT_SUFFIX) or name in ("EntryPoint", "Start", "Main")
+    return name.endswith(INTERRUPT_SUFFIX) or name in ("Boot", "EntryPoint", "Start", "Main")
 
 
 def blocks(text: str) -> dict[str, str]:
@@ -200,7 +209,7 @@ def _disassemble(rom_path: Path, tmp: Path, log=lambda *_: None) -> tuple[Path, 
     if rc != 0 or not (out / "game.sym").exists():
         raise RomError(f"rgblink could not link the disassembly: {log_text.strip()[-400:]}")
     if ts.rgbfix.exists():
-        _run([ts.rgbfix, "-v", "-p", "255", "game.gbc"], out)
+        _run([ts.rgbfix, "-p", "255", "game.gbc"], out)
     rebuilt = (out / "game.gbc").read_bytes() if (out / "game.gbc").exists() else b""
     faithful = rebuilt == data
     symbols = parse_sym((out / "game.sym").read_text(encoding="utf-8", errors="replace"))
@@ -208,29 +217,66 @@ def _disassemble(rom_path: Path, tmp: Path, log=lambda *_: None) -> tuple[Path, 
     return out, symbols, faithful, rebuilt
 
 
-def labels(rom_path: Path, log=lambda *_: None) -> set[tuple[int, int]]:
-    """The (bank, address) of every label in mgbdis's own disassembly of a ROM: where it decodes code from, so
-    where a name of the project's can go (at any other address, mgbdis would be mid-instruction). Raises RomError."""
+def labels(rom_path: Path, log=lambda *_: None, sym: str | None = None) -> set[tuple[int, int]]:
+    """The (bank, address) of every label in mgbdis's disassembly of a ROM (with `sym` as its symbol file, else none):
+    where it decodes code from, so where a name of the project's can go (at any other address, mgbdis would be
+    mid-instruction). Raises RomError."""
     with tempfile.TemporaryDirectory(prefix="gb-mgbdis-") as tmp:
         tmp = Path(tmp)
-        shutil.copyfile(rom_path, tmp / f"rom{Path(rom_path).suffix}")  # alone: a .sym beside it would steer mgbdis
-        _, symbols, _, _ = _disassemble(tmp / f"rom{Path(rom_path).suffix}", tmp, log)
+        rom = tmp / f"rom{Path(rom_path).suffix}"
+        shutil.copyfile(rom_path, rom)  # alone: a .sym beside the original would steer mgbdis
+        if sym is not None:
+            rom.with_suffix(".sym").write_text(sym, encoding="utf-8")
+        _, symbols, _, _ = _disassemble(rom, tmp, log)
     return {(bank, addr) for bank, addr, _ in symbols}
+
+
+def mapped(data: bytes, hints: dict | None = None, log=lambda *_: None):
+    """(the symbol file for mgbdis, what following the code found, the regions that aren't code): rom/gb_trace."""
+    from . import gb_trace
+
+    found = gb_trace.follow(data, hints)
+    regs = gb_trace.regions(data, found, hints)
+    kinds: dict[str, int] = {}
+    for _flat, n, kind, _why in regs:
+        kinds[kind] = kinds.get(kind, 0) + n
+    log(f"followed the code: {len(found.starts)} functions reached, {sum(found.code.values())} bytes of code; "
+        + ", ".join(f"{n} bytes of {kind}" for kind, n in sorted(kinds.items())) + " shown as data")
+    return gb_trace.sym_text(data, found, regs), found, regs
 
 
 # ------------------------------------------------------------------ the split
 
-def split(rom_path: Path, workdir: Path, log=lambda *_: None) -> tuple[list[gb.GbFunction], dict]:
+def split(rom_path: Path, workdir: Path, log=lambda *_: None, hints: dict | None = None) -> tuple[list[gb.GbFunction], dict]:
     """Functions from mgbdis's split, with the reassembly check reported in the second element.
 
     Raises RomError when the tools are missing or the disassembler/assembler fails. The returned dict is
-    `{"faithful": bool, "labels": n, "functions": n, "rebuilt_bytes": n}`."""
+    `{"faithful": bool, "labels": n, "functions": n, "rebuilt_bytes": n, "regions": [(flat, size, kind, why)],
+    "mapped": bool}`; `hints` are what a person or an agent established (rom/gb_trace.Tracer)."""
     rom_path = Path(rom_path)
     data = rom_path.read_bytes()
     if not gb.is_gb(data):
         raise RomError("this isn't a Game Boy or Game Boy Color ROM")
+    sym, found, regs = mapped(data, hints, log)
+    reached = {(flat // gb.BANK_SIZE, gb.cpu_address(flat)) for flat in found.starts}
+    own = rom_path.with_suffix(".sym")
+    if own.is_file():  # a symbol file next to the ROM: after the map, so its names and blocks win
+        sym += own.read_text(encoding="utf-8", errors="replace")
+        log(f"with the names and blocks in {own.name}")
     with tempfile.TemporaryDirectory(prefix="gb-mgbdis-") as tmp:
-        out, symbols, faithful, rebuilt = _disassemble(rom_path, Path(tmp), log)
+        tmp = Path(tmp)
+        rom = tmp / f"rom{rom_path.suffix}"
+        shutil.copyfile(rom_path, rom)
+        rom.with_suffix(".sym").write_text(sym, encoding="utf-8")
+        out, symbols, faithful, rebuilt = _disassemble(rom, tmp, log)
+        if not faithful:  # the map broke the rebuild (it shouldn't): the plain disassembly, as before
+            log("the disassembly with the map didn't rebuild the ROM byte for byte: splitting without it")
+            regs, reached = [], set()
+            shutil.rmtree(out, ignore_errors=True)
+            rom.with_suffix(".sym").unlink()
+            if own.is_file():
+                shutil.copyfile(own, rom.with_suffix(".sym"))
+            out, symbols, faithful, rebuilt = _disassemble(rom, tmp, log)
 
         # asm blocks, per bank file, so the brief can show the real disassembly
         asm_blocks: dict[str, str] = {}
@@ -239,7 +285,7 @@ def split(rom_path: Path, workdir: Path, log=lambda *_: None) -> tuple[list[gb.G
 
         by_bank: dict[int, list[tuple[int, str]]] = {}
         for bank, addr, name in symbols:
-            if is_code(name):
+            if is_code(name) or ((bank, addr) in reached and "." not in name):  # (a symbol file's name for one)
                 by_bank.setdefault(bank, []).append((addr, name))
         for bank, items in by_bank.items():  # one entry per address: prefer the call-reached name
             best: dict[int, str] = {}
@@ -249,11 +295,20 @@ def split(rom_path: Path, workdir: Path, log=lambda *_: None) -> tuple[list[gb.G
                     best[addr] = name
             by_bank[bank] = sorted(best.items())
 
+        data_at: dict[int, list[int]] = {0: [HEADER_START]}  # bank -> where its data starts (a function ends there)
+        for flat, _n, _kind, _why in regs:
+            data_at.setdefault(flat // gb.BANK_SIZE, []).append(gb.cpu_address(flat))
+        for starts in data_at.values():
+            starts.sort()
         fns: list[gb.GbFunction] = []
         for bank, items in sorted(by_bank.items()):
             items.sort()
             for i, (addr, name) in enumerate(items):
                 nxt = items[i + 1][0] if i + 1 < len(items) else (0x8000 if bank else 0x4000)
+                cut = data_at.get(bank, [])
+                k = bisect.bisect_right(cut, addr)
+                if k < len(cut):
+                    nxt = min(nxt, cut[k])
                 flat = gb.flat_offset(addr, bank)
                 if flat >= len(data):
                     continue
@@ -270,5 +325,5 @@ def split(rom_path: Path, workdir: Path, log=lambda *_: None) -> tuple[list[gb.G
                                          asm=asm_blocks.get(name, ""),
                                          refs=gb.refs_of(code, addr, bank, len(data))))
         meta = {"faithful": faithful, "labels": len(symbols), "functions": len(fns),
-                "rebuilt_bytes": len(rebuilt), "original_bytes": len(data)}
+                "rebuilt_bytes": len(rebuilt), "original_bytes": len(data), "regions": regs, "mapped": bool(regs)}
         return fns, meta

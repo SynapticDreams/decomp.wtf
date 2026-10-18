@@ -8,6 +8,7 @@ in c/, for reference). The disassembly itself is made from the user's copy by bu
 
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import re
@@ -19,6 +20,7 @@ from pathlib import Path
 
 from ..limits import capped
 from ..network import NetworkError
+from . import sm83
 from .gb import BANK_SIZE
 from .gb_mgbdis import labels
 from .n64 import RomError
@@ -40,12 +42,15 @@ def export_gb(net, slug: str, out: Path, log=print) -> dict:
     base = f"baserom{rom.suffix if rom.suffix in ('.gb', '.gbc') else '.gbc'}"
 
     rows = net.store.all("SELECT * FROM functions WHERE project_id=? ORDER BY rom_offset", proj["id"])
+    regions = net.store.all("SELECT * FROM data_regions WHERE project_id=? ORDER BY rom_offset", proj["id"])
+    blocks = _blocks(rows, regions, len(image))
+    named = [f"{(r['rom_offset'] or 0) // BANK_SIZE:02x}:{r['vram'] or 0:04x} {r['name']}" for r in rows if LABEL.match(r["name"])]
     log("disassembling your copy with mgbdis, to see where its labels are")
-    try:
-        at_labels = labels(rom)
+    try:  # every function starts a .code block, so mgbdis decodes an instruction there for its name
+        at_labels = labels(rom, sym="\n".join(blocks + named) + "\n")
     except RomError as e:
         raise NetworkError(f"mgbdis can't disassemble this game: {e}") from None
-    sym, notes, matched, unplaced = [], [], 0, []
+    sym, notes, matched, unplaced = list(blocks), [], 0, []
     for r in rows:
         bank, addr = (r["rom_offset"] or 0) // BANK_SIZE, r["vram"] or 0
         why = json.loads(r["meta"] or "{}").get("asm_code") or ""
@@ -71,7 +76,8 @@ def export_gb(net, slug: str, out: Path, log=print) -> dict:
             said.append(text if len(text) <= NOTE_CHARS else text[:NOTE_CHARS - 3] + "...")
         notes += [f"{r['name']}: {line}" for text in said for line in textwrap.wrap(text, 110)]
     (out / "baserom.sym").write_text(
-        "; names for mgbdis (bank:address Name: where its disassembly has a label), and padding (.data:length in hex)\n"
+        "; for mgbdis: where each function starts (.code:length in hex, so it decodes from there), what isn't code\n"
+        "; (.data:length: tables, padding, bytes the code never reaches), and names (bank:address Name)\n"
         + "\n".join(sym) + "\n", encoding="utf-8")
     (out / "comments.txt").write_text("\n".join(notes) + ("\n" if notes else ""), encoding="utf-8")
     if matched:
@@ -97,6 +103,41 @@ def export_gb(net, slug: str, out: Path, log=print) -> dict:
             "log": (proc.stdout + proc.stderr)[-3000:]}
 
 
+def _blocks(rows, regions, size: int) -> list[str]:
+    """mgbdis blocks for the project's split: a `.code` block at every function start (up to the next start or data
+    region in its bank) and a `.data` block for every data region, so the disassembly has the split's layout."""
+    placed = sorted((r for r in rows if r["rom_offset"] is not None), key=lambda r: r["rom_offset"])
+    rows = [r for k, r in enumerate(placed) if not 0x104 <= r["rom_offset"] < 0x150
+            and not (k and _mid_instruction(r, placed[k - 1]))]
+    bounds = sorted({r["rom_offset"] for r in rows}
+                    | {r["rom_offset"] for r in regions} | {r["rom_offset"] + r["size"] for r in regions})
+    out = []
+    for r in rows:
+        flat = r["rom_offset"]
+        k = bisect.bisect_right(bounds, flat)
+        end = min(bounds[k] if k < len(bounds) else size, (flat // BANK_SIZE + 1) * BANK_SIZE)
+        out.append(f"{flat // BANK_SIZE:02x}:{r['vram'] or 0:04x} .code:{end - flat:x}")
+    for r in regions:
+        flat, n = r["rom_offset"], r["size"]
+        while n > 0:  # a block stays in its bank
+            take = min(n, (flat // BANK_SIZE + 1) * BANK_SIZE - flat)
+            cpu = flat if flat < BANK_SIZE else BANK_SIZE + flat % BANK_SIZE
+            out.append(f"{flat // BANK_SIZE:02x}:{cpu:04x} .data:{take:x}")
+            flat, n = flat + take, n - take
+    return out
+
+
+def _mid_instruction(r, prev) -> bool:
+    """Whether a function starts inside an instruction of the one before it (an older split's guess): a block there
+    would cut that instruction in two, so it gets none (and its name, no label)."""
+    flat = r["rom_offset"]
+    if prev["rom_offset"] + (prev["size"] or 0) <= flat:
+        return False
+    code = bytes(prev["target"] or b"")
+    starts = {a for a, _t, _ln in sm83.disassemble(code, prev["rom_offset"])}
+    return flat not in starts
+
+
 def _docs(out: Path, title: str, base: str, matched: int, total: int) -> None:
     (out / "README.md").write_text(f"""# {title} (disassembly)
 
@@ -116,7 +157,7 @@ mods, translations and ports. {matched} of the {total} functions found so far ar
 
 | Path | What it is |
 | :-- | :-- |
-| `baserom.sym` | Every function's name (`bank:address Name`), and which stretches are padding (`.data:length`). mgbdis reads it; add labels and `.data`/`.text`/`.image` blocks here. |
+| `baserom.sym` | Where every function starts (`.code:length`), what isn't code (`.data:length`: tables, padding, bytes the code never reaches) and every function's name (`bank:address Name`). mgbdis reads it; add labels and `.data`/`.text`/`.image` blocks here. |
 | `comments.txt` | What's known about each routine (`Name: text`), put above it in the disassembly. |
 | `c/` | Functions matched in C: SDCC (GBDK-2020) compiles each to exactly the original code. For reference: the build is the assembly. |
 | `build.py`, `build.json` | The build, and which game it's for. |
