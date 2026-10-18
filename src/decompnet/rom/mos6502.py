@@ -129,9 +129,24 @@ def disassemble(data: bytes, base: int = 0, count: int | None = None, start: int
         emitted += 1
 
 
-def asm_text(code: bytes, base: int, width: int = 4) -> str:
-    """The fork's stored asm form: `ADDR  mnemonic operands` per line."""
-    return "\n".join(f"{addr:0{width}x}  {text}" for addr, text, _ in disassemble(code, base))
+def asm_text(code: bytes, base: int, width: int = 4, data: dict[int, int] | None = None) -> str:
+    """The fork's stored asm form: `ADDR  mnemonic operands` per line. `data` ({address: length}): bytes in it that
+    aren't instructions (a table after a call to a jump engine), shown as `db`."""
+    if not data:
+        return "\n".join(f"{addr:0{width}x}  {text}" for addr, text, _ in disassemble(code, base))
+    out, off = [], 0
+    while off < len(code):
+        addr = base + off
+        if (n := data.get(addr)):
+            chunk = code[off:off + n]
+            for k in range(0, len(chunk), 16):
+                out.append(f"{addr + k:0{width}x}  db " + ", ".join(f"${b:02x}" for b in chunk[k:k + 16]))
+            off += max(1, len(chunk))
+            continue
+        text, ln = decode(code[off:off + 3], addr)
+        out.append(f"{addr:0{width}x}  {text}")
+        off += max(1, ln)
+    return "\n".join(out)
 
 
 # ---------------------------------------------------------------- control flow

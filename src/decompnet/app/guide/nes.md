@@ -20,9 +20,16 @@ them, and score an attempt exactly. Functions compiled with SDCC or GBDK-2020 (h
   `func_<bank>_<address>`.
 - Functions are found from the **three vectors** (NMI, reset and IRQ, the last six bytes of the PRG) by following
   `jsr` and `jmp`, then `jsr` targets in code nothing reached, then tables of three or more addresses that each
-  point at a function (also the address-minus-one form `rts` dispatch uses). **Not found:** code reached only through
-  an indirect `jmp ($xxxx)`, through split high/low address tables, or by pushing an address and returning to it
-  from computed values. Data inside a function's range is not told apart from code.
+  point at a function (also the address-minus-one form `rts` dispatch uses).
+- A **jump engine** (a routine that pulls its return address into a zero-page pointer and jumps through the table
+  after its call, like `asl / tay / pla / sta $04 / pla / sta $05 / ... / jmp ($0006)`) is recognised: the table
+  after each call to it is its handlers, kept as data, and its callers end at the call. So does a routine that reads
+  other bytes after its call. A branch that's always taken (`bcs` right after `bcc`, `sec / bcs`, `lda #0 / beq`)
+  ends the code as a `jmp` does, and a function entered through a `bit` instruction's operand doesn't cut the one
+  around it short.
+- **Not found:** code reached only through an indirect `jmp ($xxxx)` filled at run time, through split high/low
+  address tables, or by pushing an address and returning to it from computed values. Data inside a function's range
+  is not told apart from code.
 - A person can import what an emulator saw while they played (Settings, a Mesen2 or FCEUX code/data log): splitting
   the game again then starts functions where calls entered and where code ran that wasn't reached, and keeps what was
   only read as data out of functions.

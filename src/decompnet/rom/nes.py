@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import bisect
 import hashlib
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -243,39 +244,119 @@ def vectors(prg: bytes, layout: Layout) -> dict[str, int]:
 
 # ---------------------------------------------------------------- function discovery
 
-def _walk(prg: bytes, layout: Layout, start: int, hard: int, starts: set[int]):
+_COMPLEMENT = {"bcc": "bcs", "bcs": "bcc", "beq": "bne", "bne": "beq", "bmi": "bpl", "bpl": "bmi", "bvc": "bvs",
+               "bvs": "bvc"}
+
+
+def _always(prev: str, text: str) -> bool:
+    """Whether a branch is always taken, after the instruction before it: its complement (`bcs x / bcc y`: one of
+    them goes), or one that sets the flag it reads to a constant (`sec / bcs`, `lda #0 / beq`). A table of data can
+    follow it, as it does a `jmp`."""
+    op = text.split(" ", 1)[0]
+    if op not in _COMPLEMENT:
+        return False
+    if prev.split(" ", 1)[0] == _COMPLEMENT[op]:
+        return True
+    if (prev, op) in (("sec", "bcs"), ("clc", "bcc"), ("clv", "bvc")):
+        return True
+    if (m := re.match(r"^ld[axy] #\$([0-9a-f]{2})$", prev)):
+        v = int(m.group(1), 16)
+        return {"beq": v == 0, "bne": v != 0, "bmi": v >= 0x80, "bpl": v < 0x80}.get(op, False)
+    return False
+
+
+def _walk(prg: bytes, layout: Layout, start: int, hard: int, starts: set[int], engines: dict | None = None):
     """Walk the function that begins at PRG offset `start`: yield (offset, text, length) per instruction.
 
     It ends at a return or an unconditional jump once every forward branch seen so far has been passed, so a branch
     over a `jmp`, or a loop's back-edge, does not end it. A `jmp` is part of the function only when something before it
     already branches past it; otherwise nothing after it can be reached from here and it leaves the function (a tail
-    call). It never runs past `hard`, `MAX_FUNCTION`, or the end of its bank."""
+    call). A branch that's always taken (`_always`) ends it as a `jmp` does, and so does a call to a routine that
+    takes its return address to read what follows the call (`engines`, PRG offset -> "engine" | "inline"): the bytes
+    after the call are its, so a branch before that goes past them resumes the walk where it lands, and those bytes
+    come as one (offset, "data", length). It never runs past `hard`, `MAX_FUNCTION`, or the end of its bank."""
     bank = layout.bank_of(start)
     limit = start
     off = start
     end = min(hard, start + MAX_FUNCTION, (bank + 1) * layout.unit, len(prg))
+    ahead: set[int] = set()  # where forward branches seen so far land
+    prev = ""
     while off < end:
         text, ln = mos6502.decode(prg[off:off + 3], layout.cpu(off))
         yield off, text, ln
         nxt = off + max(1, ln)
         kind, target = mos6502.flow(text)
+        if kind == "cjump" and _always(prev, text):
+            kind = "jump"
+        prev = text
         if kind in ("ret", "jump") and nxt > limit:
             return
         if target is not None and kind in ("jump", "cjump"):
             flat = layout.target(target, bank)
             if flat is not None and flat > off and flat not in starts and flat < end:
                 limit = max(limit, flat)
+                ahead.add(flat)
+        if kind == "call" and engines and layout.target(target, bank) in engines:
+            if nxt > limit:
+                return  # (it doesn't come back here: what follows the call is the routine's)
+            resume = min(x for x in ahead if x > off)
+            if resume > nxt:
+                yield nxt, "data", resume - nxt
+            off = resume
+            continue
         off = nxt
 
 
-def _extent(prg: bytes, layout: Layout, start: int, hard: int, starts: set[int]) -> bytes:
+def _extent(prg: bytes, layout: Layout, start: int, hard: int, starts: set[int], engines: dict | None = None) -> bytes:
     """A function's bytes: from its start up to and including the instruction that ends it, never past `hard`.
 
     Exact extents matter for matching: a candidate compiled from C produces the function and nothing else."""
     end = start
-    for off, _text, ln in _walk(prg, layout, start, hard, starts):
+    for off, _text, ln in _walk(prg, layout, start, hard, starts, engines):
         end = off + max(1, ln)
     return prg[start:end]
+
+
+def reads_return(prg: bytes, layout: Layout, start: int) -> str | None:
+    """"engine" for a routine that takes its return address to read a table of handlers that follows its call (SMB's
+    jump engine: `asl / tay / pla / sta $04 / pla / sta $05 / iny / lda ($04),y / ... jmp ($0006)`), "inline" for one
+    that reads other bytes after its call through it, None for any other (a `pla` that restores a register isn't
+    this: the two bytes go to a zero-page pointer, low then high, that it then reads through)."""
+    insns = list(mos6502.disassemble(prg[start:start + 64], layout.cpu(start), count=24))
+    stored, pulled, first = [], False, True
+    for _a, text, _l in insns:
+        kind, _t = mos6502.flow(text)
+        if text == "pla" and first:
+            pulled = True
+            continue
+        if pulled and (m := re.match(r"^sta \$([0-9a-f]{2})$", text)):
+            stored.append(int(m.group(1), 16))
+            pulled = False
+            continue
+        pulled = False
+        if text.startswith(("pha", "php", "jsr")) or kind in ("cjump", "jump", "ret"):
+            first = False
+    if len(stored) < 2 or stored[1] != stored[0] + 1:
+        return None
+    if not any(t == f"lda (${stored[0]:02x}),y" or t.startswith(f"jmp (${stored[0]:04x})") for _a, t, _l in insns):
+        return None
+    return "engine" if any(t.startswith("jmp (") for _a, t, _l in insns) else "inline"
+
+
+def _handlers(prg: bytes, layout: Layout, at: int, known: set[int], limit: int = 64) -> list[int]:
+    """The handlers in the table at PRG offset `at` (after a call to a jump engine): each word up to the first that
+    isn't an instruction in the ROM, or where known code starts (the table ended there)."""
+    out, bank = [], layout.bank_of(at)
+    for k in range(limit):
+        p = at + 2 * k
+        if p + 1 >= len(prg) or layout.bank_of(p + 1) != bank or (k and p in known):
+            break
+        word = prg[p] | prg[p + 1] << 8
+        flat = layout.target(word, bank) if word >= 0x8000 else None
+        if flat is None or mos6502.OPCODES.get(prg[flat]) is None:
+            break
+        out.append(flat)
+    return out
 
 
 def _clean(layout: Layout, start: int, code: bytes) -> int:
@@ -290,12 +371,30 @@ def _clean(layout: Layout, start: int, code: bytes) -> int:
     return len(insns) if mos6502.is_return(insns[-1][1]) else 0
 
 
-def candidates(prg: bytes, layout: Layout, limit: int = 6000, coverage=None) -> dict[int, str]:
+def candidates(prg: bytes, layout: Layout, limit: int = 6000, coverage=None,
+               engines: dict | None = None, tables: dict | None = None) -> dict[int, str]:
     """{PRG offset: how it was found} for every plausible function start: the vectors, then everything the code
     found calls or tail-jumps to (recursive descent), then `jsr` targets from code the descent never reached and
     handler tables, each kept only when what it points at reads as a function. `coverage` (rom/coverage.py, by PRG
     offset): where calls entered while the game ran start functions, and so does code that ran but wasn't reached;
-    nothing starts in what it only read as data."""
+    nothing starts in what it only read as data. A routine that takes its return address to read what follows its
+    call (`reads_return`) ends its callers' straight-line code there; a jump engine's table after each call to it is
+    read, its handlers functions. Found that way, the descent runs again knowing them (`engines` gets them, PRG offset
+    -> "engine" | "inline"; `tables` the tables, PRG offset -> bytes)."""
+    engines = {} if engines is None else engines
+    tables = {} if tables is None else tables
+    for _ in range(4):
+        tables.clear()
+        found = _discover(prg, layout, limit, coverage, engines, tables)
+        more = {p: k for p in found if p not in engines and (k := reads_return(prg, layout, p))}
+        if not more:
+            break
+        engines.update(more)
+    return found
+
+
+def _discover(prg: bytes, layout: Layout, limit: int, coverage, engines: dict, tables: dict) -> dict[int, str]:
+    """One descent (see candidates). `tables` gets the jump engines' tables it read: PRG offset -> bytes."""
     found: dict[int, str] = {}
     for name, p in vectors(prg, layout).items():
         found.setdefault(p, name)
@@ -310,16 +409,27 @@ def candidates(prg: bytes, layout: Layout, limit: int = 6000, coverage=None) -> 
         todo = [start]
         while todo and len(found) < limit:
             s = todo.pop()
-            code = _extent(prg, layout, s, len(prg), set(found))
             bank = layout.bank_of(s)
-            for _a, text, _ln in mos6502.disassemble(code, layout.cpu(s)):
+            steps = list(_walk(prg, layout, s, len(prg), set(found), engines))
+            end = steps[-1][0] + max(1, steps[-1][2]) if steps else s
+            for off, text, ln in steps:
+                if text == "data":
+                    continue
                 kind, target = mos6502.flow(text)
                 if target is None or kind not in ("call", "jump", "cjump"):
                     continue
                 flat = layout.target(target, bank)
+                if flat is not None and kind == "call" and engines.get(flat) == "engine" and off + ln not in tables:
+                    handlers = _handlers(prg, layout, off + ln, set(found))
+                    tables[off + ln] = 2 * len(handlers)
+                    data[off + ln:off + ln + 2 * len(handlers)] = b"\x01" * (2 * len(handlers))
+                    for h in handlers:
+                        if h not in found:
+                            found[h] = "table"
+                            todo.append(h)
                 if flat is None or flat in found:
                     continue
-                if kind == "call" or not (s <= flat < s + len(code)):
+                if kind == "call" or not (s <= flat < end):
                     found[flat] = "call" if kind == "call" else "jump"
                     todo.append(flat)
 
@@ -328,7 +438,7 @@ def candidates(prg: bytes, layout: Layout, limit: int = 6000, coverage=None) -> 
     if coverage is not None:  # code that ran but the descent didn't reach (through a pointer): each run's start
         reached, known = bytearray(len(prg)), set(found)
         for p in known:
-            n = len(_extent(prg, layout, p, len(prg), known))
+            n = len(_extent(prg, layout, p, len(prg), known, engines))
             reached[p:p + n] = b"\x01" * n
         for p in range(len(prg)):
             if coverage.code[p] and (p == 0 or not coverage.code[p - 1]) and not reached[p] and p not in found:
@@ -348,7 +458,7 @@ def candidates(prg: bytes, layout: Layout, limit: int = 6000, coverage=None) -> 
     for flat in sorted(sites):
         if flat in found or len(found) >= limit:
             continue
-        n = _clean(layout, flat, _extent(prg, layout, flat, len(prg), set(found)))
+        n = _clean(layout, flat, _extent(prg, layout, flat, len(prg), set(found), engines))
         if n and (sites[flat] >= 2 or n >= 3):
             found[flat] = "call"
             follow(flat)
@@ -392,10 +502,35 @@ def _take_table(prg, layout, run, found, follow, limit) -> None:
             follow(flat)
 
 
-def refs_of(code: bytes, cpu: int, bank: int, layout: Layout) -> list[tuple[int, int, int]]:
-    """(offset in the function, 10, CPU address) for every call and jump out of `code`, as the other lanes record them."""
+def _inside(prg: bytes, layout: Layout, start: int, at: int, engines: dict) -> bool:
+    """Whether PRG offset `at` is the operand of a `bit` in the function at `start`: code skipped into (`bit $04a0`,
+    entered at its operand, is `ldy #$04` there), so the function goes on past it."""
+    for off, text, ln in _walk(prg, layout, start, at + 3, set(), engines):
+        if off < at < off + ln:
+            return text.startswith("bit ") and at == off + 1
+        if off >= at:
+            return False
+    return False
+
+
+def _instructions(code: bytes, cpu: int, operands: dict | None = None):
+    """(address, text, length) of the instructions in `code`, leaving out `operands` ({address: length})."""
+    off = 0
+    while off < len(code):
+        addr = cpu + off
+        if operands and (n := operands.get(addr)):
+            off += n
+            continue
+        text, ln = mos6502.decode(code[off:off + 3], addr)
+        yield addr, text, ln
+        off += max(1, ln)
+
+
+def refs_of(code: bytes, cpu: int, bank: int, layout: Layout, operands: dict | None = None) -> list[tuple[int, int, int]]:
+    """(offset in the function, 10, CPU address) for every call and jump out of `code`, as the other lanes record
+    them (not in `operands`: bytes after a call that aren't instructions)."""
     out: list[tuple[int, int, int]] = []
-    for a, text, _ln in mos6502.disassemble(code, cpu):
+    for a, text, _ln in _instructions(code, cpu, operands):
         kind, target = mos6502.flow(text)
         if target is None or kind not in ("call", "jump", "cjump"):
             continue
@@ -414,28 +549,42 @@ def functions(data: bytes, log=lambda *_: None, hints: dict | None = None,
     layout = layout_of(h)
     prg = data[h["prg_off"]:h["prg_off"] + h["prg_size"]]
     cov = (hints or {}).get("coverage")
-    found = candidates(prg, layout, coverage=cov)
+    engines: dict[int, str] = {}
+    tables: dict[int, int] = {}
+    found = candidates(prg, layout, coverage=cov, engines=engines, tables=tables)
     if not found:
         raise RomError("no code found in this NES ROM: the reset vector doesn't point into it")
     starts = sorted(found)
     known = set(starts)
     read = cov.runs("read") if cov is not None else []
     read_starts = [a for a, _n in read]
-    if report is not None and read:
-        report["regions"] = [(h["prg_off"] + a, n, "read", "read as data while the game ran (coverage)") for a, n in read]
+    regions = [(h["prg_off"] + a, n, "read", "read as data while the game ran (coverage)") for a, n in read]
+    regions += [(h["prg_off"] + a, n, "table", "a jump engine's table of handlers, after a call to it")
+                for a, n in sorted(tables.items()) if n]
     out: list[gb.GbFunction] = []
     for i, start in enumerate(starts):
-        hard = starts[i + 1] if i + 1 < len(starts) else len(prg)
-        k = bisect.bisect_right(read_starts, start)  # (a function stops where what was only read starts)
-        hard = min(hard, read_starts[k]) if k < len(read_starts) else hard
-        code = _extent(prg, layout, start, hard, known)
-        insns = list(mos6502.disassemble(code, layout.cpu(start)))
+        k = i + 1  # (a start inside one of its instructions, a `bit` skipped into, doesn't end it)
+        while k < len(starts) and _inside(prg, layout, start, starts[k], engines):
+            k += 1
+        hard = starts[k] if k < len(starts) else len(prg)
+        j = bisect.bisect_right(read_starts, start)  # (a function stops where what was only read starts)
+        hard = min(hard, read_starts[j]) if j < len(read_starts) else hard
+        steps = list(_walk(prg, layout, start, hard, known, engines))
+        if not steps:
+            continue
+        code = prg[start:steps[-1][0] + max(1, steps[-1][2])]
+        cpu, bank = layout.cpu(start), layout.bank_of(start)
+        operands = {layout.cpu(off): n for off, text, n in steps if text == "data"}  # (CPU address: length)
+        regions += [(h["prg_off"] + off, n, "table", "what follows a call to a routine that reads it (a jump engine's "
+                     "table, or its operands)") for off, text, n in steps if text == "data"]
+        insns = list(_instructions(code, cpu, operands))
         if not insns:
             continue
-        cpu, bank = layout.cpu(start), layout.bank_of(start)
         out.append(gb.GbFunction(name=function_name(start, layout), vram=cpu, rom=h["prg_off"] + start, bank=bank,
-                                 code=code, n_insns=len(insns), asm=mos6502.asm_text(code, cpu, width=4),
-                                 refs=refs_of(code, cpu, bank, layout)))
+                                 code=code, n_insns=len(insns), asm=mos6502.asm_text(code, cpu, width=4, data=operands),
+                                 refs=refs_of(code, cpu, bank, layout, operands)))
+    if report is not None and regions:
+        report["regions"] = regions
     log(f"found {len(out)} functions in {layout.banks} bank{'s' if layout.banks != 1 else ''} "
         f"({', '.join(f'{n} {layout.cpu(p):04x}' for n, p in vectors(prg, layout).items())})")
     return out
