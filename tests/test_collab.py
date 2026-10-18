@@ -510,3 +510,44 @@ def test_members_learn_which_gist_says_where_the_room_is(built, tmp_path):  # no
     room.configure(findable=False)  # the host stopped saying where the room is
     g.links[gslug].sync()
     assert g.links[gslug].gist == ""
+
+
+def test_the_host_keeps_a_members_reported_best_only_as_its_own_compile_scores_it(built, tmp_path):  # noqa: F811
+    """A best is what every agent starts from: one reported as "score 1" without a compile would never be beaten."""
+    host, slug, room, code, client = _host(built, tmp_path)
+    g, gslug = _guest(tmp_path, "mia", room.link("http://192.168.1.20:6481"), built, client)
+    lk = g.links[gslug]
+    far = "s32 func_800007F4(s32 v) { return 0; }"
+    lk._req("POST", "/collab/best", {"agent": "claude-1", "function": "func_800007F4", "source": far, "score": 1})
+    fn = host._function("func_800007F4", slug)
+    assert fn["best_score"] is not None and fn["best_score"] > 1 and fn["best_source"] == far  # its real score
+    lk._req("POST", "/collab/best", {"agent": "claude-1", "function": "func_800007F4", "source": "s32 x(", "score": 1})
+    assert host._function("func_800007F4", slug)["best_source"] == far  # doesn't compile here: not kept
+    lk._req("POST", "/collab/best", {"agent": "claude-1", "function": "func_800007F4", "source": ABS, "score": 1})
+    assert host._function("func_800007F4", slug)["status"] == "matched"  # this copy's compile says it's exact
+
+
+def test_a_match_the_host_refuses_is_not_saved_by_the_member(built, tmp_path, monkeypatch):  # noqa: F811
+    """Saved here first, the copies parted ways: the host kept handing out a function the member's copy called matched."""
+    host, slug, room, code, client = _host(built, tmp_path)
+    g, gslug = _guest(tmp_path, "ola", room.link("http://192.168.1.20:6481"), built, client)
+    agent, _ = g.local_agent("codex-1")
+    lk = g.links[gslug]
+    real = lk.attempt
+    monkeypatch.setattr(lk, "attempt", lambda agent, function, source: {"matched": False, "score": 7})
+    out = g.compile_and_diff(agent, "func_800007F4", ABS, gslug)
+    assert out.startswith("⚠️ NOT SAVED AS A MATCH") and "scored it 7" in out
+    fn = g._function("func_800007F4", gslug)
+    assert fn["status"] == "open" and fn["best_score"] == 7
+
+    def unreachable(*_a):
+        raise NetworkError("the room's host isn't reachable right now")
+    monkeypatch.setattr(lk, "attempt", unreachable)
+    with pytest.raises(NetworkError, match="isn't reachable"):
+        g.compile_and_diff(agent, "func_800007F4", ABS, gslug)  # an agent is told, and tries again later
+    g._record(fn, agent, 0, ABS, 1, matched=True, via="permuter")  # the permuter's and autopilot's matches ask too
+    assert g._function("func_800007F4", gslug)["status"] == "open"
+    monkeypatch.setattr(lk, "attempt", real)
+    out = g.compile_and_diff(agent, "func_800007F4", ABS, gslug)
+    assert out.startswith("✅ MATCH") and "host confirmed" in out
+    assert g._function("func_800007F4", gslug)["status"] == "matched" == host._function("func_800007F4", slug)["status"]

@@ -95,3 +95,38 @@ def test_a_function_something_else_calls_is_never_joined_onto_another(net):
     with pytest.raises(NetworkError, match="called or jumped to from func_001_4100: it's a function of its own"):
         net.merge_function(alice, "gbgame", "func_001_4010")  # (bank 2's call to 0x4012 is bank 2's code: not it)
 
+
+def test_a_room_member_applies_the_hosts_work_to_the_right_banks_function(net):
+    one, two = _add(net, "func_001_4000", 0x4000, b"\xc9"), _add(net, "func_002_4000", 0x8000, b"\xc9")
+    # an older host: the CPU address alone is shared by two banks, so it's not applied anywhere
+    net.apply_remote_match("gbgame", 0x4000, "void f(void) {}", "host")
+    net.apply_remote_best("gbgame", 0x4000, 50, "void f(void) {}")
+    assert {r["status"] for r in _rows(net).values()} == {"open"} and {r["best_score"] for r in _rows(net).values()} == {None}
+    net.apply_remote_best("gbgame", 0x4000, 40, "void g(void) {}", name="func_002_4000", rom_offset=0x8000, size=1)
+    net.apply_remote_match("gbgame", 0x4000, "void func_001_4000(void) {}", "host", name="func_001_4000",
+                           rom_offset=0x4000, size=1)
+    rows = {r["id"]: r for r in _rows(net).values()}
+    assert rows[one]["status"] == "matched" and rows[two]["status"] == "open" and rows[two]["best_score"] == 40
+    net.apply_remote_best("gbgame", 0x4000, 30, "void h(void) {}", name="func_002_4000", rom_offset=0x8000, size=9)
+    assert net._function("func_002_4000", "gbgame")["best_score"] == 40  # another extent on the host: other bytes
+    net.apply_remote_note("gbgame", 7, 0x4000, "bank 2's", "host", 1.0, name="func_002_4000", rom_offset=0x8000)
+    assert net.store.one("SELECT function_id FROM notes WHERE text=?", "bank 2's")["function_id"] == two
+
+
+def test_a_room_member_follows_the_hosts_names_cuts_and_joins_by_rom_offset(net):
+    _add(net, "func_001_4000", 0x4000, TWO_ROUTINES)
+    _add(net, "func_001_4010", 0x4010, RUNS_ON, status="asm")
+    _add(net, "func_001_4012", 0x4012, REST)
+    _add(net, "func_002_4000", 0x8000, b"\xc9")
+    host = [{"name": "func_001_4000", "vram": 0x4000, "size": 3, "rom_offset": 0x4000},
+            {"name": "LoadTwo", "vram": 0x4003, "size": 3, "rom_offset": 0x4003},
+            {"name": "func_001_4010", "vram": 0x4010, "size": 5, "rom_offset": 0x4010},
+            {"name": "DrawMap", "vram": 0x4000, "size": 1, "rom_offset": 0x8000}]
+    symbols = [{"name": "LoadTwo", "address": 0x4003, "size": 3, "kind": "func"},
+               {"name": "DrawMap", "address": 0x4000, "size": 1, "kind": "func"}]
+    net.apply_remote_layout("gbgame", host, symbols)
+    rows = _rows(net)
+    assert set(rows) == {"func_001_4000", "LoadTwo", "func_001_4010", "DrawMap"}
+    assert rows["LoadTwo"]["rom_offset"] == 0x4003 and rows["func_001_4000"]["size"] == 3
+    assert rows["func_001_4010"]["size"] == 5 and rows["func_001_4010"]["status"] == "open"
+    assert rows["DrawMap"]["rom_offset"] == 0x8000  # bank 2's, by its ROM offset; bank 1's 0x4000 keeps its name

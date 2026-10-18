@@ -1672,16 +1672,22 @@ class RomNetwork(Network):
         if link is None or res["score"] is None:
             return res
         name = self._function(function, project)["name"]
-        if res["matched"]:
-            verdict = link.attempt(agent, name, source)
-            if not verdict.get("matched"):
-                res["text"] += ("\n⚠️ The room's host could not confirm this match on their copy (score "
-                                f"{verdict.get('score')}). Check that both of you use the same compiler settings.")
-            else:
-                res["text"] += "\nShared with the room: the host confirmed the match."
+        if res["matched"]:  # (the host confirmed it before it was saved: _confirm_match)
+            res["text"] += "\nShared with the room: the host confirmed the match."
         elif before is None or res["score"] < before:
             threading.Thread(target=lambda: self._report(link, agent, name, source, res["score"]), daemon=True).start()
         return res
+
+    def _confirm_match(self, fn, agent: Agent, source: str) -> int | None:
+        """A room member's match is saved only once the room's host confirms it on its own copy: saved here first, the
+        two copies parted ways, and the host kept handing out a function this copy called matched (its agents were
+        refused it until the claim ran out)."""
+        proj = self.store.one("SELECT slug FROM projects WHERE id=?", fn["project_id"])
+        link = self.links.get(proj["slug"]) if proj is not None else None
+        if link is None or self.fork_slug(proj["slug"]):
+            return None
+        verdict = link.attempt(agent, fn["name"], source)
+        return None if verdict.get("matched") else int(verdict.get("score") or 1)
 
     @staticmethod
     def _report(link, agent, name, source, score) -> None:
@@ -1691,11 +1697,26 @@ class RomNetwork(Network):
             pass
 
     def apply_reported_best(self, slug: str, name: str, score: int, source: str, agent: Agent) -> None:
-        """Host side: a room member's better attempt, as they report it (their own compile scored it)."""
+        """Host side: a room member's better attempt, kept as this copy scores it. The member's score is only their
+        word, and a best is what every agent starts from: one planted as "score 1" would never be beaten. Compiled
+        only when it claims to beat the best (a member reports improvements, not every try)."""
         fn = self._function(name, slug)
         if fn["status"] != "open" or score <= 0 or (fn["best_score"] is not None and score >= fn["best_score"]):
             return
-        self._record(fn, agent, score, source, self._context(fn["project_id"], fn["unit"])["version"], via="room")
+        proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        ctx = self._context(proj["id"], fn["unit"])
+        result = self._compile(proj, ctx["header"], source)  # (the same source gate as every attempt)
+        if not result.ok:
+            return
+        cand, verdict, _ = self._evaluate(fn, proj, result.obj)
+        if cand is None:
+            return
+        d = scoring.diff(self._target_obj(fn, proj), cand)
+        if verdict is not None:
+            d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
+        fn = self._function(name, slug)
+        if fn["status"] == "open" and (fn["best_score"] is None or d.score < fn["best_score"]):
+            self._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, via="room")
 
     def release(self, agent: Agent, function: str, notes: str, project: str | None = None) -> str:
         if (fork := self.fork_slug(project)):
@@ -1792,13 +1813,36 @@ class RomNetwork(Network):
                        "(SELECT 1 FROM events WHERE created_at=? AND project_id=? AND agent_id=? AND kind=? AND detail=?)",
                        (project_id, aid, kind, detail, created_at, created_at, project_id, aid, kind, detail))
 
-    def apply_remote_match(self, slug: str, vram: int, source: str, agent_name: str) -> None:
+    def _room_function(self, project_id: int, name: str | None = None, vram: int | None = None,
+                       rom_offset: int | None = None, size: int | None = None):
+        """The function here that a room host's row is about: by ROM offset (the same game, so the same bytes), else
+        by name, else by CPU address when only one function has it. On the Game Boy, NES and Master System banks share
+        CPU addresses, and the first function at one may be another bank's. None when it can't be told, or when this
+        copy's function has another size than the host's (a match or best for other bytes)."""
+        rows = []
+        if rom_offset is not None:
+            rows = self.store.all("SELECT * FROM functions WHERE project_id=? AND rom_offset=?", project_id, rom_offset)
+            if len(rows) > 1 and name:
+                rows = [r for r in rows if r["name"] == name]
+        if not rows and name:
+            rows = self.store.all("SELECT * FROM functions WHERE project_id=? AND name=?", project_id, name)
+        if not rows and vram is not None:
+            rows = self.store.all("SELECT * FROM functions WHERE project_id=? AND vram=?", project_id, vram)
+        if len(rows) != 1:
+            return None
+        row = rows[0]
+        if size is not None and row["size"] is not None and int(row["size"]) != int(size):
+            return None
+        return row
+
+    def apply_remote_match(self, slug: str, vram: int, source: str, agent_name: str, name: str | None = None,
+                           rom_offset: int | None = None, size: int | None = None) -> None:
         proj = self._project(slug)
+        row = self._room_function(proj["id"], name, vram, rom_offset, size)
+        if row is None or row["status"] == "matched":
+            return
         aid = self._remote_agent(agent_name)
         with self.store.tx() as db:
-            row = db.execute("SELECT id, status FROM functions WHERE project_id=? AND vram=?", (proj["id"], vram)).fetchone()
-            if row is None or row["status"] == "matched":
-                return
             db.execute("UPDATE functions SET status='matched', matched_source=?, matched_agent_id=?, matched_at=?, "
                        "best_score=0, best_source=? WHERE id=?", (source, aid, time.time(), source, row["id"]))
             db.execute("DELETE FROM claims WHERE function_id=?", (row["id"],))
@@ -1830,17 +1874,22 @@ class RomNetwork(Network):
             db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
                        (proj["id"], fid, aid, text, created_at))
 
-    def apply_remote_best(self, slug: str, vram: int, score: int, source: str) -> None:
+    def apply_remote_best(self, slug: str, vram: int, score: int, source: str, name: str | None = None,
+                          rom_offset: int | None = None, size: int | None = None) -> None:
         proj = self._project(slug)
+        row = self._room_function(proj["id"], name, vram, rom_offset, size)
+        if row is None:
+            return
         with self.store.tx() as db:
-            db.execute("UPDATE functions SET best_score=?, best_source=? WHERE project_id=? AND vram=? AND status='open' "
-                       "AND (best_score IS NULL OR best_score > ?)", (score, source, proj["id"], vram, score))
+            db.execute("UPDATE functions SET best_score=?, best_source=? WHERE id=? AND status='open' "
+                       "AND (best_score IS NULL OR best_score > ?)", (score, source, row["id"], score))
 
-    def apply_remote_note(self, slug: str, host_id: int, vram: int | None, text: str, agent_name: str, created_at: float) -> None:
+    def apply_remote_note(self, slug: str, host_id: int, vram: int | None, text: str, agent_name: str, created_at: float,
+                          name: str | None = None, rom_offset: int | None = None) -> None:
         proj = self._project(slug)
         fid = None
-        if vram is not None:
-            row = self.store.one("SELECT id FROM functions WHERE project_id=? AND vram=?", proj["id"], vram)
+        if vram is not None or name or rom_offset is not None:
+            row = self._room_function(proj["id"], name, vram, rom_offset)
             fid = row["id"] if row else None
         if self.store.one("SELECT 1 FROM notes WHERE project_id=? AND text=? AND function_id IS ?", proj["id"], text, fid):
             return
@@ -1860,8 +1909,58 @@ class RomNetwork(Network):
                                                   time.time(), ""))
 
     def apply_remote_layout(self, slug: str, functions: list[dict], symbols: list[dict]) -> None:
-        """Mirror the room's splits and names. The host already regression-tested them on the same ROM."""
+        """Mirror the room's splits, joins and names. The host already regression-tested them on the same ROM. A host
+        that sends ROM offsets is followed by them (banks share CPU addresses on the Game Boy, NES and Master System);
+        one that doesn't, by CPU address where only one function has it."""
         proj = self._project(slug)
+        pid = proj["id"]
+        by_offset = any(f.get("rom_offset") is not None for f in functions)
+        if (self.cfg(proj).get("arch") or "").lower() in BANKED_ARCHS:
+            self._mirror_banked_layout(proj, functions)
+        else:
+            self._mirror_split_layout(proj, functions)
+        self._xrefs.pop(pid, None)
+        if by_offset:  # names, function by function
+            for f in functions:
+                if f.get("rom_offset") is None:
+                    continue
+                rows = self.store.all("SELECT id, name, vram, size FROM functions WHERE project_id=? AND rom_offset=?",
+                                      pid, f["rom_offset"])
+                if len(rows) == 1 and rows[0]["name"] != f["name"] and self._free_name(pid, f["name"]):
+                    r = rows[0]
+                    self._mirror_rename(pid, r["name"], f["name"], r["vram"], r["size"], "func", r["id"])
+        syms = self.symbols(pid)
+        for sym in symbols:
+            if by_offset and sym["kind"] == "func":
+                continue  # renamed above, by the function's own ROM offset
+            current, off = syms.name_at(sym["address"])
+            if off == 0 and current == sym["name"]:
+                continue
+            old = current if off == 0 else f"D_{sym['address']:08X}"
+            at = self.store.all("SELECT id FROM functions WHERE project_id=? AND vram=?", pid, sym["address"])
+            self._mirror_rename(pid, old, sym["name"], sym["address"], sym["size"], sym["kind"],
+                                at[0]["id"] if len(at) == 1 else None)
+            syms = self.symbols(pid)
+
+    def _mirror_rename(self, pid: int, old: str, new: str, address: int, size, kind: str, function_id: int | None) -> None:
+        """A name the host gave: in the symbol table, on the function it names (when one is known), and in every
+        matched and best source that says the old one."""
+        word = re.compile(rf"\b{re.escape(old)}\b")
+        with self.store.tx() as db:
+            db.execute("DELETE FROM symbols WHERE project_id=? AND (name=? OR name=?)", (pid, old, new))
+            db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
+                       (pid, new, address, size, kind))
+            if function_id is not None:
+                db.execute("UPDATE functions SET name=? WHERE id=?", (new, function_id))
+            for r in db.execute("SELECT id, matched_source, best_source FROM functions WHERE project_id=? AND "
+                                "(matched_source IS NOT NULL OR best_source IS NOT NULL)", (pid,)).fetchall():
+                db.execute("UPDATE functions SET matched_source=?, best_source=? WHERE id=?",
+                           (word.sub(new, r["matched_source"]) if r["matched_source"] else None,
+                            word.sub(new, r["best_source"]) if r["best_source"] else None, r["id"]))
+        self._syms.pop(pid, None)
+
+    def _mirror_split_layout(self, proj, functions: list[dict]) -> None:
+        """The host's splits on a MIPS game: a function of the host's that starts inside one of ours cuts it there."""
         pid = proj["id"]
         local = {r["vram"]: r for r in self.store.all("SELECT * FROM functions WHERE project_id=?", pid)}
         for f in sorted(functions, key=lambda f: f["vram"]):
@@ -1888,26 +1987,6 @@ class RomNetwork(Network):
                 db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
                            (pid, f["name"], f["vram"], tail.size, "func"))
             local = {r["vram"]: r for r in self.store.all("SELECT * FROM functions WHERE project_id=?", pid)}
-        self._xrefs.pop(pid, None)
-        syms = self.symbols(pid)
-        for sym in symbols:
-            current, off = syms.name_at(sym["address"])
-            if off == 0 and current == sym["name"]:
-                continue
-            old = current if off == 0 else f"D_{sym['address']:08X}"
-            word = re.compile(rf"\b{re.escape(old)}\b")
-            with self.store.tx() as db:
-                db.execute("DELETE FROM symbols WHERE project_id=? AND (name=? OR name=?)", (pid, old, sym["name"]))
-                db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
-                           (pid, sym["name"], sym["address"], sym["size"], sym["kind"]))
-                db.execute("UPDATE functions SET name=? WHERE project_id=? AND vram=?", (sym["name"], pid, sym["address"]))
-                for r in db.execute("SELECT id, matched_source, best_source FROM functions WHERE project_id=? AND "
-                                    "(matched_source IS NOT NULL OR best_source IS NOT NULL)", (pid,)).fetchall():
-                    db.execute("UPDATE functions SET matched_source=?, best_source=? WHERE id=?",
-                               (word.sub(sym["name"], r["matched_source"]) if r["matched_source"] else None,
-                                word.sub(sym["name"], r["best_source"]) if r["best_source"] else None, r["id"]))
-            self._syms.pop(pid, None)
-            syms = self.symbols(pid)
 
     # ------------------------------------------------------------------ export
 
