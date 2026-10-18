@@ -68,6 +68,16 @@ class Agent:
 
 # A token the user disconnected keeps its hash behind this prefix: it can't sign in, and its agent is told why.
 DISCONNECTED = "disconnected:"
+# Compilers that read C89: a declaration after a statement in a block is a syntax error to them (old GCCs, IDO,
+# agbcc). SDCC (Game Boy, Master System, NES) reads C99 and later, so the hint is never given there.
+C89_TOOLCHAINS = ("ido-", "gcc-2", "ee-gcc-2", "agbcc")
+C89_HINT = ("\nThis project's compiler reads C89: declarations go at the top of a block, before any statement. A "
+            "declaration after a statement (or in a for's parentheses) is a syntax error here.")
+
+
+def _same_c(a: str, b: str) -> bool:
+    """The same C, spacing aside."""
+    return " ".join(a.split()) == " ".join(b.split())
 
 
 def _hash_token(token: str) -> str:
@@ -469,11 +479,24 @@ class Network:
                     db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
 
         ctx = self._context(proj["id"], fn["unit"])
+        last = self.store.one("SELECT source, compiled, context_version FROM attempts WHERE function_id=? AND agent_id=? "
+                              "ORDER BY id DESC LIMIT 1", fn["id"], agent.id)
+        if last is not None and not last["compiled"] and last["context_version"] == ctx["version"] \
+                and _same_c(last["source"] or "", source):
+            # the compiler would say what it said last time: not worth a compile, nor a turn's worth of its output
+            return {"text": "❌ NOT COMPILED: this is the same C as your last try (spacing aside), which didn't compile "
+                            "with the same context.h. Fix what that error said, or try another way.", "score": None,
+                    "matched": False}
         result = self._compile(proj, ctx["header"], source)
 
         if not result.ok:
             self._record(fn, agent, None, source, ctx["version"])
-            return {"text": f"❌ COMPILE ERROR (context v{ctx['version']})\n{result.log.strip()}", "score": None, "matched": False}
+            log = result.log.strip()
+            toolchain = str((json.loads(proj["config"] or "{}").get("compiler") or {}).get("toolchain") or "")
+            if toolchain.startswith(C89_TOOLCHAINS) and re.search(r"(?i)\b(parse|syntax) error", log):
+                log += C89_HINT
+            return {"text": f"❌ COMPILE ERROR (context v{ctx['version']})\n{log}{self.stall_note(fn['id'], agent.id)}",
+                    "score": None, "matched": False}
 
         cand, verdict, problems = self._evaluate(fn, proj, result.obj)
         if cand is None:

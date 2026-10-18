@@ -264,3 +264,23 @@ def test_opencode_log_level_is_spelled_the_way_that_opencode_accepts(tmp_path, m
     (tmp_path / "oc-work").mkdir()
     cmd, _, _ = m._command(s, "tok", tmp_path / "oc-work")
     assert cmd[cmd.index("--log-level") + 1] == "error"
+
+
+def test_stopping_a_helper_gives_its_function_back_at_once(tmp_path):
+    """An API helper waiting on its model kept its claim until the reply came, and showed as a connected agent."""
+    from decompnet.app.engine import RomNetwork
+
+    net = RomNetwork(tmp_path / "d.db", tmp_path)
+    with net.store.tx() as db:
+        db.execute("INSERT INTO projects(id, slug, name, root, config) VALUES(1,'game','game',?,?)",
+                   (str(tmp_path), json.dumps({"kind": "rom"})))
+        db.execute("INSERT INTO functions(project_id, name, size, n_insns) VALUES(1,'f',4,1)")
+    m = agents.Manager(net, tmp_path, "http://127.0.0.1:1/mcp")
+    agent, _ = net.local_agent("api-1")
+    net.claim_row(agent, "game", "f")
+    s = agents.Session("api-1", "api", "API #1", "game", "api-1", {})
+    s.agent_id, s.state = agent.id, "working"
+    m.sessions[s.id] = s
+    m.stop(s.id)
+    assert net.store.one("SELECT COUNT(*) AS n FROM claims")["n"] == 0
+    assert net._function("f", "game")["abandons"] == 0  # not the function's fault

@@ -113,9 +113,19 @@ def toolchain_root() -> Path | None:
 
 
 def _run(argv: list[str], cwd: Path, timeout: float = 120.0) -> tuple[int, str]:
+    """One SDCC tool on agent-written source: under the same caps as the other lanes' compilers (address space,
+    output size, CPU time up to the timeout) and the same limit on compiles at once, so helpers and the permuter
+    together can't start any number of them."""
+    from .. import compiler
+
+    argv = [str(a) for a in argv]
+    if shutil.which("prlimit"):
+        caps = [c for c in compiler.LIMITS if not c.startswith("--cpu=")] + [f"--cpu={int(timeout) + 5}"]
+        argv = ["prlimit", *caps, "--", *argv]
     try:
-        res = subprocess.run([str(a) for a in argv], cwd=str(cwd), capture_output=True, text=True,
-                             timeout=timeout, encoding="utf-8", errors="replace")
+        with compiler._SLOTS:
+            res = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True,
+                                 timeout=timeout, encoding="utf-8", errors="replace")
     except subprocess.TimeoutExpired:
         return 124, f"timed out after {timeout:.0f}s: {' '.join(str(a) for a in argv)}"
     return res.returncode, (res.stdout or "") + (res.stderr or "")
