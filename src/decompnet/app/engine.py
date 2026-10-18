@@ -28,7 +28,7 @@ from .. import scoring, seeds, similarity, toolchains
 from ..elfobj import FunctionObj
 from ..network import DISCONNECTED, RELEASE_COOLDOWN, Agent, Network, NetworkError, _hash_token
 from ..rom import detect, match, split
-from ..rom.symbols import IDENT, Symbol, SymbolTable
+from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
 
 DEFAULT_TOOLCHAIN = {"KMC": "gcc-2.7.2-kmc", "IDO": "ido-7.1", "PSYQ": "gcc-2.7.2-psx", "EEGCC": "ee-gcc-2.96",
                      "AGBCC": "agbcc"}
@@ -86,6 +86,21 @@ BANKED_ARCHS = ("sm83", "z80", "mos6502")
 # What a banked platform's import needs, by CPU: the C toolchain, and for the Game Boy the two tools that split a ROM.
 # All free and pinned; the import installs whichever is missing.
 BANKED_TOOLS = {"sm83": ("gbdk-2020", "rgbds", "mgbdis"), "z80": ("gbdk-2020",), "mos6502": ("gbdk-2020",)}
+def _banked_segments(platform: str, info: dict, report: dict) -> list[dict]:
+    """One segment per bank, at the CPU address its code runs at: as the Master System lane found the game maps it
+    (`report["bank_base"]`), else where the bank is shown at power-on (see rom/gb.py, rom/sms.py and rom/nes.py)."""
+    from ..rom import gb, nes, sms
+
+    if platform == "nes":
+        return nes.segments(info)
+    sega = platform in ("sms", "gg")
+    lane = sms if sega else gb
+    bases = report.get("bank_base") or {}
+    return [{"name": f"bank{b:03d}", "rom_start": b * lane.BANK_SIZE, "rom_end": min((b + 1) * lane.BANK_SIZE, info["size"]),
+             "vram": int(bases.get(b, bases.get(str(b), sms.segment_vram(b, info["size"]) if sega else (0 if b == 0 else 0x4000))))}
+            for b in range(max(1, -(-info["size"] // lane.BANK_SIZE)))]
+
+
 _AUTO_TOKEN = re.compile(r"\b(?:func|D|B|jtbl|RO|STR|FLT|DBL)_[0-9A-F]{8}\b")
 _ADDRESS = re.compile(r"^(?:0x)?([0-9A-Fa-f]{8})$")
 
@@ -455,6 +470,9 @@ class RomNetwork(Network):
         workdir = self.workspace / slug
         workdir.mkdir(parents=True)
         (workdir / picked.filename).write_bytes(rom)
+        if isinstance(data, Path) and picked.platform in ("sms", "gg") and data.with_suffix(".sym").is_file():
+            # a WLA-DX symbol file next to the ROM names and seeds functions (rom/sms_trace.py): it comes along
+            shutil.copyfile(data.with_suffix(".sym"), (workdir / picked.filename).with_suffix(".sym"))
         size = f"{info['size'] // (1024 * 1024)} MiB" if info["size"] >= 1 << 20 else f"{info['size'] // 1024} KiB"
         log(f"{detect.PLATFORMS[picked.platform]}: {info['title']} ({info['game_code'] or 'no game code'}, "
             f"{info['region']}), {size}, looks built with {info['compiler_guess']}")
@@ -688,12 +706,7 @@ class RomNetwork(Network):
                     "provenance": "explicit" if matchable else "unavailable",
                     "note": ("SDCC/GBDK-2020 through decompnet.rom.gb_build (absolute symbol mode)" if matchable else
                              f"the {label} C toolchain (GBDK-2020) is not installed: install it from Setup, or import the game again")}
-        # One segment per bank, at the CPU address the bank is shown at (see rom/gb.py, rom/sms.py and rom/nes.py).
-        segments = nes.segments(info) if famicom else [
-            {"name": f"bank{b:03d}", "rom_start": b * lane.BANK_SIZE,
-             "rom_end": min((b + 1) * lane.BANK_SIZE, info["size"]),
-             "vram": sms.segment_vram(b, info["size"]) if sega else (0 if b == 0 else 0x4000)}
-            for b in range(max(1, -(-info["size"] // lane.BANK_SIZE)))]
+        segments = _banked_segments(picked.platform, info, report)
         cfg = {
             "kind": "rom", "platform": info["platform"], "big_endian": False, "gp": 0, "arch": arch,
             "splitter": report.get("splitter", "built-in"),  # what found the functions: "built-in" is approximate for the Game Boy
@@ -739,6 +752,89 @@ class RomNetwork(Network):
             log(f"ready: {len(fns)} functions disassembled. The C toolchain (GBDK-2020) is not installed, "
                 f"so they are shown as assembly until it is")
         return slug
+
+    def resplit_banked(self, slug: str, apply: bool = False, log=print) -> dict:
+        """Split a Game Boy, Master System or NES game again with this version's splitter, keeping the work done on
+        it: a function whose start, address and bytes don't change keeps its row (name, status, attempts, notes);
+        a matched function is never removed (new functions that would overlap it are left out); notes on a function
+        that goes move to the new function that covers its start (else to the project). Without `apply`, only says
+        what would change."""
+        from ..rom import gb, nes, sms
+
+        proj = self._project(slug)
+        cfg = self.cfg(proj)
+        arch = (cfg.get("arch") or "").lower()
+        if arch not in BANKED_ARCHS or self.fork_slug(slug):
+            raise NetworkError("splitting again is for Game Boy, Master System and NES projects")
+        if slug in self.links:
+            raise NetworkError("a room member's copy follows its host's split: the host splits again")
+        root = Path(proj["root"])
+        rom_path = root / cfg["rom"]["file"]
+        if not rom_path.is_file():
+            raise NetworkError(f"the project's copy of the game ({cfg['rom']['file']}) isn't in its folder any more")
+        lane = sms if arch == "z80" else nes if arch == "mos6502" else gb
+        report: dict = {}
+        fns = lane.split(rom_path, root, log=log, report=report)
+        old = self.store.all("SELECT * FROM functions WHERE project_id=?", proj["id"])
+        by_off = {r["rom_offset"]: r for r in old if r["rom_offset"] is not None}
+        kept, fresh = set(), []
+        for f in fns:
+            r = by_off.get(f.rom)
+            if r is not None and r["vram"] == f.vram and bytes(r["target"] or b"") == f.code:
+                kept.add(r["id"])
+            else:
+                fresh.append(f)
+        held = [(r["rom_offset"], r["rom_offset"] + (r["size"] or 0)) for r in old
+                if r["status"] == "matched" and r["id"] not in kept and r["rom_offset"] is not None]
+        fresh = [f for f in fresh if not any(lo < f.rom + len(f.code) and f.rom < hi for lo, hi in held)]
+        gone = [r for r in old if r["id"] not in kept and r["status"] != "matched"]
+        noted = {r["id"] for r in gone if self.store.one("SELECT 1 FROM notes WHERE function_id=?", r["id"])}
+        out = {"before": len(old), "after": len(kept) + len(held) + len(fresh), "kept": len(kept),
+               "matched_kept": len([r for r in old if r["status"] == "matched"]), "added": len(fresh),
+               "removed": len(gone), "notes_moved": len(noted), "bank_base": report.get("bank_base", {})}
+        if not apply:
+            return out
+        spans = [(f.rom, f.rom + len(f.code), f) for f in fresh] + [
+            (r["rom_offset"], r["rom_offset"] + (r["size"] or 0), r) for r in old if r["id"] in kept or r["status"] == "matched"]
+        names = {r["name"] for r in old if r["id"] in kept or r["status"] == "matched"}
+        renamed = {r["rom_offset"]: r["name"] for r in gone if not AUTO_NAME.match(r["name"])}
+        with self.store.tx() as db:
+            for r in gone:
+                db.execute("DELETE FROM claims WHERE function_id=?", (r["id"],))
+                db.execute("DELETE FROM twin_misses WHERE function_id=?", (r["id"],))
+                db.execute("DELETE FROM functions WHERE id=?", (r["id"],))
+                db.execute("DELETE FROM symbols WHERE project_id=? AND name=?", (proj["id"], r["name"]))
+            new_ids = {}
+            for f in fresh:
+                name = renamed.get(f.rom, f.name)  # a name someone gave the function that started here stays
+                if name in names:
+                    name = f"{f.name}_{f.rom:06x}" if f.name in names else f.name
+                names.add(name)
+                new_ids[f.rom] = db.execute(
+                    "INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,status) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (proj["id"], name, f.size, f.n_insns, f.code, json.dumps([list(x) for x in f.refs or []]), f.asm,
+                     None, f"bank{f.bank:03d}", f.vram, f.rom, "open")).lastrowid
+                db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind,preview) VALUES(?,?,?,?,?,?)",
+                           (proj["id"], name, f.vram, f.size, "func", None))
+            for r in gone:  # its notes go to whatever covers its start now
+                if r["id"] not in noted:
+                    continue
+                owner = next((x for lo, hi, x in spans if lo <= (r["rom_offset"] or -1) < hi), None)
+                fid = (new_ids.get(owner.rom) if hasattr(owner, "rom") else owner["id"]) if owner is not None else None
+                db.execute("UPDATE notes SET function_id=? WHERE function_id=?", (fid, r["id"]))
+            cfg["segments"] = _banked_segments(cfg.get("platform", ""), cfg["rom"], report)
+            cfg["splitter"] = report.get("splitter", cfg.get("splitter"))
+            db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
+            self._event(db, proj["id"], None, "split", f"split again: {out['kept']} functions unchanged, {out['added']} "
+                        f"new, {out['removed']} gone ({out['matched_kept']} matched kept)")
+        for cache in (self._xrefs, self._ops, self._syms, self._roms):
+            cache.pop(proj["id"], None)
+        with self.twins._lock:
+            self.twins._prints.pop(proj["id"], None)
+        self.twins.set_aside_asm(self._project(slug))  # the new functions, through the set-aside rules
+        log(f"split again: {out['after']} functions ({out['kept']} unchanged, {out['added']} new, {out['removed']} gone)")
+        return out
 
     def _compile(self, proj, header: str, source: str):
         """Within a batch (attempt_many) the same source compiles once: the build holds every function it defines,
@@ -1262,7 +1358,7 @@ class RomNetwork(Network):
         if addr not in {a for a, _t, _n in lane.insns(code, cpu)}:
             raise NetworkError(f"0x{addr:04x} is in the middle of an instruction: cut where one starts (get_function "
                                "shows each instruction's address)")
-        new_name = (new_name or lane.name((fn["rom_offset"] or 0) + off)).strip()
+        new_name = (new_name or lane.name((fn["rom_offset"] or 0) + off, cpu + off)).strip()
         if not self._free_name(proj["id"], new_name):
             raise NetworkError(f"`{new_name}` is not a free C identifier")
         with self.store.tx() as db:
@@ -1320,10 +1416,11 @@ class RomNetwork(Network):
             if held is not None:
                 raise NetworkError(f"{r['name']} is being worked on by {held['name']}")
         callers = []
-        for r in self.store.all("SELECT name, rom_offset, relocs FROM functions WHERE project_id=? AND id NOT IN (?, ?) "
-                                "AND relocs LIKE ?", proj["id"], first["id"], second["id"], f"%{second['vram']}]%"):
+        for r in self.store.all("SELECT name, rom_offset, vram, relocs FROM functions WHERE project_id=? AND id NOT IN "
+                                "(?, ?) AND relocs LIKE ?", proj["id"], first["id"], second["id"], f"%{second['vram']}]%"):
             for ref in json.loads(r["relocs"] or "[]"):
-                if ref[2] == second["vram"] and lane.flat_of(ref[2], (r["rom_offset"] or 0) + ref[0]) == second["rom_offset"]:
+                if ref[2] == second["vram"] and lane.flat_of(ref[2], (r["rom_offset"] or 0) + ref[0],
+                                                             (r["vram"] or 0) + ref[0]) == second["rom_offset"]:
                     callers.append(r["name"])
                     break
         if callers:
@@ -1373,7 +1470,7 @@ class RomNetwork(Network):
             cut = off - owner["rom_offset"]
             if owner["vram"] + cut not in {a for a, _t, _n in lane.insns(bytes(owner["target"]), owner["vram"] or 0)}:
                 continue
-            name = f["name"] if self._free_name(pid, f["name"]) else lane.name(off)
+            name = f["name"] if self._free_name(pid, f["name"]) else lane.name(off, (owner["vram"] or 0) + cut)
             with self.store.tx() as db:
                 self._banked_cut(db, proj, lane, owner, cut, name)
             here = local()

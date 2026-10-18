@@ -33,21 +33,23 @@ class Lane:
             return sms.bank_of(flat)
         return self.layout.bank_of(flat - self.prg_off)
 
-    def name(self, flat: int) -> str:
-        """The automatic name the import gives a function starting at `flat`."""
+    def name(self, flat: int, cpu: int | None = None) -> str:
+        """The automatic name the import gives a function starting at `flat` (running at `cpu`, where the Master
+        System lane found its bank mapped)."""
         if self.arch == "sm83":
             return gb.function_name(flat)
         if self.arch == "z80":
-            return sms.function_name(flat, self.size)
+            return sms.function_name(flat, self.size, cpu)
         return nes.function_name(flat - self.prg_off, self.layout)
 
-    def flat_of(self, cpu: int, from_flat: int) -> int | None:
-        """The ROM offset a call or jump to `cpu` reaches from code at `from_flat` (None: RAM, registers, unmapped)."""
+    def flat_of(self, cpu: int, from_flat: int, from_cpu: int | None = None) -> int | None:
+        """The ROM offset a call or jump to `cpu` reaches from code at `from_flat` (running at `from_cpu`, when
+        known): None for RAM, registers, unmapped."""
         bank = self.bank(from_flat)
         if self.arch == "sm83":
             return gb.flat_offset(cpu, bank) if cpu < 0x8000 else None
         if self.arch == "z80":
-            return sms.target_flat(cpu, bank, self.size)
+            return sms.target_flat(cpu, bank, self.size, from_cpu)
         p = self.layout.target(cpu, bank)
         return None if p is None else p + self.prg_off
 

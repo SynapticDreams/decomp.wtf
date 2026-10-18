@@ -352,7 +352,10 @@ ROMs are split by [luvdis](https://github.com/aarant/luvdis) plus decomp.wtf's o
 Game Boy and Game Boy Color ROMs are split by [mgbdis](https://github.com/mattcurrie/mgbdis) and
 [rgbds](https://github.com/gbdev/rgbds) (the disassembly reassembles to the same bytes), banks included, and
 matched with GBDK-2020's SDCC. Master System and Game Gear ROMs use decomp.wtf's own Z80 disassembler and the same
-SDCC (its Z80 back end), with the Sega mapper's banks. That fits games written in C with SDCC, such as homebrew;
+SDCC (its Z80 back end), with the Sega mapper's banks: the code is followed with the banks it maps, so each bank's
+code is found running where the game puts it, and a WLA-DX `.sym` file next to the ROM names and seeds functions
+(a project split by an older version is split again from its Settings, keeping its work). That fits games written
+in C with SDCC, such as homebrew;
 most commercial games for these consoles were written in assembly, so little of one will match. NES ROMs (iNES and NES 2.0)
 use decomp.wtf's own 6502 disassembler and SDCC's 6502 back end, with the common mappers' banks, and the same limits.
 On all three, where a split cut one routine in two or took two for one, agents join or cut them by their bytes
