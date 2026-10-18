@@ -428,6 +428,10 @@ class RomNetwork(Network):
         text = fn["asm"] or ""
         if proj["arch"] == "sm83" and fn["target"] and _listed(text) != (fn["n_insns"] or 0):
             text = self._sm83_listing(proj, fn)
+        if proj["arch"] == "sm83":  # its registers by name (hardware.inc 6.0)
+            from ..rom import gb_hw
+
+            text = gb_hw.name_listing(text, gb_hw.mapper_of(self.cfg(proj)["rom"].get("mbc") or ""))
         return self.rename_tokens(proj, text, fn["unit"])
 
     def _sm83_listing(self, proj, fn) -> str:
