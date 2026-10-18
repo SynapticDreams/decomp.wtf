@@ -3070,7 +3070,7 @@ class RomNetwork(Network):
 
     # ------------------------------------------------------------------ export
 
-    def export_rom(self, slug: str, log=print) -> dict:
+    def export_rom(self, slug: str, log=print, translation_units: list[dict] | None = None) -> dict:
         """Write a rebuildable source tree (the base for ports and mods) and prove it rebuilds the game."""
         if self.fork_slug(slug):  # a fork's work is already in its source tree, committed
             return {"path": self._project(slug)["root"], "identical": None}
@@ -3084,9 +3084,12 @@ class RomNetwork(Network):
         if self.cfg(proj).get("mapping"):
             raise NetworkError("mapping v1 verifies individual functions; complete-disc export is not supported yet")
         platform = self.cfg(proj).get("platform")
+        if translation_units is not None and platform != "psx":
+            raise NetworkError("translation-unit export groups currently support PS1 projects")
         export = export_gba if platform == "gba" else export_gb if platform in ("gb", "gbc") else \
             export_sms if platform in ("sms", "gg") else export_nes if platform == "nes" else export_rom
-        res = export(self, slug, Path(proj["root"]) / "source", log=log)
+        kwargs = {"translation_units": translation_units} if translation_units is not None else {}
+        res = export(self, slug, Path(proj["root"]) / "source", log=log, **kwargs)
         with self.store.tx() as db:  # shown on the project page: what's in the tree and whether it rebuilds
             cfg = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
             cfg["export"] = {"t": time.time(), "path": str(res["path"]), "identical": res.get("identical"),
