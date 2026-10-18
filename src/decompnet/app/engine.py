@@ -86,6 +86,14 @@ BANKED_ARCHS = ("sm83", "z80", "mos6502")
 # What a banked platform's import needs, by CPU: the C toolchain, and for the Game Boy the two tools that split a ROM.
 # All free and pinned; the import installs whichever is missing.
 BANKED_TOOLS = {"sm83": ("gbdk-2020", "rgbds", "mgbdis"), "z80": ("gbdk-2020",), "mos6502": ("gbdk-2020",)}
+def _set_aside(meta: str | None) -> dict:
+    """Why a function is set aside, for the page: a rule's reason, or an agent's for a person (`review`)."""
+    m = json.loads(meta or "{}")
+    if m.get("review"):
+        return {"why": m["review"], "review": True, "review_by": m.get("review_by")}
+    return {"why": m.get("asm_code")}
+
+
 def _banked_segments(platform: str, info: dict, report: dict) -> list[dict]:
     """One segment per bank, at the CPU address its code runs at: as the Master System lane found the game maps it
     (`report["bank_base"]`), else where the bank is shown at power-on (see rom/gb.py, rom/sms.py and rom/nes.py)."""
@@ -1326,6 +1334,8 @@ class RomNetwork(Network):
         them (twins.PIECES, as the pass that runs when agents start would), else open."""
         from .twins import PIECES
 
+        if meta.get("for_agents"):  # a person gave it back to agents: the rules don't take it again
+            return "open", json.dumps(meta)
         reason, longest = PIECES[arch]
         why = reason(code, cpu, capped=len(code) >= longest)
         meta = {k: v for k, v in meta.items() if k != "asm_code"}
@@ -1891,6 +1901,56 @@ class RomNetwork(Network):
             link.call("/collab/release", agent, function=self._function(function, project)["name"], notes=notes)
         return super().release(agent, function, notes, project)
 
+    REVIEW_PER_HOUR = 3  # an agent's flags for a person in an hour: past that, it releases with notes like anyone
+
+    def flag_for_review(self, agent: Agent, project: str | None, function: str, reason: str) -> str:
+        """An agent sets a function aside for a person, with why (the split took data for code, two routines for
+        one, code no C writes that the rules don't catch): out of every agent's way, on the Functions page's
+        "Needs review" until a person gives it back. A sentence of reason is required, and a few an hour at most,
+        so it isn't a way round a hard function: that's release_function."""
+        if self._link(project) is not None:
+            raise NetworkError("in a room, leave a note on it (add_note) and release it: the room's host decides")
+        fn = self._function(function, project)
+        if fn["status"] != "open":
+            raise NetworkError(f"{fn['name']} isn't open ({fn['status']}): nothing to set aside")
+        reason = " ".join(str(reason or "").split())
+        if len(reason) < 20:
+            raise NetworkError("say what a person should look at, in a sentence: why no C writes it, or what's wrong "
+                               "with how it was found")
+        recent = self.store.one("SELECT COUNT(*) AS n FROM events WHERE agent_id=? AND kind='review' AND created_at>?",
+                                agent.id, time.time() - 3600)["n"]
+        if recent >= self.REVIEW_PER_HOUR:
+            raise NetworkError(f"you set {recent} functions aside for review in the last hour: release this one with "
+                               "notes instead (release_function)")
+        meta = {k: v for k, v in json.loads(fn["meta"] or "{}").items() if k != "for_agents"}
+        meta |= {"review": reason[:1000], "review_by": agent.name, "review_at": time.time()}
+        with self.store.tx() as db:
+            if not db.execute("UPDATE functions SET status='asm', meta=? WHERE id=? AND status='open'",
+                              (json.dumps(meta), fn["id"])).rowcount:
+                raise NetworkError(f"{fn['name']} changed meanwhile: look at it again")
+            db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))
+            db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
+                       (fn["project_id"], fn["id"], agent.id, f"set aside for review: {reason}", time.time()))
+            self._event(db, fn["project_id"], agent.id, "review", fn["name"])
+        return (f"✅ {fn['name']} is set aside for a person to look at, with your reason. Claim the next one "
+                "(claim_function).")
+
+    def give_to_agents(self, project: str | None, function: str) -> dict:
+        """A person gives a set-aside function back to agents: a set-aside rule was wrong about it, or a review found
+        it worth doing. It stays theirs: the set-aside passes leave it alone after."""
+        fn = self._function(function, project)
+        if fn["status"] != "asm":
+            raise NetworkError(f"{fn['name']} isn't set aside ({fn['status']})")
+        meta = {k: v for k, v in json.loads(fn["meta"] or "{}").items()
+                if k not in ("asm_code", "asm_twin", "review", "review_by", "review_at")}
+        meta |= {"for_agents": True, "given_back_at": time.time()}
+        with self.store.tx() as db:
+            db.execute("UPDATE functions SET status='open', meta=? WHERE id=? AND status='asm'", (json.dumps(meta), fn["id"]))
+            self._event(db, fn["project_id"], None, "reopen", f"{fn['name']}: given back to agents")
+        with self.twins._lock:
+            self.twins._prints.pop(fn["project_id"], None)
+        return {"name": fn["name"], "status": "open"}
+
     def disconnect_agent(self, name: str) -> list[str]:
         """The user cut off an outside agent (one connected with `decomp mcp`, or a helper the app no longer runs):
         what it claimed goes back to the others, and its token stops working with a message that says why (see
@@ -2261,7 +2321,7 @@ class RomNetwork(Network):
                  "status": r["status"] if r["status"] in ("matched", "asm") else "working" if (r["agent"] or key(r) in remote) else "open",
                  "best": r["best_score"], "attempts": r["attempts"], "agent": r["agent"] or remote.get(key(r)),
                  "matched_at": r["matched_at"], "matched_by": r["matched_by"],
-                 **({"why": json.loads(r["meta"] or "{}").get("asm_code")} if r["status"] == "asm" else {})} for r in rows]
+                 **(_set_aside(r["meta"]) if r["status"] == "asm" else {})} for r in rows]
 
     def map_signature(self, slug: str) -> str:
         """What the function map shows, summed up: it changes when a function is added, matched, tried or claimed.
@@ -2583,6 +2643,7 @@ class RomNetwork(Network):
         return {
             "name": fn["name"], "vram": fn["vram"], "rom_offset": fn["rom_offset"], "size": fn["size"],
             "insns": fn["n_insns"], "status": fn["status"], "best": fn["best_score"],
+            **(_set_aside(fn["meta"]) if fn["status"] == "asm" else {}),
             "asm": self._asm_text(fn, proj),
             "source": fn["matched_source"] or fn["best_source"] or (latest["source"] if latest else None) or fn["seed"],
             "source_kind": "matched" if fn["matched_source"] else "best" if fn["best_source"] else
