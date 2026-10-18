@@ -50,13 +50,29 @@ def load_config(root: Path) -> dict:
         return tomllib.load(f)
 
 
-def compiler_config(root: Path, cfg: dict) -> CompilerConfig:
+def compiler_settings(cfg: dict, unit: str | None = None) -> dict:
+    """Resolve a unit's overrides without changing the stored project configuration.
+
+    A different toolchain starts with its own command and default flags unless the unit supplies them.
+    Other settings (includes, timeout, assembler mode) are inherited from the project.
+    """
+    base = cfg["compiler"]
+    settings = {k: v for k, v in base.items() if k != "units"}
+    override = base.get("units", {}).get(unit, {}) if unit is not None else {}
+    if override.get("toolchain", settings.get("toolchain")) != settings.get("toolchain"):
+        settings.pop("cmd", None)
+        settings.pop("flags", None)
+    settings.update(override)
+    return settings
+
+
+def compiler_config(root: Path, cfg: dict, unit: str | None = None) -> CompilerConfig:
     """Build the sandboxed compile command for a project.
 
     Either `cmd` (a full command with {src} {obj} {include} placeholders) or `toolchain` (a registry id,
     see toolchains.toml) plus optional `flags`. With a toolchain, `{tc}` expands to its install directory,
     which is mounted read-only into the sandbox together with any runtime it requires."""
-    c = cfg["compiler"]
+    c = compiler_settings(cfg, unit)
     ro_paths = [str((root / p).resolve()) for p in c.get("ro_paths", [])]
     runtime32 = None
     linux = False
@@ -109,7 +125,7 @@ def build_target(root: Path, cfg: dict, log=print) -> None:
     sources = t["build_from"] if isinstance(t["build_from"], list) else [t["build_from"]]
     outputs = target_objects(root, cfg)
     for src, out in zip(sources, outputs):
-        cc = compiler_config(root, cfg)
+        cc = compiler_config(root, cfg, Path(src).stem)
         src_path = root / src
         cc.include_dirs = (*cc.include_dirs, str(src_path.parent))
         log(f"building {out.relative_to(root)} from {src} with {cfg['compiler'].get('toolchain', 'cmd')}")

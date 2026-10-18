@@ -184,7 +184,7 @@ class Permuter:
             res = self.net.forks.attempt(agent, fork, fn["name"], source, keep=False, quiet=best)
             return res.get("score")
         ctx = self.net._context(proj["id"], fn["unit"])
-        result = self.net._compile(proj, ctx["header"], source)
+        result = self.net._compile_function(proj, fn, ctx["header"], source)
         if not result.ok:
             if st is not None:
                 st.failed += 1

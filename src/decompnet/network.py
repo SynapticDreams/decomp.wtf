@@ -19,7 +19,7 @@ from pathlib import Path
 from . import policy, scoring
 from .compiler import SourceRejected, check_includes, compile_source, uses_naked
 from .elfobj import FunctionObj, Reloc, extract_function
-from .project import compiler_config
+from .project import compiler_config, compiler_settings
 from .store import Store
 
 CLAIM_TTL = 30 * 60
@@ -267,6 +267,12 @@ class Network:
         root = Path(proj["root"])
         return compile_source(compiler_config(root, json.loads(proj["config"])), header, source)
 
+    def _compile_function(self, proj, fn, header: str, source: str):
+        cfg = json.loads(proj["config"])
+        selected = compiler_settings(cfg, fn["unit"])
+        effective = dict(proj) | {"config": json.dumps(cfg | {"compiler": selected})}
+        return self._compile(effective, header, source)
+
     def _evaluate(self, fn, proj, obj: bytes) -> tuple[FunctionObj | None, bool | None, list[str]]:
         """(candidate, verdict, problems) for a compiled object. verdict None means: decide by comparing
         fingerprints. Projects whose targets come from a ROM link the candidate instead (see app.engine)."""
@@ -424,6 +430,8 @@ class Network:
         lines = [f"## {header}: {proj['slug']}/{fn['name']}",
                  f"size {fn['size']} bytes, {fn['n_insns']} instructions, arch {proj['arch']}, "
                  f"context.h v{ctx['version']} ({len(ctx['header'].splitlines())} lines)"]
+        compiler = compiler_settings(json.loads(proj["config"]), fn["unit"])
+        lines.append(f"compiler {compiler.get('toolchain', 'project command')}, flags: {' '.join(compiler.get('flags', []))}")
         if claim:
             who = "you" if agent and claim["agent_id"] == agent.id else self._agent_name(claim["agent_id"])
             lines.append(f"claimed by {who}, lease expires in {int(claim['expires_at'] - time.time()) // 60} min "
@@ -507,20 +515,22 @@ class Network:
                     db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
 
         ctx = self._context(proj["id"], fn["unit"])
-        last = self.store.one("SELECT source, compiled, context_version FROM attempts WHERE function_id=? AND agent_id=? "
+        last = self.store.one("SELECT source, compiled, context_version, created_at FROM attempts WHERE function_id=? AND agent_id=? "
                               "ORDER BY id DESC LIMIT 1", fn["id"], agent.id)
         if last is not None and not last["compiled"] and last["context_version"] == ctx["version"] \
-                and _same_c(last["source"] or "", source):
+                and _same_c(last["source"] or "", source) and not self.store.one(
+                    "SELECT 1 FROM events WHERE project_id=? AND kind='compiler' AND created_at>=?",
+                    proj["id"], last["created_at"]):
             # the compiler would say what it said last time: not worth a compile, nor a turn's worth of its output
             return {"text": "❌ NOT COMPILED: this is the same C as your last try (spacing aside), which didn't compile "
                             "with the same context.h. Fix what that error said, or try another way.", "score": None,
                     "matched": False}
-        result = self._compile(proj, ctx["header"], source)
+        result = self._compile_function(proj, fn, ctx["header"], source)
 
         if not result.ok:
             self._record(fn, agent, None, source, ctx["version"])
             log = result.log.strip()
-            toolchain = str((json.loads(proj["config"] or "{}").get("compiler") or {}).get("toolchain") or "")
+            toolchain = str(compiler_settings(json.loads(proj["config"]), fn["unit"]).get("toolchain") or "")
             if toolchain.startswith(C89_TOOLCHAINS) and re.search(r"(?i)\b(parse|syntax) error", log):
                 log += C89_HINT
             return {"text": f"❌ COMPILE ERROR (context v{ctx['version']})\n{log}{self.stall_note(fn['id'], agent.id)}",
@@ -764,7 +774,7 @@ class Network:
             "SELECT * FROM functions WHERE project_id=? AND status='matched'", proj["id"])
 
         def check(fn) -> tuple[str, str] | None:
-            res = self._compile(proj, header_for(fn) if header_for else header,
+            res = self._compile_function(proj, fn, header_for(fn) if header_for else header,
                                 (sources or {}).get(fn["id"], fn["matched_source"]))
             if not res.ok:
                 return fn["name"], "no longer compiles: " + res.log.strip().splitlines()[0][:200] if res.log.strip() else "compile failed"

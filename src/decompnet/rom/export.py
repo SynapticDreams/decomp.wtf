@@ -127,7 +127,7 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
         ld.rename(out / f"splat-{ld.name}")
 
     # 2. which function is where, and which are matched
-    rows = {r["vram"]: r for r in net.store.all("SELECT * FROM functions WHERE project_id=?", proj["id"])}
+    rows = {(r["rom_offset"], r["vram"]): r for r in net.store.all("SELECT * FROM functions WHERE project_id=?", proj["id"])}
     units = net._unit_contexts(proj["id"])
     header = net._context(proj["id"])["header"]
     (out / "include").mkdir(exist_ok=True)
@@ -145,14 +145,15 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
 
     objects, private, as_fallback = [], [], []
     for f in functions:
-        row = rows.get(f["vram"])
+        row = rows.get((f["rom"], f["vram"]))
+        f["unit"] = row["unit"] if row is not None else f["seg"]
         f["obj_asm"] = f"build/{Path(f['asm']).with_suffix('.o').as_posix()}"
         if row is None or row["status"] != "matched" or not row["matched_source"]:
             f["kind"] = "asm"
             continue
         unit = net._effective_unit(row, units)
         hdr = net._context(proj["id"], unit)["header"]
-        compiled = net._compile(proj, hdr, row["matched_source"])
+        compiled = net._compile_function(proj, row, hdr, row["matched_source"])
         if not compiled.ok:
             as_fallback.append((f["name"], "doesn't compile any more"))
             f["kind"] = "asm"
@@ -243,7 +244,8 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
                     absolute.setdefault(m.group(1), int(m.group(2), 16))
     fn_json = []
     for f in functions:
-        entry = {"name": f["name"], "seg": f["seg"], "vram": f["vram"], "rom": f["rom"], "asm": f["asm"]}
+        entry = {"name": f["name"], "seg": f["seg"], "unit": f["unit"],
+                 "vram": f["vram"], "rom": f["rom"], "asm": f["asm"]}
         if f["kind"] == "c":
             entry["c"] = f["src"]
             entry["own"] = {sec: base for (obj, sec, base) in private if obj == f["obj"]}
