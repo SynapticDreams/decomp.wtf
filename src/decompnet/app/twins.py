@@ -407,8 +407,21 @@ class Twins:
             return 0
         cfg = self.net.cfg(proj)
         platform, big = cfg.get("platform", ""), bool(proj["big_endian"])
+        if platform == "psx":
+            from ..psx_gte import enabled
+
+            for r in self.net.store.all("SELECT * FROM functions WHERE project_id=? AND status='asm' "
+                                        "AND json_extract(meta,'$.asm_code') LIKE 'uses the GTE%'", proj["id"]):
+                meta = json.loads(r["meta"] or "{}")
+                if meta.get("review") or meta.get("kind") == "library" or not enabled(cfg, r["unit"]):
+                    continue
+                if mips_reason(r["target"] or b"", big, platform, allow_gte=True) is None:
+                    meta.pop("asm_code", None)
+                    with self.net.store.tx() as db:
+                        db.execute("UPDATE functions SET status='open', meta=? WHERE id=? AND status='asm'",
+                                   (json.dumps(meta), r["id"]))
         marks, trims = [], []
-        for r in self.net.store.all("SELECT id, name, target, meta, vram, size, rom_offset FROM functions "
+        for r in self.net.store.all("SELECT id, name, target, meta, vram, size, rom_offset, unit FROM functions "
                                     "WHERE project_id=? AND status='open'", proj["id"]):
             if json.loads(r["meta"] or "{}").get("for_agents"):
                 continue  # a person gave it back to agents: no rule takes it again
@@ -417,7 +430,7 @@ class Twins:
                 reason, longest = PIECES[arch]
                 why = reason(code, r["vram"] or 0, capped=r["size"] >= longest)
             else:
-                why = mips_reason(code, big, platform)
+                why = mips_reason(code, big, platform, allow_gte=platform == "psx" and enabled(cfg, r["unit"]))
             if why and arch == "sm83" and (n := sm83_routine(code, r["vram"] or 0)):
                 trims.append((r, n))  # the routine at its start is one SDCC could write: the function is that
             elif why:

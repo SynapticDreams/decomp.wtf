@@ -573,6 +573,11 @@ class RomNetwork(Network):
         symbols._reindex()
 
         now = time.time()
+        context_header = BASE_HEADER.format(title=info["title"]) + (GP_NOTE if res.gp else "")
+        if picked.platform == "psx":
+            from ..psx_gte import TYPES
+
+            context_header += TYPES
         with self.store.tx() as db:
             pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
                              (slug, info["title"], f"{info['game_code']} · {info['region']} · {len(res.functions)} functions",
@@ -589,7 +594,7 @@ class RomNetwork(Network):
                 db.execute("INSERT INTO symbols(project_id,name,address,size,kind,preview) VALUES(?,?,?,?,?,?)",
                            (pid, s.name, s.address, s.size, s.kind, preview))
             db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
-                       "VALUES(?,?,?,?,?,?,?)", (pid, 1, BASE_HEADER.format(title=info["title"]) + (GP_NOTE if res.gp else ""),
+                       "VALUES(?,?,?,?,?,?,?)", (pid, 1, context_header,
                                                   None, "basic types", now, ""))
             self._event(db, pid, None, "import", f"{len(res.functions)} functions from {info['title']}")
         log(f"ready: {len(res.functions)} functions to decompile")
@@ -1160,6 +1165,13 @@ class RomNetwork(Network):
         if not self.is_rom(proj):
             return []
         shared = self._extra_brief_shared(fn, proj)
+        if self.cfg(proj).get("platform") == "psx":
+            from ..psx_gte import count, enabled
+
+            n = count(fn["target"] or b"")
+            if n and enabled(self.cfg(proj), fn["unit"]):
+                shared += ["", f"GTE: {n} coprocessor instructions. Trusted gte_* macros are supplied by the compiler; "
+                           "read guide('psx') for the helpers. Raw assembly submissions are rejected."]
         arch = (self.cfg(proj).get("arch") or "").lower()
         if arch == "sm83":
             # Game Boy agents need the calling convention and the register idioms: nothing about SM83 is

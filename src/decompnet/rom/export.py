@@ -131,9 +131,15 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
     units = net._unit_contexts(proj["id"])
     header = net._context(proj["id"])["header"]
     (out / "include").mkdir(exist_ok=True)
-    (out / "include" / "common.h").write_text(header, encoding="utf-8")
+    if platform == "psx":
+        from ..psx_gte import enabled, header_path
+
+        shutil.copyfile(header_path(), out / "include" / "psx_gte.h")
+    prefix = '#include "psx_gte.h"\n' if platform == "psx" and enabled(cfg) else ""
+    (out / "include" / "common.h").write_text(prefix + header, encoding="utf-8")
     for u in units:
-        (out / "include" / f"common_{u}.h").write_text(net._context(proj["id"], u)["header"], encoding="utf-8")
+        unit_prefix = '#include "psx_gte.h"\n' if platform == "psx" and enabled(cfg, u) else ""
+        (out / "include" / f"common_{u}.h").write_text(unit_prefix + net._context(proj["id"], u)["header"], encoding="utf-8")
     functions = []
     for path in sorted((out / "asm" / "nonmatchings").glob("**/*.s")):
         rom_off, vram = _first_address(path)
@@ -177,6 +183,10 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
         src = out / "src" / f["seg"] / f"{f['name']}.c"
         src.parent.mkdir(parents=True, exist_ok=True)
         include = "common.h" if not unit else f"common_{unit}.h"
+        if platform == "psx" and enabled(cfg, row["unit"]) != enabled(cfg, unit or None):
+            include = f"common_profile_{hashlib.sha256((row['unit'] or '').encode()).hexdigest()[:16]}.h"
+            unit_prefix = '#include "psx_gte.h"\n' if enabled(cfg, row["unit"]) else ""
+            (out / "include" / include).write_text(unit_prefix + hdr, encoding="utf-8")
         src.write_text(f'#include "{include}"\n\n{row["matched_source"].strip()}\n', encoding="utf-8")
         f["kind"] = "c"
         f["src"] = src.relative_to(out).as_posix()
