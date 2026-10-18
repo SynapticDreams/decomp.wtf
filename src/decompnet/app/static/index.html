@@ -385,10 +385,11 @@
       <section class="panel" id="compilerPanel">
         <header class="panel-head"><h2>Compiler</h2></header>
         <div class="pad">
-          <p class="muted small">Every function is built with this compiler and these flags. If almost nothing matches, the game was probably built with another compiler or flags.</p>
+          <p class="muted small">Choose the project default or override one source unit. Existing matches are checked before a change is saved.</p>
+          <label class="field"><span>Applies to</span><select id="setCompilerUnit"><option value="">Project default</option></select></label>
           <label class="field"><span>Compiler</span><select id="setTc"></select></label>
           <label class="field"><span>Flags</span><input id="setFlags" class="mono"></label>
-          <div class="row"><button class="primary small-btn" id="setTcSave" type="button">Save</button><button class="ghost small-btn" id="setTcReset" type="button">Default flags</button></div>
+          <div class="row"><button class="primary small-btn" id="setTcSave" type="button">Save</button><button class="ghost small-btn" id="setTcReset" type="button">Default flags</button><button class="ghost small-btn" id="setUnitReset" type="button" hidden>Use project default</button></div>
         </div>
       </section>
       <section class="panel">

@@ -161,7 +161,7 @@ class LocalScorer:
             dest.write_text(text, encoding="utf-8", newline="\n")
         # the coordinator's own way to run the toolchain (on Windows, Linux-only ones go through WSL)
         compiler = {"toolchain": tc.id, "include_dirs": [str(inc)]}
-        compiler.update({k: job[k] for k in ("cmd", "flags") if job.get(k)})
+        compiler.update({k: job[k] for k in ("cmd", "flags") if job.get(k) is not None})
         self.cc = compiler_config(inc, {"compiler": compiler})
         t = job["target"]
         self.target = FunctionObj(job["function"], t["arch"], t["big_endian"], base64.b64decode(t["code"]),

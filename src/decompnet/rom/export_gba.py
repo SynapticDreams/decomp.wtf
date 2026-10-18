@@ -42,7 +42,7 @@ def export_gba(net, slug: str, out: Path, log=print) -> dict:
     functions, fallback = [], []
     for row in rows:
         thumb = "arm_func_start" not in (row["asm"] or "")
-        f = {"name": row["name"], "addr": row["vram"], "size": len(row["target"]), "thumb": thumb}
+        f = {"name": row["name"], "unit": row["unit"], "addr": row["vram"], "size": len(row["target"]), "thumb": thumb}
         functions.append(f)
         if row["status"] != "matched" or not row["matched_source"]:
             continue
@@ -87,7 +87,7 @@ def _check_c(net, proj, row, thumb: bool, units, f: dict) -> str | None:
     if row["vram"] % 4:
         return "it starts halfway a word, where agbcc never puts a function"
     hdr = net._context(proj["id"], net._effective_unit(row, units))["header"]
-    compiled = net._compile(proj, hdr, row["matched_source"])
+    compiled = net._compile_function(proj, row, hdr, row["matched_source"])
     if not compiled.ok:
         return "doesn't compile any more"
     linked = match_arm.link(compiled.obj, row["name"], match_arm.ArmTarget(row["name"], row["vram"], row["target"], thumb),

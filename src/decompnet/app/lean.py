@@ -480,7 +480,7 @@ def preview(net, fn, source: str) -> list | None:
     proj = net.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
     try:
         ctx = net._context(proj["id"], fn["unit"])
-        result = net._compile(proj, ctx["header"], source)
+        result = net._compile_function(proj, fn, ctx["header"], source)
         if not result.ok:
             return None
         cand, _verdict, _ = net._evaluate(fn, proj, result.obj)

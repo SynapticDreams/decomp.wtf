@@ -2975,8 +2975,10 @@ async function renderProjectSettings() {
   $("compilerPanel").hidden = fork;
   if (!fork) {
     if (!S.st) await loadState();
-    fillCompilers($("setTc"), ov.compiler.toolchain, { n64: "N64", psx: "PS1", ps2: "PS2", gba: "GBA" }[ov.platform]);
-    $("setFlags").value = ov.compiler.flags.join(" ");
+    const unit = $("setCompilerUnit").value;
+    $("setCompilerUnit").innerHTML = '<option value="">Project default</option>' + (ov.compiler.unit_names || []).filter(Boolean).map((u) => `<option value="${esc(u)}">${esc(u)}${ov.compiler.units?.[u] ? " (override)" : ""}</option>`).join("");
+    $("setCompilerUnit").value = unit;
+    fillCompilerSettings();
   }
   const facts = [["Platform", ov.platform_name], ["Game", ov.rom?.title || ov.title], [fork ? "Version" : "Game code", ov.rom?.game_code || ov.version],
     !fork && ov.rom?.region ? ["Region", ov.rom.region] : null, fork ? ["Layout", ov.origin === "scratch" ? (LAYOUT[ov.platform] || "decomp") + " (from scratch)" : ov.fork_kind] : ["Compiler", `${ov.compiler.name} ${ov.compiler.flags.join(" ")}`],
@@ -3073,10 +3075,25 @@ async function resplit(apply) {
 $("resplitPreview").onclick = () => resplit(false);
 $("resplitApply").onclick = () => resplit(true);
 $("setTcReset").onclick = () => { $("setFlags").value = ""; };
+function fillCompilerSettings() {
+  const c = S.ov.compiler, unit = $("setCompilerUnit").value, override = c.units?.[unit] || {};
+  const tc = override.toolchain || c.toolchain;
+  fillCompilers($("setTc"), tc, { n64: "N64", psx: "PS1", ps2: "PS2", gba: "GBA" }[S.ov.platform]);
+  $("setFlags").value = (override.flags || (tc === c.toolchain ? c.flags : [])).join(" ");
+  $("setUnitReset").hidden = !unit;
+}
+$("setCompilerUnit").onchange = fillCompilerSettings;
+$("setUnitReset").onclick = async () => {
+  try {
+    S.ov = await api("/api/compiler", { method: "POST", body: { slug: S.slug, unit: $("setCompilerUnit").value } });
+    renderProjectSettings();
+    toast("Unit uses the project default.");
+  } catch (e) { toast(esc(e.message), "err"); }
+};
 $("setTcSave").onclick = async () => {
   try {
     const flags = $("setFlags").value.trim();
-    S.ov = await api("/api/compiler", { method: "POST", body: { slug: S.slug, toolchain: $("setTc").value, flags: flags ? flags.split(/\s+/) : null } });
+    S.ov = await api("/api/compiler", { method: "POST", body: { slug: S.slug, unit: $("setCompilerUnit").value, toolchain: $("setTc").value, flags: flags ? flags.split(/\s+/) : null } });
     renderStats(S.ov);
     renderProjectSettings();
     toast("Compiler settings saved.");

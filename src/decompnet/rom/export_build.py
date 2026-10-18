@@ -130,7 +130,6 @@ def trim(path: Path) -> None:
 
 
 def build_objects(todo: list[tuple[str, str, str]]) -> None:
-    cfg = compiler_config(ROOT, {"compiler": B["compiler"]})
     as_ = binutils("as")
     for kind, src, obj in todo:
         target = ROOT / obj
@@ -140,6 +139,8 @@ def build_objects(todo: list[tuple[str, str, str]]) -> None:
         if kind == "asm":
             run([as_, *B["as_flags"], "-o", obj, src])
         else:
+            fn = next(f for f in B["functions"] if c_source(f) == src)
+            cfg = compiler_config(ROOT, {"compiler": B["compiler"]}, fn.get("unit", fn["seg"]))
             argv = [a.replace("{src}", src).replace("{obj}", obj).replace("{include}", "include") for a in cfg.cmd]
             res = run_in(cfg, ROOT, argv, inputs=[src, "include"], outputs=[obj])
             if res.returncode != 0 or not target.exists():
@@ -296,7 +297,7 @@ def check(name: str) -> bool:
                     return image[at:at + n]
         return None
 
-    cfg = compiler_config(ROOT, {"compiler": B["compiler"]})
+    cfg = compiler_config(ROOT, {"compiler": B["compiler"]}, fn.get("unit", fn["seg"]))
     text = (ROOT / src).read_text(encoding="utf-8")
     m = re.match(r'\s*#include "([^"]+)"\s*\n', text)
     header = (ROOT / "include" / m.group(1)).read_text(encoding="utf-8") if m else ""

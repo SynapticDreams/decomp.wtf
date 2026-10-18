@@ -29,6 +29,7 @@ from pathlib import Path
 from .. import scoring, seeds, similarity, toolchains
 from ..elfobj import FunctionObj
 from ..network import DISCONNECTED, GIVEN_UP, RELEASE_COOLDOWN, Agent, Network, NetworkError, _ago, _hash_token
+from ..project import compiler_settings
 from ..rom import detect, match, split
 from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
 
@@ -536,6 +537,11 @@ class RomNetwork(Network):
                       "confirmed_at": time.time()},
             "context": {"file": None},
         }
+        if picked.platform == "psx" and flags is None and picked.overlays:
+            cfg["compiler"]["units"] = {
+                f"ovl_{name}": {"flags": [f for f in default_flags if not f.startswith("-G")] + ["-G0"]}
+                for name, *_ in picked.overlays
+            }
         symbols = SymbolTable()
         for name, addr in res.named.items():
             symbols.add(Symbol(name, addr, 0, "func"), reindex=False)
@@ -921,7 +927,7 @@ class RomNetwork(Network):
         memo = getattr(self._batch, "memo", None)
         if memo is None:
             return self._compile_now(proj, header, source)
-        key = (proj["id"], header, source)
+        key = (proj["id"], proj["config"], header, source)
         if key not in memo:
             memo[key] = self._compile_now(proj, header, source)
         return memo[key]
@@ -998,7 +1004,7 @@ class RomNetwork(Network):
         """m2c draft, made the first time someone opens the function (imports stay fast)."""
         if fn["seed"] is not None or not seeds.available():
             return fn["seed"]
-        tc = self.cfg(proj)["compiler"]["toolchain"]
+        tc = compiler_settings(self.cfg(proj), fn["unit"])["toolchain"]
         asm = self._asm_text(fn, proj)
         data_asm = None
         if "jtbl_" in fn["asm"]:
@@ -1967,7 +1973,7 @@ class RomNetwork(Network):
             return
         proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
         ctx = self._context(proj["id"], fn["unit"])
-        result = self._compile(proj, ctx["header"], source)  # (the same source gate as every attempt)
+        result = self._compile_function(proj, fn, ctx["header"], source)  # (the same source gate as every attempt)
         if not result.ok:
             return
         cand, verdict, _ = self._evaluate(fn, proj, result.obj)
@@ -3037,6 +3043,9 @@ class RomNetwork(Network):
             # what built a banked game, as its bytes say (rom/fingerprint.py): None, most likely assembly; absent, not read
             "built_with": cfg.get("built_with", False) if cfg.get("arch") in BANKED_ARCHS else False,
             "compiler": {"toolchain": tc.id, "name": SHORT_NAMES.get(tc.id, tc.name), "flags": cfg["compiler"]["flags"],
+                         "units": cfg["compiler"].get("units", {}),
+                         "unit_names": [r["unit"] for r in self.store.all(
+                             "SELECT DISTINCT unit FROM functions WHERE project_id=? ORDER BY unit", proj["id"])],
                          "installed": toolchains.installed(tc.id) is not None, "proprietary": tc.proprietary,
                          "supported": tc.supported, "wsl": tc.via_wsl,
                          "why": None if tc.supported else toolchains.unsupported_cpu()},
@@ -3312,7 +3321,7 @@ class RomNetwork(Network):
             db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + 300))
         try:
             ctx = self._context(proj["id"], fn["unit"])
-            result = self._compile(proj, ctx["header"], source)
+            result = self._compile_function(proj, fn, ctx["header"], source)
             if not result.ok:
                 return {"matched": False, "score": None}
             cand, verdict, _ = self._evaluate(fn, proj, result.obj)
@@ -3340,12 +3349,12 @@ class RomNetwork(Network):
             self._seed_for(fn, proj)  # the readable draft, for the agents that come after
             ctx = self._context(proj["id"], fn["unit"])
             data_asm = "\n".join(self._jtbl_asm(proj, fn)) if "jtbl_" in (fn["asm"] or "") else None
-            draft = seeds.generate_from_asm(self._asm_text(fn, proj), fn["name"], self.cfg(proj)["compiler"]["toolchain"],
+            draft = seeds.generate_from_asm(self._asm_text(fn, proj), fn["name"], compiler_settings(self.cfg(proj), fn["unit"])["toolchain"],
                                             ctx["header"], data_asm, valid=True)
             if not draft:
                 return "fail"
             source = f"/* machine draft (m2c), tried by autopilot */\n{seeds.M2C_MACROS}\n{draft}\n"
-            result = self._compile(proj, ctx["header"], source)
+            result = self._compile_function(proj, fn, ctx["header"], source)
             if not result.ok:
                 return "fail"
             cand, verdict, _ = self._evaluate(fn, proj, result.obj)
@@ -3391,7 +3400,7 @@ class RomNetwork(Network):
                 out = {"rows": None, "error": str(e), "source": source}
             self._diffs[key] = out
             return out | {"kind": "documented" if fn["status"] == "documented" else kind}
-        result = self._compile(proj, ctx["header"], source)
+        result = self._compile_function(proj, fn, ctx["header"], source)
         if not result.ok:
             out = {"rows": None, "error": result.log.strip()[-3000:] or "it didn't compile", "source": source}
         else:
@@ -3584,11 +3593,50 @@ class RomNetwork(Network):
         proj = self._project(slug)
         tc = toolchains.get(toolchain)
         cfg = self.cfg(proj)
-        cfg["compiler"] = {"toolchain": tc.id, "flags": flags or tc.flags, "timeout": 20}
+        if tc.id != cfg["compiler"].get("toolchain"):
+            cfg["compiler"].pop("cmd", None)
+        cfg["compiler"] = cfg["compiler"] | {"toolchain": tc.id, "flags": tc.flags if flags is None else flags}
+        self._save_compiler(proj, cfg)
+
+    def set_unit_compiler(self, slug: str, unit: str, toolchain: str | None = None,
+                          flags: list[str] | None = None) -> None:
+        """Set a source unit's compiler, or remove its override when no settings are supplied."""
+        if self.fork_slug(slug):
+            raise NetworkError("a fork builds with the project's own compilers and flags")
+        proj = self._project(slug)
+        if not self.store.one("SELECT 1 FROM functions WHERE project_id=? AND unit=?", proj["id"], unit):
+            raise NetworkError(f"unknown source unit {unit!r}")
+        if flags is not None and (not isinstance(flags, list) or any(not isinstance(f, str) for f in flags)):
+            raise NetworkError("flags must be a list of strings")
+        cfg = self.cfg(proj)
+        units = cfg["compiler"].setdefault("units", {})
+        profile = {}
+        if toolchain is not None:
+            profile["toolchain"] = toolchains.get(toolchain).id
+        if flags is not None:
+            profile["flags"] = flags
+        if profile:
+            units[unit] = profile
+        else:
+            units.pop(unit, None)
+        self._save_compiler(proj, cfg, unit)
+
+    def _save_compiler(self, proj, cfg: dict, unit: str | None = None) -> None:
+        proposed = dict(proj) | {"config": json.dumps(cfg)}
+        affected = self.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched'", proj["id"])
+        if unit is not None:
+            affected = [fn for fn in affected if fn["unit"] == unit]
+        broken = self.regression_test(proposed, None, only=affected,
+                                      header_for=lambda fn: self._context(proj["id"], fn["unit"])["header"])
+        if broken:
+            raise NetworkError("compiler settings would break existing matches: " + "; ".join(f"{n}: {why}" for n, why in broken[:5]))
         with self.store.tx() as db:
+            if db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"] != proj["config"]:
+                raise NetworkError("compiler settings changed while checking matches; retry")
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
-            db.execute("UPDATE functions SET seed=NULL WHERE project_id=? AND status='open'", (proj["id"],))
-            self._event(db, proj["id"], None, "compiler", f"{tc.name} {' '.join(cfg['compiler']['flags'])}")
+            db.execute("UPDATE functions SET seed=NULL, best_score=NULL WHERE project_id=? AND status='open' "
+                       "AND (? IS NULL OR unit=?)", (proj["id"], unit, unit))
+            self._event(db, proj["id"], None, "compiler", f"updated compiler settings for {unit or 'project default'}")
 
     def chat_agent(self, base: str) -> tuple[Agent, str]:
         """An identity for an agent the user talks to (Claude Code, Codex, ... connected with `decomp mcp`): `base`,
