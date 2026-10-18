@@ -77,6 +77,7 @@ TOOLS = {
     "mgbdis": "Game Boy and Game Boy Color: splits a ROM into its functions",
     "rgbds": "Game Boy and Game Boy Color: rebuilds the split to prove it is faithful",
     "wla-dx": "Master System and Game Gear: assembles routines documented in assembly (built from its source)",
+    "cc65": "NES: assembles routines documented in assembly (ca65 and ld65, built from their source)",
 }
 # Functions this small are handed out in batches (claim_function count): agents match most on the first try.
 BATCH_INSNS = 48
@@ -88,7 +89,7 @@ BANKED_PLATFORMS = ("gb", "gbc", "sms", "gg", "nes")
 BANKED_ARCHS = ("sm83", "z80", "mos6502")
 # What a banked platform's import needs, by CPU: the C toolchain, and for the Game Boy the two tools that split a ROM.
 # All free and pinned; the import installs whichever is missing.
-BANKED_TOOLS = {"sm83": ("gbdk-2020", "rgbds", "mgbdis"), "z80": ("gbdk-2020", "wla-dx"), "mos6502": ("gbdk-2020",)}
+BANKED_TOOLS = {"sm83": ("gbdk-2020", "rgbds", "mgbdis"), "z80": ("gbdk-2020", "wla-dx"), "mos6502": ("gbdk-2020", "cc65")}
 # The assembly track's consoles: hand-written routines documented in RGBDS (Game Boy) or WLA-DX (Master System, Game Gear)
 ASM_ARCHS = ("sm83", "z80")
 # the names mgbdis gives the Game Boy split's functions (and its vectors): a symbol file's names replace them

@@ -575,6 +575,23 @@ sha256 = "82922a530ae989bd5f8057fa4cfef3d0022d7353b5aeb7858b9320eae9b56ebd"
 subdir = "wla_dx_v10.7_Win64"
 platforms = ["windows-x86_64"]
 
+["cc65"]
+name = "cc65 (ca65, ld65)"
+kind = "tool"
+platform = "NES"
+arch = "mos6502"
+license = "Zlib"
+source = "cc65/cc65 V2.19"
+description = "The 6502 assembler and linker NES disassemblies are written for. It assembles routines documented in assembly (the judge) and the exported project. Its project publishes no builds of its releases, so it's built from its source when installed (needs make and a C compiler)."
+# the source, built on the computer it's installed on (its Makefile: bin/ca65 and bin/ld65)
+[["cc65".parts]]
+url = "https://github.com/cc65/cc65/archive/refs/tags/V2.19.tar.gz"
+sha256 = "157b8051aed7f534e5093471e734e7a95e509c577324099c3c81324ed9d0de77"
+subdir = "cc65-2.19"
+build = [["make", "-C", "src", "ca65", "ld65"]]
+binaries = ["bin/ca65", "bin/ld65"]
+platforms = ["linux-x86_64", "linux-aarch64", "macos-x86_64", "macos-arm64"]
+
 ["rgbds"]
 name = "RGBDS (rgbasm, rgblink, rgbfix)"
 kind = "tool"
