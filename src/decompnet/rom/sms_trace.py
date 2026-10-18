@@ -191,12 +191,15 @@ def plausible(data: bytes, flat: int, cpu: int, limit: int = 64) -> bool:
 
 
 class Tracer:
-    def __init__(self, data: bytes, paged: set[int] | None = None):
+    def __init__(self, data: bytes, paged: set[int] | None = None, hints: dict | None = None):
         """`paged`: the slots (1, 2) the game is known to pick banks for (a first pass learns it: `slot_writes`). Code
         entered from somewhere nothing was followed from (the interrupt handlers, what a sweep found) can't know
         what those slots hold, so their bank is unknown there; a slot the game never pages keeps its power-on bank.
-        None: every slot keeps its power-on bank (the first pass's view)."""
+        None: every slot keeps its power-on bank (the first pass's view). `hints`: the project's corrections (see
+        sms.functions): bytes that aren't code, routines that read bytes after their call or never return."""
         self.data, self.size = data, len(data)
+        self.hints = hints or {}
+        self.data_spans = sorted(self.hints.get("data") or [])
         self.mask = bank_mask(self.size)
         self.mapper = self.size > 3 * BANK  # 48 KiB or less: the ROM is simply at 0x0000-0xBFFF
         self.unknown = (None if paged and 1 in paged else 1, None if paged and 2 in paged else 2)
@@ -241,7 +244,7 @@ class Tracer:
             flat, cpu, why, mapping = queue.pop()
             if why != "jump" and can_start(self.data, flat, cpu):
                 f.anchors.add(flat)
-            if flat in seen or not can_start(self.data, flat, cpu):
+            if flat in seen or not can_start(self.data, flat, cpu) or self.in_data(flat):
                 continue
             seen.add(flat)
             f.starts.setdefault(flat, (cpu, why))
@@ -270,7 +273,13 @@ class Tracer:
     def _no_return(self, flat: int) -> bool:
         """A call to it doesn't come back to the next instruction (as the last round saw it)."""
         f = self.found
-        return flat in f.takes_return or (flat in self.prev_starts and flat not in f.returns)
+        return flat in f.takes_return or flat in self.hints.get("noreturn", ()) or (
+            flat in self.prev_starts and flat not in f.returns)
+
+    def in_data(self, flat: int) -> bool:
+        """In bytes a correction says aren't code."""
+        k = bisect.bisect_right(self.data_spans, (flat, 1 << 30)) - 1
+        return k >= 0 and self.data_spans[k][0] <= flat < self.data_spans[k][0] + self.data_spans[k][1]
 
     def _trace(self, entry: int, entry_cpu: int, st: State) -> list[tuple[int, int, tuple, str]]:
         """Follow one function; returns the functions it calls or jumps to: (flat, cpu, the banks mapped then,
@@ -283,12 +292,13 @@ class Tracer:
         pushes = 0
         while work:
             flat, cpu, st = work.pop()
-            while flat not in visited and 0 <= flat < size:
+            while flat not in visited and 0 <= flat < size and not self.in_data(flat):
                 visited.add(flat)
                 text, ln = _decode(data, flat, cpu)
                 if text.startswith("db "):
                     break
                 st.n += 1
+                skip = 0  # bytes after a call that the routine called reads (a correction says how many)
                 kind, target = z80.flow(text)
                 # the mapper (and its mirror in RAM, which reads back the bank last mapped)
                 slot_reg, val = None, None
@@ -373,8 +383,11 @@ class Tracer:
                                 reg = {0: 0xFFFD, 1: 0xFFFE, 2: 0xFFFF}[f.switchers[tflat]]
                                 st.mem[reg] = st.mem[reg - 0x2000] = a_before
                             if not text.startswith("call ") or "," not in text:  # (an unconditional call)
-                                if self._no_return(tflat):
-                                    break  # it doesn't come back here: what follows the call isn't this code
+                                # it comes back past the bytes a correction says it reads, or doesn't come back here
+                                # (what follows the call isn't this code)
+                                skip = (self.hints.get("inline") or {}).get(tflat, 0)
+                                if not skip and self._no_return(tflat):
+                                    break
                 if kind != "call":
                     self._registers(st, text)
                 if computed is not None:  # back from the computed call: on at the address it pushed
@@ -388,10 +401,10 @@ class Tracer:
                     break
                 if kind in ("cjump", "cret"):  # what the condition says on the way on (`cp 5 / jr nc`: A < 5)
                     self._condition(st, text, taken=False)
-                nxt = flat + max(1, ln)
-                if nxt % BANK == 0:
+                nxt = flat + max(1, ln) + skip
+                if nxt // BANK != flat // BANK:
                     break  # ran off the end of the bank
-                flat, cpu = nxt, cpu + max(1, ln)
+                flat, cpu = nxt, cpu + max(1, ln) + skip
         return out
 
     def _map(self, st: State, slot: int, val) -> None:

@@ -397,11 +397,11 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def correct_split(ctx: Context, kind: str, at: str, reason: str, count: int = 0, function: str = "") -> str:
-        """Game Boy: tell the split what it got wrong about the game's code and data, with how you know (a sentence).
-        kind: data (count bytes at `at` aren't code), code (a function starts at `at`), table (count handler addresses
-        at `at`), operands (the routine at `at` reads count bytes after each call to it), noreturn (it never returns).
-        `at`: a function's name, NN:AAAA (bank and address, hex), or an address in `function`'s bank. Used when the
-        game is split again; a person sees each and can undo it."""
+        """Game Boy, Master System: tell the split what it got wrong about the game's code and data, with how you know
+        (a sentence). kind: data (count bytes at `at` aren't code), code (a function starts at `at`), table (count
+        handler addresses at `at`), operands (the routine at `at` reads count bytes after each call to it), noreturn (it
+        never returns). `at`: a function's name, NN:AAAA (bank and the address it runs at, hex), or an address in
+        `function`'s bank. Used when the game is split again; a person sees each and can undo it."""
         return await run(ctx, "correct_split", kind=kind, at=at, reason=reason, count=count, function=function)
 
     @mcp.tool(meta=ALWAYS_LOAD)

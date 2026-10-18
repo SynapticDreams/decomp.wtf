@@ -101,10 +101,10 @@ def test_a_person_sees_and_undoes_them(game):
         net.undo_correction("g", listed[1]["id"])
 
 
-def test_corrections_are_for_game_boy_projects(game):
+def test_corrections_are_for_game_boy_and_master_system_projects(game):
     net, agent = game
-    net._update_cfg("g", lambda cfg: cfg.update(arch="z80"))
-    with pytest.raises(NetworkError, match="Game Boy"):
+    net._update_cfg("g", lambda cfg: cfg.update(arch="mos6502"))  # (NES: not yet)
+    with pytest.raises(NetworkError, match="Game Boy and Master System"):
         net.correct_split(agent, "g", "code", "$0150", WHY)
 
 
