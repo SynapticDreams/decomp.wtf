@@ -283,9 +283,9 @@ def next_function(net, slug: str, agent_id: int = 0):
         f"""SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='open'
             AND f.id NOT IN (SELECT function_id FROM claims)
             AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
-            ORDER BY f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
+            ORDER BY f.abandons >= ?, f.name IN (SELECT detail FROM events WHERE project_id=? AND kind='release'
                                 AND created_at > ?), {netmod.STRATEGIES["finish" if fork else "easiest"]} LIMIT 1""",
-        proj["id"], proj["id"], agent_id, proj["id"], now - netmod.RELEASE_COOLDOWN)
+        proj["id"], proj["id"], agent_id, netmod.GIVEN_UP, proj["id"], now - netmod.RELEASE_COOLDOWN)
 
 
 _versions: dict[str, tuple[float, str | None]] = {}
@@ -1052,6 +1052,12 @@ class Manager:
             if pin and not s.options.get("lean") and not s.stop.is_set():
                 self._pin_after(s, pin, pin_best)
             if ok and not s.stop.is_set() and self._progress(agent.id) == before:
+                if only_starred and self._starred_left(s.slug, agent.id, s.started_at)[1] == 0:
+                    # another helper took the last free ★ between the check and this session's claim: not a failure
+                    s.push("info", "the ★ functions left were taken by others meanwhile: waiting for them")
+                    s.state = "waiting"
+                    s.stop.wait(30)
+                    continue
                 s.error = "the session ended without compiling anything (check the agent's output)"
                 s.push("error", s.error)
                 ok = False
@@ -1100,6 +1106,62 @@ class Manager:
         if until > self.paused.get(key, 0.0):
             self.paused[key], self.paused_why[key] = until, why
         s.state = "waiting"
+
+    # -- after a crash: helpers' agent CLIs the last run left running, and claims its helpers left
+
+    def _running_procs(self, add: tuple | None = None, drop: int | None = None) -> dict:
+        """The agent CLIs this app started and that haven't ended (agents/running.json: pid -> [agent, program]),
+        kept so the next start can stop what a crash left running."""
+        path = self.home / "agents" / "running.json"
+        with self._lock:
+            try:
+                procs = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                procs = {}
+            if add is not None:
+                procs[str(add[0])] = [add[1], add[2]]
+            if drop is not None:
+                procs.pop(str(drop), None)
+            if add is not None or drop is not None:
+                try:
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(json.dumps(procs), encoding="utf-8")
+                except OSError:
+                    pass
+            return procs
+
+    def stop_strays(self) -> list[str]:
+        """At start: agent CLIs the last run left running (it crashed, or was killed) are stopped, so they don't keep
+        working, and spending, beside the helpers that resume. One is stopped only while it's still its own process
+        group and still that program (a pid can be reused). Then the claims this computer's helpers held go back:
+        the ones that resume claim again. Returns the stray helpers' names."""
+        import signal
+
+        stopped = []
+        procs = self._running_procs()
+        for pid_s, (name, program) in procs.items():
+            pid = int(pid_s)
+            if WIN or not program:
+                continue
+            try:
+                if os.getpgid(pid) != pid:
+                    continue
+                args = subprocess.run(["ps", "-o", "args=", "-p", str(pid)], capture_output=True, text=True,
+                                      timeout=5).stdout
+            except (OSError, ProcessLookupError, subprocess.SubprocessError):
+                continue
+            if program not in args:
+                continue
+            try:
+                os.killpg(pid, signal.SIGTERM)
+                stopped.append(name)
+            except OSError:
+                pass
+        for pid_s in procs:
+            self._running_procs(drop=int(pid_s))
+        with self.net.store.tx() as db:  # (an agent of the user's own, connected from outside, keeps its claim)
+            db.execute("DELETE FROM claims WHERE agent_id IN (SELECT id FROM agents WHERE origin='local')")
+        return stopped
 
     def _free_claims(self, s: Session, agent) -> None:
         """Give back whatever the helper's agent still holds, so others can take it at once (not the function's fault:
@@ -1327,6 +1389,7 @@ class Manager:
                                 stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", bufsize=1,
                                 creationflags=flags, start_new_session=not WIN)
         s.proc = proc
+        self._running_procs(add=(proc.pid, s.agent_name, Path(cmd[0]).name))
         errors: collections.deque = collections.deque(maxlen=20)
 
         def feed_prompt():
@@ -1377,6 +1440,7 @@ class Manager:
                 break
         code = proc.wait()
         s.proc = None
+        self._running_procs(drop=proc.pid)
         s.last_output = 0.0
         if silent.is_set() and not s.stop.is_set():
             held = self.net.store.one("SELECT f.name, f.best_score, f.n_insns FROM claims c JOIN functions f ON "
@@ -1748,7 +1812,8 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
                            "notes and a draft. count > 1: a batch of small functions to judge together.",
                            s(function=st("optional name or address"), strategy=st("finish | easiest | closest | hardest | random"),
                              count=it("up to 6 small functions at once"))),
-        "get_function": ("Show any function by name or address.", s(function=st("name or address", True))),
+        "get_function": ("Show any function by name or address (a long one's assembly in parts: start_line).",
+                         s(function=st("name or address", True), start_line=it("assembly line to show from"))),
         "compile_and_diff": ("Compile C for the function, link it at its address and diff against the ROM. "
                              "Score 0 = matched. Several functions: names comma-separated, all definitions in source.",
                              s(function=st("function name, or several: a, b, c", True), source=st("C source", True))),

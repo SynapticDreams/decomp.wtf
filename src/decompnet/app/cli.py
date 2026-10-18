@@ -276,8 +276,13 @@ def stop(args) -> int:
         urllib.request.urlopen(req, timeout=5)
     except OSError:
         pass
-    print("decomp.wtf stopped")
-    return 0
+    for _ in range(60):  # until it's gone: a script that starts it again next would find the port taken
+        if not _alive(prev["port"]):
+            print("decomp.wtf stopped")
+            return 0
+        time.sleep(0.5)
+    print("decomp.wtf was asked to stop and is still shutting down")
+    return 1
 
 
 def connect_agents(args) -> int:
