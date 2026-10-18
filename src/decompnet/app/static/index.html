@@ -391,6 +391,7 @@
           <label class="field"><span>Flags</span><input id="setFlags" class="mono"></label>
           <label class="field" id="setAspsxField" hidden><span>Assembler</span><select id="setAspsx"><option value="">Bundled GNU assembler</option><option>1.05</option><option>2.21</option><option>2.34</option><option>2.56</option><option>2.67</option><option>2.77</option><option>2.79</option><option>2.81</option><option>2.86</option></select><small class="muted">ASPSX emulation needs maspsx and MIPS binutils from Compilers &amp; tools.</small></label>
           <div class="row"><button class="primary small-btn" id="setTcSave" type="button">Save</button><button class="ghost small-btn" id="setTcReset" type="button">Default flags</button><button class="ghost small-btn" id="setUnitReset" type="button" hidden>Use project default</button></div>
+          <div id="compilerProbePanel" hidden><p class="muted small">Compare installed compiler settings against small functions in the selected unit. With Project default selected, the resident code is sampled. Results suggest settings for review.</p><div class="row"><button class="ghost small-btn" id="compilerProbe" type="button">Compare settings</button><label class="check"><input id="compilerProbeExpanded" type="checkbox"><span>More samples</span></label></div><pre class="mono small" id="compilerProbeLog" hidden></pre><div id="compilerProbeResult"></div></div>
         </div>
       </section>
       <section class="panel">

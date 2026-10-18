@@ -61,3 +61,27 @@ for the project or a source unit. All variants use the PS1 m2c draft target and 
 
 The additional compiler packs use verified Linux assets from decompals/old-gcc release 0.17 and pinned binutils
 2.6. On Windows these Linux compilers run through the existing WSL integration.
+
+## Configuration probes
+
+A PS1 import starts a bounded compiler comparison in the background when m2c and the selected compiler are
+already installed. Results appear in project Settings. **Compare settings** reruns it for the selected unit;
+**More samples** increases the search budget. The MCP tool `probe_compiler(unit="", expanded=false)` exposes the
+same diagnostic. Empty unit selects the largest eligible resident unit, excluding overlay units.
+
+The first pass compares installed PS1 compiler variants with the current flags. A second pass changes one factor
+at a time around the best result: optimization, small-data threshold, character signedness and ASPSX version
+when its tools are installed. This is a bounded search, so it can miss interactions between several factors.
+
+The ordinary search uses up to four small open functions, 96 compiles and 60 seconds. The expanded search uses up
+to eight functions, 512 compiles and 240 seconds. Individual draft generation and compilation also have timeouts.
+GTE/handwritten candidates and drafts containing decompiler errors are excluded. Recognized libraries must be
+excluded from the open-function pool before using the result to identify the game's compiler.
+
+The table shows successful compilations, exact linked matches and mean instruction agreement. Every configuration
+is measured on the same drafts; failed compilations contribute zero. Partial rows are discarded if the time budget
+expires. Only the normal linker can contribute an exact match; instruction agreement alone cannot do so.
+
+Ties, insufficient samples and exhausted budgets are reported. A successful draft under one compiler is evidence,
+not proof of the original toolchain. Probes retain score summaries and recipes, without recording attempts,
+awarding matches or changing compiler settings. Changing settings marks the last report stale.

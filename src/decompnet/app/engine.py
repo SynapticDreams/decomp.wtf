@@ -192,6 +192,8 @@ def _listed(asm: str) -> int:
 
 
 class RomNetwork(Network):
+    auto_probe_compilers = True
+
     def __init__(self, db_path: str | Path, workspace: Path, claim_ttl: int = 30 * 60):
         super().__init__(db_path, claim_ttl=claim_ttl)
         self.workspace = Path(workspace)
@@ -201,6 +203,7 @@ class RomNetwork(Network):
         self._progress_cache: dict[int, tuple[int, float, dict]] = {}  # project -> (last attempt, when, _progress)
         self._xrefs: dict[int | tuple, dict] = {}
         self._seed_lock = threading.Lock()
+        self._probe_lock = threading.Lock()
         self.links: dict = {}  # slug -> collab.Link, for projects joined from a friend's room
         self.rooms: dict = {}  # slug -> collab.Room, for projects this computer shares
         self._remote_ids: dict[str, int] = {}
@@ -590,6 +593,8 @@ class RomNetwork(Network):
                                                   None, "basic types", now, ""))
             self._event(db, pid, None, "import", f"{len(res.functions)} functions from {info['title']}")
         log(f"ready: {len(res.functions)} functions to decompile")
+        if picked.platform == "psx" and self.auto_probe_compilers and seeds.available() and toolchains.installed(toolchain):
+            threading.Thread(target=self._automatic_compiler_probe, args=(slug,), daemon=True).start()
         return slug
 
     def _import_gba(self, picked, slug: str, workdir: Path, toolchain: str | None, flags: list[str] | None, log) -> str:
@@ -3049,6 +3054,7 @@ class RomNetwork(Network):
             "built_with": cfg.get("built_with", False) if cfg.get("arch") in BANKED_ARCHS else False,
             "compiler": {"toolchain": tc.id, "name": SHORT_NAMES.get(tc.id, tc.name), "flags": cfg["compiler"]["flags"],
                          "aspsx": cfg["compiler"].get("aspsx", ""),
+                         "probe": cfg.get("compiler_probe"),
                          "units": cfg["compiler"].get("units", {}),
                          "unit_names": [r["unit"] for r in self.store.all(
                              "SELECT DISTINCT unit FROM functions WHERE project_id=? ORDER BY unit", proj["id"])],
@@ -3608,6 +3614,37 @@ class RomNetwork(Network):
             cfg["compiler"]["aspsx"] = aspsx
         self._save_compiler(proj, cfg)
 
+    def _automatic_compiler_probe(self, slug: str) -> None:
+        try:
+            self.probe_compiler(slug, log=lambda _: None)
+        except Exception:
+            logging.getLogger(__name__).debug("automatic PS1 compiler probe unavailable", exc_info=True)
+
+    def probe_compiler(self, slug: str, unit: str | None = None, expanded: bool = False, log=print) -> dict:
+        from ..rom import psx_probe
+
+        if self.fork_slug(slug):
+            raise NetworkError("a fork uses its own build configuration")
+        proj = self._project(slug)
+        cfg = self.cfg(proj)
+        if cfg.get("platform") != "psx":
+            raise NetworkError("compiler configuration probes currently support PS1 projects")
+        if unit is not None and not self.store.one("SELECT 1 FROM functions WHERE project_id=? AND unit=?", proj["id"], unit):
+            raise NetworkError(f"unknown source unit {unit!r}")
+        if not self._probe_lock.acquire(blocking=False):
+            raise NetworkError("another compiler probe is running; wait for its result")
+        try:
+            report = psx_probe.run(self, proj, unit, expanded, log)
+
+            def save(current):
+                report["stale"] = current["compiler"] != cfg["compiler"]
+                current["compiler_probe"] = report
+
+            self._update_cfg(slug, save)
+            return report
+        finally:
+            self._probe_lock.release()
+
     def set_unit_compiler(self, slug: str, unit: str, toolchain: str | None = None,
                           flags: list[str] | None = None, aspsx: str | None = None) -> None:
         """Set a source unit's compiler, or remove its override when no settings are supplied."""
@@ -3649,6 +3686,8 @@ class RomNetwork(Network):
         for name in [None, *cfg["compiler"].get("units", {})]:
             settings = compiler_settings(cfg, name)
             self._check_aspsx(settings["toolchain"], settings.get("aspsx", ""))
+        if cfg.get("compiler_probe"):
+            cfg["compiler_probe"]["stale"] = True
         proposed = dict(proj) | {"config": json.dumps(cfg)}
         affected = self.store.all("SELECT * FROM functions WHERE project_id=? AND status='matched'", proj["id"])
         if unit is not None:
