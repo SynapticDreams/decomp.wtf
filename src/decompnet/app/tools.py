@@ -35,8 +35,8 @@ GUIDES = {
     "arm": "ARM and Thumb (GBA, DS, 3DS): registers, conditional code, literal pools",
     "agbcc": "matching Game Boy Advance code built with agbcc",
     "gb": "Game Boy and Game Boy Color: SM83, banked cartridges, GBDK-2020/SDCC matching",
-    "asm": "the assembly track (Game Boy, Master System, Game Gear): documenting a hand-written routine in assembly "
-           "(RGBDS, WLA-DX), the six checks",
+    "asm": "the assembly track (Game Boy, Master System, Game Gear, NES): documenting a hand-written routine in "
+           "assembly (RGBDS, WLA-DX, ca65), the six checks",
     "sms": "Master System and Game Gear: Z80, the Sega mapper, GBDK-2020/SDCC matching",
     "nes": "NES: the 6502, iNES mappers and banks, GBDK-2020/SDCC matching",
     "x86": "x86 and MSVC (PC, Xbox): calling conventions, SEH, matching MSVC output",
@@ -48,7 +48,7 @@ GUIDES = {
 PLATFORM_GUIDES = {
     "n64": ["mips"], "ps": ["mips", "psx"], "ps2": ["mips", "ps2"], "psp": ["mips"],
     "gc": ["ppc", "mwcc", "cpp"], "wii": ["ppc", "mwcc", "cpp"], "nds": ["arm", "mwcc"], "3ds": ["arm", "cpp"],
-    "gba": ["arm", "agbcc"], "gb": ["gb", "asm"], "gbc": ["gb", "asm"], "sms": ["sms", "asm"], "gg": ["sms", "asm"], "nes": ["nes"],
+    "gba": ["arm", "agbcc"], "gb": ["gb", "asm"], "gbc": ["gb", "asm"], "sms": ["sms", "asm"], "gg": ["sms", "asm"], "nes": ["nes", "asm"],
     "switch": ["aarch64", "cpp"], "win32": ["x86", "cpp"], "xbox": ["x86", "cpp"],
     "xbox360": ["ppc", "cpp"],
 }
@@ -67,11 +67,13 @@ ASM_WORDS = {
            "hardware": "hardware.inc's names"},
     "sms": {"console": "Master System", "assembler": "WLA-DX", "define": ".DEFINE wName $C0A2",
             "hardware": "its names (guide asm)"},
+    "nes": {"console": "NES", "assembler": "ca65", "define": "wName = $0300",
+            "hardware": "the nesdev register names (guide asm)"},
 }
 
 
 def asm_words(platform: str) -> dict:
-    words = dict(ASM_WORDS["sms" if platform in ("sms", "gg") else "gb"])
+    words = dict(ASM_WORDS["sms" if platform in ("sms", "gg") else "nes" if platform == "nes" else "gb"])
     if platform == "gg":
         words["console"] = "Game Gear"
     return words
@@ -353,7 +355,7 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
                 instructions; ROM projects' default), closest (nearly matched already), hardest, random
             count: up to 6: small functions come as a batch (neighbours in one file) to write together and
                 judge in one compile_and_diff; a big one comes alone
-            track: asm (Game Boy, Master System, Game Gear): a hand-written routine to document in assembly
+            track: asm (Game Boy, Master System, Game Gear, NES): a hand-written routine to document in assembly
                 instead of matching in C (guide topic `asm`)
         """
         return await run(ctx, "claim_function", function=function, strategy=strategy, count=count, track=track)
