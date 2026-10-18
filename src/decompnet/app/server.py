@@ -834,8 +834,15 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 if (job := net.twins.jobs.get(slug)) and job.state == "running":
                     job.stop.set()
                 return JSONResponse({"stop_requested": True, "slug": slug})
+            if action == "discover":
+                from ..rom.overlay_discovery import discover
+
+                image = hostenv.local_path(str(data.get("image") or ""))
+                if not image.is_file():
+                    raise ValueError("image must name your own local disc image or binary")
+                return JSONResponse({"job": jobs.start("discover mapping candidates", lambda log: discover(image))})
             if action not in ("create", "preview", "apply"):
-                raise ValueError("mapping action must be create, preview, apply, pause or profile")
+                raise ValueError("mapping action must be discover, create, preview, apply, pause or profile")
             text = data.get("profile")
             net.mapping._profile(text)  # schema errors are reported before starting a job
             image = hostenv.local_path(str(data.get("image") or ""))

@@ -169,3 +169,17 @@ TOWN and DUNGEON content needs its own evidence and region descriptions. The
 sample does not replace an existing project, copy its history or
 assert a complete gameplay mapping. Check compiler choices against exact matches
 from each newly mapped area before expanding it.
+
+## Discover archive candidates
+
+```bash
+uv run decomp mapping discover candidates.json --image '/path/to/SLUS-00614.bin'
+```
+
+Discovery writes a **new** candidate profile and prints scan counts. It never opens a workspace database and refuses to overwrite a profile. The operator API also accepts `action: discover` with an `image`; the job returns the proposed profile.
+
+The scanner searches ISO files or a standalone archive/memory dump. Embedded PS-X EXE headers supply payload bounds and load addresses. For opaque raw members, 64 KiB windows locate JAL/prologue agreement; the proposed first/last instructions are estimated code extents, not proven archive directory entries. All generated regions are `derived`. Inspect the loader, archive index or a debugger load trace, correct extents/visibility and document the evidence before setting an individual region to `verified`. `create`/`apply` retain their existing verification requirements. No archive-specific index or decompressor is guessed.
+
+Scanning is bounded to 64 MiB per source, 128 MiB total, 64 candidates and a 20-second analysis budget, checked between windows. Hashing the input precedes the analysis budget. Each source has at most 32 embedded executables. `truncated` reports exhausted source/byte/time/region limits; absence of candidates does not establish absence of code. Larger or compressed archives need a reviewed profile or extraction with user-supplied tooling. A memory dump can use a binary profile, with its observed RAM base and capture provenance recorded as evidence; the captured bytes remain the user's local input.
+
+Ordinary disc import also recognizes embedded header-delimited payloads and scans complete loose overlay files up to 16 MiB, removing the former assumption that code begins in the first 64 KiB. Automatic JAL placement is bounded and rejects payloads outside RAM. Discovery provenance records ISO file, member offset, size, load address and method. Overlays sharing a load address remain independent units. Raw members with unknown boundaries are handled through the candidate workflow above.
