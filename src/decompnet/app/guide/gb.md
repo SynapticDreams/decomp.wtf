@@ -13,6 +13,11 @@ its own disassembler (`decompnet.rom.sm83`) and reads cartridges through `mgbdis
   0x0000–0x3FFF and every other bank is switched into the 0x4000–0x7FFF window, which is what the
   hardware does. Automatic names are bank-scoped, so a function in bank 3 keeps its address inside
   that bank.
+- Before mgbdis disassembles it, the game's code is followed from its vectors with the bank it maps
+  (`ld a,N / ld ($2000),a`), through its jump tables and the handlers it stores in RAM. Tables,
+  padding and what the code never reaches and reads as no code would are shown as **data**, so they
+  are no longer functions; `read_data` reads them. Code nothing reached but that reads like code is
+  still split as before.
 
 ## The matching lane
 

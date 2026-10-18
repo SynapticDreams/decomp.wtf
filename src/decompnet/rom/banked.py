@@ -76,22 +76,7 @@ class Lane:
     def flow(self, text: str) -> tuple[str, int | None]:
         """How an instruction moves control: ret | jump (both end straight-line flow) | cret | cjump | call | plain,
         and its target's CPU address when it has one."""
-        if self.arch != "sm83":
-            return self.cpu_mod.flow(text)
-        mnemonic, _, ops = text.partition(" ")
-        ops = ops.strip()
-        target = int(ops.rsplit("$", 1)[1], 16) if "$" in ops and mnemonic in ("jp", "jr", "call") else None
-        if mnemonic in ("ret", "reti"):
-            return ("cret" if ops else "ret"), None
-        if mnemonic == "jp" and ops == "hl":
-            return "ret", None
-        if mnemonic in ("jp", "jr"):
-            return ("cjump" if "," in ops else "jump"), target
-        if mnemonic == "call":
-            return "call", target
-        if mnemonic == "rst":
-            return "call", int(ops.lstrip("$"), 16) if ops.lstrip("$") else None
-        return "plain", None
+        return self.cpu_mod.flow(text)
 
     def falls_through(self, code: bytes, cpu: int) -> bool:
         """True when the last instruction of `code` doesn't end its flow: the bytes after it run next."""

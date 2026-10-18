@@ -96,7 +96,7 @@ def test_a_project_split_without_mgbdis_is_split_again_once_it_is_installed(tmp_
     before = net.store.one("SELECT COUNT(*) n FROM functions")["n"]
     # mgbdis arrives (a stand-in for it: two functions, faithful)
     real = [gb.GbFunction(name=f"Call_000_{a:04x}", vram=a, rom=a, code=b"\xc9", n_insns=1, asm=f"{a:04x}  ret", bank=0) for a in (0x150, 0x200)]
-    monkeypatch.setattr(gb_mgbdis, "split", lambda path, workdir, log=None: (real, {"faithful": True, "functions": 2}))
+    monkeypatch.setattr(gb_mgbdis, "split", lambda path, workdir, log=None, **_: (real, {"faithful": True, "functions": 2}))
     tools["mgbdis"] = True
     again, log = _import(net, GBC, "game.gbc")
     assert again == slug and net.cfg(net.project_row(again))["splitter"] == "mgbdis"

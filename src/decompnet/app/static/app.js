@@ -2937,7 +2937,7 @@ async function resplit(apply) {
   try {
     const { job } = await api("/api/resplit", { method: "POST", body: { slug: S.slug, apply } });
     const r = await followJob(job, $("resplitLog"));
-    $("resplitResult").innerHTML = `<div class="notice ${apply ? "room" : ""}"><span>${apply ? "<b>Split again.</b> " : ""}${plural(r.before, "function")} → ${plural(r.after, "function")}: ${r.kept.toLocaleString()} unchanged keep their work, ${r.added.toLocaleString()} new, ${r.removed.toLocaleString()} ${apply ? "gone" : "would go"}; all ${r.matched_kept.toLocaleString()} matched kept${r.notes_moved ? `, notes of ${plural(r.notes_moved, "function")} ${apply ? "moved" : "would move"}` : ""}.</span></div>`;
+    $("resplitResult").innerHTML = `<div class="notice ${apply ? "room" : ""}"><span>${apply ? "<b>Split again.</b> " : ""}${plural(r.before, "function")} → ${plural(r.after, "function")}: ${r.kept.toLocaleString()} unchanged keep their work, ${r.added.toLocaleString()} new, ${r.removed.toLocaleString()} ${apply ? "gone" : "would go"}; all ${r.matched_kept.toLocaleString()} matched kept${r.notes_moved ? `, notes of ${plural(r.notes_moved, "function")} ${apply ? "moved" : "would move"}` : ""}.${r.data_after || r.data_before ? ` Functions cover ${bytes(r.bytes_before)} → ${bytes(r.bytes_after)}; ${bytes(r.data_after)} ${apply ? "is" : "would be"} shown as data (tables, padding, bytes the code never reaches), not handed out as functions${r.data_before ? ` (${bytes(r.data_before)} before)` : ""}.` : ""}</span></div>`;
     $("resplitApply").hidden = apply;
     if (apply) { S.ov = await api(`/api/project?slug=${S.slug}`); renderProjectSettings(); poll(false); }
   } catch (e) { toast(esc(e.message), "err"); } finally { btn.disabled = false; }

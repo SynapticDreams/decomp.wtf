@@ -753,6 +753,7 @@ class RomNetwork(Network):
                            (pid, name, f.vram, f.size, "func", None))
             db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
                        "VALUES(?,?,?,?,?,?,?)", (pid, 1, BASE_HEADER.format(title=info["title"]), None, "basic types", now, ""))
+            self._store_regions(db, pid, report.get("regions") or [])
             self._event(db, pid, None, "import", f"{len(fns)} functions from {info['title']}")
         if matchable:
             log(f"ready: {len(fns)} functions to decompile with SDCC/GBDK-2020 ({gb_build.TOOLCHAIN})")
@@ -797,9 +798,17 @@ class RomNetwork(Network):
         fresh = [f for f in fresh if not any(lo < f.rom + len(f.code) and f.rom < hi for lo, hi in held)]
         gone = [r for r in old if r["id"] not in kept and r["status"] != "matched"]
         noted = {r["id"] for r in gone if self.store.one("SELECT 1 FROM notes WHERE function_id=?", r["id"])}
+        regions = [r for r in report.get("regions") or []
+                   if not any(lo < r[0] + r[1] and r[0] < hi for lo, hi in held)]  # a matched function keeps its bytes
         out = {"before": len(old), "after": len(kept) + len(held) + len(fresh), "kept": len(kept),
                "matched_kept": len([r for r in old if r["status"] == "matched"]), "added": len(fresh),
-               "removed": len(gone), "notes_moved": len(noted), "bank_base": report.get("bank_base", {})}
+               "removed": len(gone), "notes_moved": len(noted), "bank_base": report.get("bank_base", {}),
+               "data_before": self.store.one("SELECT COALESCE(SUM(size), 0) AS n FROM data_regions WHERE project_id=?",
+                                             proj["id"])["n"],
+               "data_after": sum(r[1] for r in regions),
+               "bytes_before": sum(r["size"] or 0 for r in old),
+               "bytes_after": sum((r["size"] or 0) for r in old if r["id"] in kept or r["status"] == "matched")
+               + sum(f.size for f in fresh)}
         if not apply:
             return out
         spans = [(f.rom, f.rom + len(f.code), f) for f in fresh] + [
@@ -831,6 +840,7 @@ class RomNetwork(Network):
                 owner = next((x for lo, hi, x in spans if lo <= (r["rom_offset"] or -1) < hi), None)
                 fid = (new_ids.get(owner.rom) if hasattr(owner, "rom") else owner["id"]) if owner is not None else None
                 db.execute("UPDATE notes SET function_id=? WHERE function_id=?", (fid, r["id"]))
+            self._store_regions(db, proj["id"], regions)
             cfg["segments"] = _banked_segments(cfg.get("platform", ""), cfg["rom"], report)
             cfg["splitter"] = report.get("splitter", cfg.get("splitter"))
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
@@ -843,6 +853,13 @@ class RomNetwork(Network):
         self.twins.set_aside_asm(self._project(slug))  # the new functions, through the set-aside rules
         log(f"split again: {out['after']} functions ({out['kept']} unchanged, {out['added']} new, {out['removed']} gone)")
         return out
+
+    @staticmethod
+    def _store_regions(db, project_id: int, regions: list) -> None:
+        """The stretches of a banked project's ROM its split found aren't code: (flat, size, kind, why) each."""
+        db.execute("DELETE FROM data_regions WHERE project_id=?", (project_id,))
+        db.executemany("INSERT OR REPLACE INTO data_regions(project_id,rom_offset,size,kind,why) VALUES(?,?,?,?,?)",
+                       [(project_id, int(r[0]), int(r[1]), str(r[2]), str(r[3])) for r in regions])
 
     def _compile(self, proj, header: str, source: str):
         """Within a batch (attempt_many) the same source compiles once: the build holds every function it defines,

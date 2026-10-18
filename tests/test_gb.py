@@ -254,7 +254,7 @@ def test_split_reads_a_rom_file(tmp_path):
     rom = make_rom(code=bytes.fromhex("c9"))
     path = tmp_path / "game.gb"
     path.write_bytes(rom)
-    fns = gb.split(path, tmp_path)
+    fns = gb.split(path, tmp_path, prefer_mgbdis=False)  # the built-in sweep (mgbdis's split: test_gb_map.py)
     assert fns and all(f.name.startswith("func_") for f in fns)
     bad = tmp_path / "notarom.gb"
     bad.write_bytes(b"\0" * 0x8000)
@@ -284,7 +284,7 @@ def test_import_creates_a_readable_project(tmp_path):
     assert all(f["status"] == ("open" if lane else "asm") for f in fns)
     assert all(f["asm"] and f["n_insns"] > 0 for f in fns)
     entry = net.store.one("SELECT * FROM functions WHERE project_id=? AND vram=256", proj["id"])
-    assert entry is not None and "jp $0150" in entry["asm"]
+    assert entry is not None and "jp " in entry["asm"] and "0150" in entry["asm"]  # (mgbdis's split names it)
 
 
 # ------------------------------------------------------------------ the page's own check of a dropped file
