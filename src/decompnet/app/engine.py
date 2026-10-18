@@ -741,12 +741,22 @@ class RomNetwork(Network):
                     "note": ("SDCC/GBDK-2020 through decompnet.rom.gb_build (absolute symbol mode)" if matchable else
                              f"the {label} C toolchain (GBDK-2020) is not installed: install it from Setup, or import the game again")}
         segments = _banked_segments(picked.platform, info, report)
+        from ..rom import fingerprint
+
+        built = fingerprint.identify(picked.platform, (workdir / picked.filename).read_bytes())
+        if built:
+            log(f"built with {built['tool']}{' ' + built['version'] if built['version'] else ''}"
+                + (f" ({built['language']})" if built["language"] else "") + (f": {built['note']}" if built["note"] else ""))
+        else:
+            log("no compiler's start-up code or runtime in it: most likely hand-written assembly, which the map and the "
+                "assembly track are for")
         cfg = {
             "kind": "rom", "platform": info["platform"], "big_endian": False, "gp": 0, "arch": arch,
             "splitter": report.get("splitter", "built-in"),  # what found the functions: "built-in" is approximate for the Game Boy
             "rom": {**info, "file": picked.filename, "program": picked.filename},
             "segments": segments,
             "compiler": compiler,
+            "built_with": built,  # (None: no known toolchain's code in it, most likely assembly)
             "legal": {"basis": "personal-copy", "license": "personal use only",
                       "statement": "imported by the owner of this copy of the game, who confirmed it was legally obtained",
                       "confirmed_at": time.time()},
@@ -883,6 +893,9 @@ class RomNetwork(Network):
                 db.execute("UPDATE notes SET function_id=? WHERE function_id=?", (fid, r["id"]))
             self._store_regions(db, proj["id"], regions)
             cfg["segments"] = _banked_segments(cfg.get("platform", ""), cfg["rom"], report)
+            from ..rom import fingerprint
+
+            cfg["built_with"] = fingerprint.identify(cfg.get("platform", ""), rom_path.read_bytes())
             cfg["splitter"] = report.get("splitter", cfg.get("splitter"))
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
             self._event(db, proj["id"], None, "split", f"split again: {out['kept']} functions unchanged, {out['added']} "
@@ -3021,6 +3034,8 @@ class RomNetwork(Network):
             "platform": cfg.get("platform", "n64"), "platform_name": detect.PLATFORMS.get(cfg.get("platform", "n64"), ""),
             "compilers": PLATFORM_COMPILERS.get(cfg.get("platform", "n64"), []),
             "rom": {k: cfg["rom"].get(k) for k in ("title", "game_code", "region", "size", "sha1", "byte_order", "compiler_guess")},
+            # what built a banked game, as its bytes say (rom/fingerprint.py): None, most likely assembly; absent, not read
+            "built_with": cfg.get("built_with", False) if cfg.get("arch") in BANKED_ARCHS else False,
             "compiler": {"toolchain": tc.id, "name": SHORT_NAMES.get(tc.id, tc.name), "flags": cfg["compiler"]["flags"],
                          "installed": toolchains.installed(tc.id) is not None, "proprietary": tc.proprietary,
                          "supported": tc.supported, "wsl": tc.via_wsl,

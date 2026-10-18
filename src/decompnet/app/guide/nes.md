@@ -37,6 +37,9 @@ them, and score an attempt exactly. Functions compiled with SDCC or GBDK-2020 (h
   the game again then starts functions where calls entered and where code ran that wasn't reached, and keeps what was
   only read as data out of functions.
 
+- The import reads which toolchain built the game: GBDK-2020's start-up code, or cc65's runtime (C, but not
+  the pinned compiler's: its routines are documented in assembly). A game neither built is most likely assembly.
+
 ## Hand-written routines
 
 Nearly every commercial NES game is assembly. A routine set aside as hand-written (it reads a flag or Y before

@@ -1840,6 +1840,8 @@ function focusChoices() {
 }
 function focusSelect() {
   const choices = focusChoices();
+  // a game no compiler built (its bytes say so) starts on the assembly track
+  if (LZ.focus == null && S.ov?.built_with === null && choices.some((f) => f.id === "asm")) LZ.focus = "asm";
   if (!choices.some((f) => f.id === LZ.focus)) LZ.focus = "default";
   return `<label class="field"><span>Focus</span><select data-f="focus">${choices.map((f) => `<option value="${f.id}" ${f.id === (LZ.focus || "default") ? "selected" : ""}>${esc(f.name)}${f.note ? ` — ${esc(f.note)}` : ""}</option>`).join("")}</select></label>`;
 }
@@ -2979,6 +2981,9 @@ async function renderProjectSettings() {
   const facts = [["Platform", ov.platform_name], ["Game", ov.rom?.title || ov.title], [fork ? "Version" : "Game code", ov.rom?.game_code || ov.version],
     !fork && ov.rom?.region ? ["Region", ov.rom.region] : null, fork ? ["Layout", ov.origin === "scratch" ? (LAYOUT[ov.platform] || "decomp") + " (from scratch)" : ov.fork_kind] : ["Compiler", `${ov.compiler.name} ${ov.compiler.flags.join(" ")}`],
     fork && ov.repo_url ? ["Repository", ov.repo_url.replace(/^https?:\/\//, "")] : null,
+    // what built a banked game, as its bytes say: a compiler (C), or none found (most likely assembly)
+    ov.built_with ? ["Built with", `${ov.built_with.tool}${ov.built_with.version ? " " + ov.built_with.version : ""}${ov.built_with.language ? ` (${ov.built_with.language})` : ""}${ov.built_with.pinned === false && ov.built_with.language === "C" ? ": not the pinned compiler" : ""}`]
+      : ov.built_with === null ? ["Built with", "no compiler's code found: most likely hand-written assembly (the assembly track)"] : null,
     ["Functions", `${ov.functions.toLocaleString()} (${bytes(ov.bytes || 0)} of code)`], ["Folder", ov.folder]].filter(Boolean);
   $("projFacts").innerHTML = facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v || "—")}</dd></div>`).join("");
   // splitting again: the banked lanes, on a project of the user's own (a room member's copy follows its host's)

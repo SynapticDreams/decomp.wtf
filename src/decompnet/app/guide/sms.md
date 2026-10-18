@@ -33,6 +33,9 @@ encoding. Both consoles use the same mapper and the same compiler, so everything
   `bank:address` trace): splitting the game again then starts functions where calls entered and where code ran that
   wasn't reached, and keeps what was only read as data out of functions.
 
+- The import reads which toolchain built the game: GBDK-2020's start-up code (C), or an SDSC tag (homebrew,
+  not which tool). A game none of them built is most likely assembly, for the assembly track.
+
 ## Hand-written routines
 
 Most Master System and Game Gear games are assembly. A routine set aside as hand-written is documented instead of
