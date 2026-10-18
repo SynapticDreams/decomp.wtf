@@ -1309,7 +1309,8 @@ class Manager:
                                             count=s.options.get("per_session", PER_SESSION),
                                             guides=", ".join(f'guide("{g}")' for g in guides))
         if s.options.get("track") == "asm":
-            return tools.ASM_PROMPT.format(title=ov["title"], count=s.options.get("per_session", PER_SESSION))
+            return tools.ASM_PROMPT.format(title=ov["title"], count=s.options.get("per_session", PER_SESSION),
+                                           **tools.asm_words(ov.get("platform") or ""))
         return tools.WORK_PROMPT.format(title=ov["title"], count=s.options.get("per_session", PER_SESSION),
                                         compiler_guide=compiler_guide(ov))
 
@@ -1829,7 +1830,7 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
                            "notes and a draft. count > 1: a batch of small functions to judge together.",
                            s(function=st("optional name or address"), strategy=st("finish | easiest | closest | hardest | random"),
                              count=it("up to 6 small functions at once"),
-                             track=st("asm (Game Boy): a hand-written routine to document in assembly"))),
+                             track=st("asm (Game Boy, Master System): a hand-written routine to document in assembly"))),
         "get_function": ("Show any function by name or address (a long one's assembly in parts: start_line).",
                          s(function=st("name or address", True), start_line=it("assembly line to show from"))),
         "compile_and_diff": ("Compile C for the function, link it at its address and diff against the ROM. "

@@ -1834,9 +1834,9 @@ function leanSelect(a) {
     <option value="several" ${LZ.lean === "several" ? "selected" : ""}>Lean: short prompts, 3 versions per call</option></select></label>`;
 }
 /* On a Game Boy project, helpers can also document hand-written routines in assembly (the assembly track) */
-const ASM_FOCUS = { id: "asm", name: "Document assembly", note: "hand-written routines, in RGBDS" };
+const ASM_FOCUS = { id: "asm", name: "Document assembly", note: "hand-written routines, in assembly" };
 function focusChoices() {
-  return ["gb", "gbc"].includes(S.ov?.platform) && S.ov?.kind !== "fork" ? [...FOCUS, ASM_FOCUS] : FOCUS;
+  return ["gb", "gbc", "sms", "gg"].includes(S.ov?.platform) && S.ov?.kind !== "fork" ? [...FOCUS, ASM_FOCUS] : FOCUS;
 }
 function focusSelect() {
   const choices = focusChoices();
@@ -2297,7 +2297,7 @@ async function refreshFn(first) {
     };
     $("fnAsm").innerHTML = highlightAsm(d.asm);
     const kinds = { matched: "Matching C", documented: "Documented assembly", best: d.track ? "Best attempt so far (assembly)" : "Best attempt so far", latest: S.ov.kind === "fork" ? "In the source now" : "Latest attempt", draft: "Machine draft (m2c)", asm_draft: "Draft that rebuilds it: name it, comment it, then Try" };
-    $("fnSrcKind").textContent = kinds[d.source_kind] || (d.track ? "Not documented yet: write it in RGBDS assembly" : "No C yet");
+    $("fnSrcKind").textContent = kinds[d.source_kind] || (d.track ? `Not documented yet: write it in ${["sms", "gg"].includes(S.ov.platform) ? "WLA-DX" : "RGBDS"} assembly` : "No C yet");
     if (!S.editDirty || first) setEditor(d.source || "", d);
     $("copySrc").onclick = () => navigator.clipboard.writeText($("fnEdit").value).then(() => toast("Copied."));
     renderFnChart(d);

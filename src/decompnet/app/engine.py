@@ -89,6 +89,8 @@ BANKED_ARCHS = ("sm83", "z80", "mos6502")
 # What a banked platform's import needs, by CPU: the C toolchain, and for the Game Boy the two tools that split a ROM.
 # All free and pinned; the import installs whichever is missing.
 BANKED_TOOLS = {"sm83": ("gbdk-2020", "rgbds", "mgbdis"), "z80": ("gbdk-2020", "wla-dx"), "mos6502": ("gbdk-2020",)}
+# The assembly track's consoles: hand-written routines documented in RGBDS (Game Boy) or WLA-DX (Master System, Game Gear)
+ASM_ARCHS = ("sm83", "z80")
 # the names mgbdis gives the Game Boy split's functions (and its vectors): a symbol file's names replace them
 _GENERATED = re.compile(r"^(?:Call|Func|Jump|jr)_[0-9a-f]{3}_[0-9a-f]{4}$|^RST_[0-9a-f]{2}$|Interrupt$|^Boot$")
 
@@ -1018,7 +1020,7 @@ class RomNetwork(Network):
         if self.cfg(self.store.one("SELECT config FROM projects WHERE id=?", fn["project_id"])).get("kind") == "fork":
             return self.forks.brief(fn, agent, header)
         proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
-        if proj["arch"] == "sm83" and (fn["status"] == "documented" or self.asm_track(fn)):
+        if self._on_track(proj, fn):
             return self._asm_brief(fn, agent, header)
         if self.is_rom(proj) and fn["status"] != "matched" and not fn["best_source"] and fn["seed"] is None:
             with self._seed_lock:
@@ -2333,15 +2335,26 @@ class RomNetwork(Network):
         except NetworkError:
             return False
         proj = self.store.one("SELECT arch FROM projects WHERE id=?", fn["project_id"])
-        return proj["arch"] == "sm83" and self.asm_track(fn)
+        return proj["arch"] in ASM_ARCHS and self.asm_track(fn)
+
+    def _on_track(self, proj, fn) -> bool:
+        """A function the assembly track has: one to document, or one documented."""
+        return proj["arch"] in ASM_ARCHS and (fn["status"] == "documented" or self.asm_track(fn))
+
+    @staticmethod
+    def _asm_judge(proj):
+        """The assembly track's judge for a project's CPU: rom/gb_asm.py (RGBDS) or rom/sms_asm.py (WLA-DX)."""
+        from ..rom import gb_asm, sms_asm
+
+        return sms_asm if proj["arch"] == "z80" else gb_asm
 
     def claim_asm(self, agent: Agent, project: str | None, function: str | None = None) -> str:
         """A claim on the assembly track: a hand-written Game Boy routine to document (one asked for, or the next: the
         smallest first, the ones agents gave back often last)."""
         proj = self._project(project) if project or not function else self.store.one(
             "SELECT * FROM projects WHERE id=?", self._function(function, None)["project_id"])
-        if (proj["arch"] or "") != "sm83" or self.fork_slug(proj["slug"]):
-            raise NetworkError("the assembly track is for Game Boy projects for now")
+        if (proj["arch"] or "") not in ASM_ARCHS or self.fork_slug(proj["slug"]):
+            raise NetworkError("the assembly track is for Game Boy, Master System and Game Gear projects for now")
         if (link := self._link(proj["slug"])) is not None:  # a room: its host hands the routine out (and judges it)
             asked = self._function(function, proj["slug"])["name"] if function else None
             name = link.claim(agent, asked, "easiest", track="asm")
@@ -2407,11 +2420,10 @@ class RomNetwork(Network):
         return super().compile_and_diff(agent, function, source, project)
 
     def _asm_brief(self, fn, agent, header: str) -> str:
-        """A hand-written Game Boy routine's brief on the assembly track: the routine as the split has it, a draft that
-        rebuilds it, what the map knows about it, and the six checks."""
-        from ..rom import gb_asm
-
+        """A hand-written routine's brief on the assembly track: the routine as the split has it, a draft that rebuilds
+        it, what the map knows about it, and the six checks."""
         proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        judge, sms = self._asm_judge(proj), proj["arch"] == "z80"
         claim = self.store.one("SELECT * FROM claims WHERE function_id=?", fn["id"])
         bank, cpu = (fn["rom_offset"] or 0) // 0x4000, fn["vram"] or 0
         lines = [f"## {header} (assembly track): {proj['slug']}/{fn['name']}",
@@ -2426,15 +2438,15 @@ class RomNetwork(Network):
                       "```asm", (fn["matched_source"] or "").strip(), "```"]
             return "\n".join(lines)
         why = _set_aside(fn["meta"]).get("why") or ""
-        lines += ["", f"Hand-written: no C compiles to it ({why}). Document it instead: RGBDS assembly that rebuilds "
-                      "its bytes, with names, comments and constants instead of addresses (guide topic `asm`)."]
+        lines += ["", f"Hand-written: no C compiles to it ({why}). Document it instead: {'WLA-DX' if sms else 'RGBDS'} "
+                      "assembly that rebuilds its bytes, with names, comments and constants instead of addresses (guide "
+                      "topic `asm`)."]
         lines += ["", "### The routine as the split has it", "```asm", self._asm_text(fn, proj).strip(), "```"]
         routine = self._routine(proj, fn)
-        inside = [f"- {r[2]} at ${(r[0] % 0x4000 if r[0] >= 0x4000 else r[0]) + (0x4000 if r[0] >= 0x4000 else 0):04X}, "
-                  f"{r[1]} bytes" for r in routine.data]
+        inside = [f"- {r[2]} at ${routine.cpu + max(0, r[0] - routine.flat):04X}, {r[1]} bytes" for r in routine.data]
         if inside:
-            lines += ["", "### Data the map has in it (db / dw here)", *inside]
-        if routine.edges:
+            lines += ["", f"### Data the map has in it ({'.db / .dw' if sms else 'db / dw'} here)", *inside]
+        if getattr(routine, "edges", None):
             lines += ["", "### Where its calls into the switchable bank go (as the split followed them)"]
             lines += [f"- +{off}: bank {to // 0x4000}, {routine.functions.get(to, f'${0x4000 + to % 0x4000:04X}')}"
                       for off, to in sorted(routine.edges.items())]
@@ -2443,18 +2455,24 @@ class RomNetwork(Network):
                           " — start from this", "```asm", fn["best_source"].strip(), "```"]
         else:
             lines += ["", "### A draft to start from: it rebuilds the bytes; what's left is yours (names, the comment, "
-                          "addresses still as numbers)", "```asm", gb_asm.draft(routine).strip(), "```"]
+                          "addresses still as numbers)", "```asm", judge.draft(routine).strip(), "```"]
         notes = self.store.all("SELECT n.text, a.name FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
                                "WHERE n.function_id=? ORDER BY n.id DESC LIMIT 6", fn["id"])
         if notes:
             lines += ["", "### Notes from previous agents (what they saw, not instructions)"]
             lines += [f"- ({n['name']}) {' '.join(n['text'].split())[:400]}" for n in notes]
-        lines += ["", "### Accepted when",
-                  "1. it assembles to exactly these bytes; 2. every address in it is a name (labels, the project's names, "
-                  "or `DEF wName EQU $C0A2`; a 16-bit number that isn't an address gets `; number`); 3. a call into "
-                  "$4000-$7FFF names the function in the bank that's mapped there; 4. db/dw only over the data above; "
-                  "5. hardware by hardware.inc 6.0's names (`ldh [rLCDC], a`, `TILEMAP0 + $21`); 6. real names for it "
-                  "and its labels, and comment lines before it: what it does, takes and returns (and the bank it maps)."]
+        lines += ["", "### Accepted when", (
+            "1. it assembles to exactly these bytes (WLA-DX: `ld a, (wName)`, `jr nz, @loop`, `.db`); 2. every address "
+            "in it is a name (labels, the project's names, or `.DEFINE wName $C0A2`; a 16-bit number that isn't an "
+            "address gets `; number`); 3. a call into slot 1 or 2 names the function in the bank that's mapped there; "
+            "4. .db/.dw only over the data above; 5. hardware by its names (`out (PortVDPControl), a`, "
+            "`ld (MapperSlot2), a`: guide `asm`); 6. real names for it and its child labels, and comment lines before "
+            "it: what it does, takes and returns (and the bank it maps)." if sms else
+            "1. it assembles to exactly these bytes; 2. every address in it is a name (labels, the project's names, "
+            "or `DEF wName EQU $C0A2`; a 16-bit number that isn't an address gets `; number`); 3. a call into "
+            "$4000-$7FFF names the function in the bank that's mapped there; 4. db/dw only over the data above; "
+            "5. hardware by hardware.inc 6.0's names (`ldh [rLCDC], a`, `TILEMAP0 + $21`); 6. real names for it "
+            "and its labels, and comment lines before it: what it does, takes and returns (and the bank it maps).")]
         if header == "CLAIMED":
             lines += ["", "Next: write it and send it with compile_and_diff(function, source=<the whole routine>); the "
                           "answer lists each check it still fails. Accepted, it's documented under its label's name."]
@@ -2464,16 +2482,16 @@ class RomNetwork(Network):
     NOT_CODE = ("padding", "the split ran", "bytes that are no instruction", "which SDCC never writes: data")
 
     def asm_track(self, fn) -> bool:
-        """Whether a function is the assembly track's: a Game Boy routine set aside as hand-written code (not data, not
-        padding, not one the split couldn't bound)."""
+        """Whether a function is the assembly track's: a routine set aside as hand-written code (not data, not padding,
+        not one the split couldn't bound)."""
         if fn["status"] != "asm":
             return False
         why = _set_aside(fn["meta"]).get("why") or ""
         return not any(k in why for k in self.NOT_CODE)
 
     def _routine(self, proj, fn):
-        """What the assembly judge needs about a Game Boy function (rom/gb_asm.Routine)."""
-        from ..rom import gb_asm, gb_hw
+        """What the assembly judge needs about a function (rom/gb_asm.Routine, rom/sms_asm.Routine)."""
+        from ..rom import gb_asm, gb_hw, sms_asm
 
         flat, size = fn["rom_offset"] or 0, fn["size"] or 0
         symbols = {r["name"]: r["address"] for r in self.store.all(
@@ -2485,22 +2503,25 @@ class RomNetwork(Network):
         data = [(r["rom_offset"], r["size"], r["kind"]) for r in self.store.all(
             "SELECT * FROM data_regions WHERE project_id=? AND rom_offset<? AND rom_offset+size>?",
             proj["id"], flat + size, flat)]
+        if proj["arch"] == "z80":
+            return sms_asm.Routine(fn["name"], flat // 0x4000, fn["vram"] or 0, bytes(fn["target"] or b""), symbols,
+                                   functions, {r["rom_offset"]: r["vram"] for r in rows if r["vram"] is not None}, data,
+                                   max(1, -(-int(self.cfg(proj)["rom"].get("size") or 0) // 0x4000)))
         edges = {int(k): v for k, v in json.loads(fn["meta"] or "{}").get("edges", {}).items()}
         return gb_asm.Routine(fn["name"], flat // 0x4000, fn["vram"] or 0, bytes(fn["target"] or b""), symbols,
                               functions, data, edges, gb_hw.mapper_of(self.cfg(proj)["rom"].get("mbc") or ""))
 
     def document_function(self, agent: Agent, project: str | None, function: str, text: str) -> str:
-        """An agent's documented assembly for a hand-written Game Boy routine, judged (rom/gb_asm.py: the same bytes,
-        the shift test, names from the right bank, data only where the map has it, hardware by name, real names and a
-        header comment). Accepted, the function is documented: its text is kept, its DEF names become the project's,
-        and its label becomes its name."""
-        from ..rom import gb_asm
-
+        """An agent's documented assembly for a hand-written routine, judged (rom/judge.py, rom/sms_asm.py: the same
+        bytes, the shift test, names from the right bank, data only where the map has it, hardware by name, real names
+        and a header comment). Accepted, the function is documented: its text is kept, its defined names become the
+        project's, and its label becomes its name."""
         self._require_budget(agent)
         fn = self._function(function, project)
         proj = self._project(project) if project else self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
-        if (self.cfg(proj).get("arch") or "").lower() != "sm83":
-            raise NetworkError("documented assembly is for Game Boy projects for now")
+        if (self.cfg(proj).get("arch") or "").lower() not in ASM_ARCHS:
+            raise NetworkError("documented assembly is for Game Boy, Master System and Game Gear projects for now")
+        judge = self._asm_judge(proj)  # (RGBDS or WLA-DX)
         if fn["status"] == "documented":
             raise NetworkError(f"{fn['name']} is documented already")
         if not self.asm_track(fn):
@@ -2519,11 +2540,11 @@ class RomNetwork(Network):
                 self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
             else:
                 db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
-        if not gb_asm.available():
-            raise NetworkError("RGBDS isn't installed: install it from Setup")
+        if not judge.available():
+            raise NetworkError(f"{'WLA-DX' if proj['arch'] == 'z80' else 'RGBDS'} isn't installed: install it from Setup")
         try:
-            verdict = gb_asm.judge(self._routine(proj, fn), text)
-        except gb_asm.AsmError as e:
+            verdict = judge.judge(self._routine(proj, fn), text)
+        except judge.AsmError as e:
             raise NetworkError(str(e)) from None
         link, hosted = self._link(proj["slug"]), ""
         if verdict.ok and link is not None:  # a room: its host judges it again on its own copy, and keeps it
@@ -2742,13 +2763,12 @@ class RomNetwork(Network):
     def apply_remote_documented(self, slug: str, rows: list[dict]) -> None:
         """Mirror the routines the room's host documented in assembly (it judged them on the same ROM). Only text the
         judge would take is: a member checks what it keeps (no INCLUDE, INCBIN or macros)."""
-        from ..rom import gb_asm
-
         proj = self._project(slug)
+        judge = self._asm_judge(proj)
         for r in rows:
             row = self._room_function(proj["id"], r.get("name"), r.get("vram"), r.get("rom_offset"), r.get("size"))
             source = str(r.get("source") or "")
-            if row is None or row["status"] in ("documented", "matched") or not gb_asm.contained(source):
+            if row is None or row["status"] in ("documented", "matched") or not judge.contained(source):
                 continue
             aid = self._remote_agent(r.get("agent") or "host")
             with self.store.tx() as db:
@@ -3006,7 +3026,7 @@ class RomNetwork(Network):
         size = int((cfg.get("rom") or {}).get("size") or 0)
         return {"rom": size, "code": code, "data": data,
                 "to_document": sum(1 for r in rows if r["status"] == "asm" and self.asm_track(r))
-                if proj["arch"] == "sm83" else 0}
+                if proj["arch"] in ASM_ARCHS else 0}
 
     def _room_info(self, slug: str) -> dict | None:
         if slug in self.links:
@@ -3029,7 +3049,7 @@ class RomNetwork(Network):
         # who works on what in the room: by address, or by name in a git project (its functions have no addresses)
         key = (lambda r: r["name"]) if link is not None and link.fork else (lambda r: r["vram"])
         remote = {key(c): "@" + c["agent"] for c in (link.claims if link is not None else [])}
-        sm83 = proj["arch"] == "sm83"
+        sm83 = proj["arch"] in ASM_ARCHS  # (the assembly track's consoles)
         return [{"name": r["name"], "vram": r["vram"], "size": r["size"], "insns": r["n_insns"], "unit": r["unit"],
                  "status": r["status"] if r["status"] in ("matched", "asm", "documented") else "working" if (r["agent"] or key(r) in remote) else "open",
                  "best": r["best_score"], "attempts": r["attempts"], "agent": r["agent"] or remote.get(key(r)),
@@ -3320,14 +3340,14 @@ class RomNetwork(Network):
         key = (fn["id"], hashlib.sha1(source.encode()).hexdigest(), ctx["version"], proj["config"])
         if key in self._diffs:
             return self._diffs[key] | {"kind": kind}
-        if proj["arch"] == "sm83" and (fn["status"] == "documented" or self.asm_track(fn)):
-            from ..rom import gb_asm  # the assembly track: the judge's verdict on its text, not a C compile
+        if self._on_track(proj, fn):
+            judge = self._asm_judge(proj)  # the assembly track: the judge's verdict on its text, not a C compile
 
             try:
-                v = gb_asm.judge(self._routine(proj, fn), source)
+                v = judge.judge(self._routine(proj, fn), source)
                 out = {"rows": None, "asm": {"ok": v.ok, "same": v.same, "size": len(fn["target"] or b""),
                                              "problems": v.problems}, "source": source}
-            except gb_asm.AsmError as e:
+            except judge.AsmError as e:
                 out = {"rows": None, "error": str(e), "source": source}
             self._diffs[key] = out
             return out | {"kind": "documented" if fn["status"] == "documented" else kind}
@@ -3364,12 +3384,11 @@ class RomNetwork(Network):
                                "ON a.id=n.agent_id WHERE n.function_id=? ORDER BY n.id DESC LIMIT 10", fn["id"])
         x = self.xrefs(proj, fn["unit"])
         syms = self.symbols(proj["id"], fn["unit"])
-        track = proj["arch"] == "sm83" and (fn["status"] == "documented" or self.asm_track(fn))
+        track = self._on_track(proj, fn)
         draft = None
         if track and not (fn["matched_source"] or fn["best_source"] or latest):
-            from ..rom import gb_asm  # a hand-written routine nobody has tried: the draft that rebuilds it
-
-            draft = gb_asm.draft(self._routine(proj, fn))
+            # a hand-written routine nobody has tried: the draft that rebuilds it
+            draft = self._asm_judge(proj).draft(self._routine(proj, fn))
         elif not (fn["matched_source"] or fn["best_source"] or latest) and fn["seed"] is None:
             with self._seed_lock:
                 self._seed_for(fn, proj)

@@ -406,10 +406,121 @@ def mos6502_reason(code: bytes, base: int = 0, capped: bool = False) -> str | No
 
 def z80_reason(code: bytes, base: int = 0, capped: bool = False) -> str | None:
     """Why this Master System or Game Gear function (Z80 code, from the entry at `base`) isn't code a C compiler made,
-    or None. `capped`: the split gave it its longest size, not having found the next function."""
+    or None. `capped`: the split gave it its longest size, not having found the next function. Past what the split
+    hands out that's no function (pieces, data, padding), what SDCC never writes: a flag read before anything sets
+    it, the return address taken first, BC, IX or IY read before being set (SDCC passes arguments in A, HL, L and DE),
+    the alternate registers, the CPU's setup (the stack pointer, the interrupt mode, I and R), a jr out of the
+    function, a call then ret (SDCC writes a jp)."""
     from .rom import z80
 
-    return _piece_reason(code, base, capped, z80)
+    why = _piece_reason(code, base, capped, z80)
+    if why or not code:
+        return why
+    insns = list(z80.disassemble(code, base))
+    return _z80_hand_written(insns, base, base + len(code))
+
+
+_Z80_FLAG_READ = re.compile(r"^(?:(?:jp|jr|call|ret) (nz|z|nc|c|po|pe|p|m)\b|adc |sbc |rla$|rra$|rl |rr |ccf$)")
+_Z80_SETS_FLAGS = re.compile(r"^(?:add a,|adc |sub |sbc |and |or |xor |cp |neg$|daa$|inc [abcdehl]$|dec [abcdehl]$|"
+                             r"inc \(|dec \(|rlc |rrc |rl |rr |sla |sra |sll |srl |rlca$|rrca$|rla$|rra$|scf$|bit |"
+                             r"add hl,|add ix,|add iy,|cpi|cpd|in [abcdehl], \(c\)|ld a, [ir]$)")
+_Z80_BLOCK_END = re.compile(r"^(?:jp|jr|call|ret|reti|retn|rst|djnz)\b")
+_Z80_PAIRS = {"bc": ("b", "c"), "de": ("d", "e"), "hl": ("h", "l"), "ix": ("ix",), "iy": ("iy",)}
+
+
+def _z80_regs(operand: str) -> set[str]:
+    """The registers an operand names (a pair as its halves; IX and IY, and their halves, as themselves)."""
+    out = set()
+    for pair, halves in _Z80_PAIRS.items():
+        if re.search(rf"\b{pair}\b", operand):
+            out |= set(halves)
+    out |= {r for r in ("ixh", "ixl") if re.search(rf"\b{r}\b", operand)} and {"ix"}
+    out |= {r for r in ("iyh", "iyl") if re.search(rf"\b{r}\b", operand)} and {"iy"}
+    out |= set(re.findall(r"\b([abcdehl])\b", operand))
+    return out
+
+
+def _z80_first_read(insns: list) -> str | None:
+    """`bc`, `b`, `c`, `ix` or `iy` when the first block reads it before setting it (saving it with push doesn't
+    count: an interrupt handler does that), else None."""
+    written: set[str] = set()
+    for _addr, text, _ln in insns:
+        op, _, rest = text.partition(" ")
+        args = [a.strip() for a in rest.split(",")] if rest else []
+        if op in ("push", "pop"):
+            if op == "pop":
+                written |= _z80_regs(args[0])
+            continue
+        reads, writes = set(), set()
+        if op == "ld" and len(args) == 2:
+            dest, src = args
+            reads |= _z80_regs(src)
+            if dest.startswith("("):
+                reads |= _z80_regs(dest)
+            else:
+                writes |= _z80_regs(dest)
+        elif op in ("djnz",):
+            reads |= {"b"}
+        elif op in ("ldir", "lddr", "ldi", "ldd", "cpir", "cpdr", "cpi", "cpd", "otir", "inir", "outi", "ini"):
+            reads |= {"b", "c"}
+        elif op in ("in", "out"):
+            reads |= {"c"} if "(c)" in rest else set()
+            if op == "in" and args:
+                writes |= _z80_regs(args[0])
+        elif op in ("ex",):
+            reads |= _z80_regs(rest)
+            writes |= _z80_regs(rest)
+        else:
+            for a in args:
+                reads |= _z80_regs(a)
+            if op in ("inc", "dec", "add", "adc", "sbc", "rlc", "rrc", "rl", "rr", "sla", "sra", "sll", "srl",
+                      "set", "res") and args and not args[-1 if op in ("set", "res") else 0].startswith("("):
+                writes |= _z80_regs(args[-1] if op in ("set", "res") else args[0])
+        early = [r for r in ("b", "c", "ix", "iy") if r in reads and r not in written]
+        if early:
+            return "bc" if set(early) >= {"b", "c"} else early[0]
+        written |= writes
+        if _Z80_BLOCK_END.match(text):
+            return None
+    return None
+
+
+def _z80_hand_written(insns: list, base: int, end: int) -> str | None:
+    flags = False
+    for _addr, text, _ln in insns:  # a flag read before anything sets one: C passes nothing in the flags
+        if _Z80_FLAG_READ.match(text) and not flags:
+            return f"reads a flag before setting it ({text}): C passes nothing in the flags"
+        if _Z80_SETS_FLAGS.match(text):
+            flags = True
+        if _Z80_BLOCK_END.match(text):
+            break
+    for k, (_addr, text, _ln) in enumerate(insns):  # its return address taken before anything is pushed: what follows
+        if text.startswith("push ") or _Z80_BLOCK_END.match(text):  # its call is data
+            break
+        if re.match(r"^(?:pop (?:hl|de|bc|ix|iy)|ex \(sp\), (?:hl|ix|iy))$", text):
+            rest = [t for _a, t, _l in insns[k + 1:k + 6]]
+            while rest and rest[0] in ("pop af", "pop bc", "pop de", "inc sp"):
+                rest.pop(0)
+            if text == "pop hl" and rest[:1] == ["jp (hl)"]:
+                break  # (SDCC's return from a function whose arguments were on the stack: it drops them)
+            return (f"{text} first: it takes its return address to read the bytes after its call (or to go elsewhere), "
+                    "hand-written")
+    if (early := _z80_first_read(insns)):
+        return f"reads {early} before setting it: SDCC passes arguments in a, hl, l and de, never in bc, ix or iy"
+    targets = {int(m.group(1), 16) for _, text, _ in insns if (m := re.match(r"^(?:jr|jp|djnz)\b.*\$([0-9a-f]{4})$", text))}
+    for i, (addr, text, _ln) in enumerate(insns):
+        if text in ("exx", "ex af, af'"):
+            return f"{text} at ${addr:04x}: the alternate registers, which SDCC never uses"
+        if text.startswith("ld sp, ") and not text.startswith("ld sp, hl") and not text.startswith("ld sp, i"):
+            return "sets the stack pointer to an address: start-up code, hand-written"
+        if text.startswith("im ") or text in ("ld i, a", "ld r, a", "ld a, i", "ld a, r"):
+            return f"{text} at ${addr:04x}: setting up the CPU, which C writes only as inline assembly"
+        if text.startswith(("jr ", "djnz ")) and not base <= (to := int(text.rsplit("$", 1)[1], 16)) < end:
+            return f"{text} leaves the function (to ${to:04x}): SDCC's jr stays inside one, other code it reaches with jp"
+        nxt = insns[i + 1] if i + 1 < len(insns) else None
+        if re.match(r"^call \$", text) and nxt and nxt[1] == "ret" and nxt[0] not in targets:
+            return f"{text} then ret (at ${addr:04x}): SDCC writes a call at the end as a jp"
+    return None
 
 
 def _piece_reason(code: bytes, base: int, capped: bool, cpu) -> str | None:

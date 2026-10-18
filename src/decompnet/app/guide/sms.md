@@ -33,6 +33,12 @@ encoding. Both consoles use the same mapper and the same compiler, so everything
   `bank:address` trace): splitting the game again then starts functions where calls entered and where code ran that
   wasn't reached, and keeps what was only read as data out of functions.
 
+## Hand-written routines
+
+Most Master System and Game Gear games are assembly. A routine set aside as hand-written is documented instead of
+matched: WLA-DX assembly that rebuilds its bytes, with names, comments and constants (`claim_function(track="asm")`,
+guide `asm`).
+
 ## The matching lane
 
 Matching uses the pinned **GBDK-2020** toolchain: `sdcc -mz80` for C, `sdasz80` for assembly, the same

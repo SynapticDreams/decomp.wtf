@@ -1,6 +1,8 @@
-# The assembly track: documenting a hand-written Game Boy routine
+# The assembly track: documenting a hand-written routine
 
-Most Game Boy games were written in assembly, so for most of a game there is no C to match. A routine the app set
+Most Game Boy, Master System and Game Gear games were written in assembly, so for most of a game there is no C to
+match. (The Game Boy's assembler is RGBDS; the Master System's and Game Gear's is WLA-DX: see the end of this guide
+for what differs there.) A routine the app set
 aside as hand-written (status *assembly*, a reason such as "reads hl before setting it") is decompiled by
 **documenting** it: RGBDS assembly that rebuilds its bytes exactly, with names, comments and constants where the ROM
 has addresses. It's kept as the project's source for that routine and goes into the exported disassembly.
@@ -50,3 +52,27 @@ The brief has a **draft** that already rebuilds the bytes: the project's names f
   with the brief's notes; names the project already has carry over to every routine that uses them.
 - A routine that turns out not to be one (data, two routines, half of one): `correct_split` or `flag_for_review`, as
   on the C track.
+
+## Master System and Game Gear (WLA-DX)
+
+The same six checks, in WLA-DX, the assembler these consoles' disassemblies are written for:
+
+- Z80 syntax: `ld a, (wMenuOpen)`, `ld (MapperSlot2), a`, `jr nz, @loop`, `djnz @next`, `ex af, af'`. Data is
+  `.db` and `.dw`. Labels: `Name:` for the routine, `@name:` for its own (a child of the routine's label); WLA-DX's
+  anonymous `-:` and `+:` work too.
+- Name an address with `.DEFINE wMenuOpen $C0A2` (a number). The project's functions are labels where they run, so
+  `jr`, `djnz`, `jp` and `call` reach another routine by its name.
+- Banks: slot 1 is at $4000, slot 2 at $8000. A call or pointer into the slot the routine runs from reaches its own
+  bank; into the other slot, the bank that's mapped there. Where several banks have code there and nobody knows
+  which, it can't pass yet: `correct_split` or a note.
+- Hardware has no single standard set of names on these consoles; the judge's is:
+  - ports: `PortVDPData` ($BE), `PortVDPControl` / `PortVDPStatus` ($BF), `PortVCounter` ($7E), `PortHCounter` /
+    `PortPSG` ($7F), `PortIOA` ($DC), `PortIOB` ($DD), `PortMemoryControl` ($3E), `PortIOControl` ($3F),
+    `PortFMAddress` / `PortFMData` / `PortFMControl` ($F0-$F2); on the Game Gear `PortGGStart` ($00),
+    `PortGGLinkData`, `PortGGLinkDirection`, `PortGGSerialOut`, `PortGGSerialIn`, `PortGGSerialControl` ($01-$05),
+    `PortGGStereo` ($06);
+  - the mapper: `MapperControl` ($FFFC), `MapperSlot0`, `MapperSlot1`, `MapperSlot2` ($FFFD-$FFFF).
+- A video memory address the code sends to the VDP (`ld hl, $3800`) is a number to the CPU: mark it
+  `; number: the name table`, or `.DEFINE` a name for it.
+- Refused: what reads files or changes how the rest assembles (`.INCLUDE`, `.INCBIN`, `.MACRO`, `.BANK`, `.ORG`,
+  `.SECTION`...).
