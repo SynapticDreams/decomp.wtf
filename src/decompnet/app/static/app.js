@@ -2905,6 +2905,7 @@ const cwName = (c) => (c.startsWith("DS/") ? `CodeWarrior for DS ${c.slice(3)}` 
 function renderSource(ov) {
   const ex = ov.export, fork = ov.kind === "fork";
   $("srcExport").hidden = fork || !ov.exportable;
+  $("srcDiscExport").hidden = fork || ov.platform !== "psx";
   $("srcWhen").textContent = !fork && ex ? `exported ${since(ex.t)}` : "";
   if (fork) {
     const rb = ov.rebuild;
@@ -2953,6 +2954,22 @@ function renderSource(ov) {
   $("srcExport").textContent = ex ? "Export again" : "Export project";
 }
 $("srcOpen").onclick = () => openFolder();
+$("srcDiscExport").onclick = () => {
+  const body = dialog("Build disc image", '<p>Use your original BIN, IMG, ISO or CUE assets. File sizes and LBAs stay fixed. Audio and untouched sectors are copied exactly.</p>'
+    + '<label class="field"><span>Original disc path</span><input id="discBase" placeholder="/path/to/original.cue"></label>'
+    + '<label class="field"><span>Edited flat build (optional)</span><input id="discImage" placeholder="/path/to/build.bin"></label>'
+    + '<p class="muted small">Leave the build blank to reproduce the imported bytes after checking matched C. An edited build must retain the project image size and mapped extents.</p>'
+    + '<button class="primary" id="discBuild" type="button">Build new copy</button><pre class="joblog" id="discLog"></pre><div id="discResult"></div>');
+  body.querySelector("#discBuild").onclick = async () => {
+    $("discBuild").disabled = true;
+    try {
+      const { job } = await api("/api/disc/export", { method: "POST", body: { slug: S.slug, original: $("discBase").value.trim(), image: $("discImage").value.trim() } });
+      const r = await followJob(job, $("discLog"));
+      $("discResult").textContent = (r.identical ? "Identical disc copy" : r.changed_sectors + " sectors updated") + ". File extents preserved. Saved to " + r.path;
+    } catch (e) { toast(esc(e.message), "err"); } finally { if ($("discBuild")) $("discBuild").disabled = false; }
+  };
+};
+
 $("srcExport").onclick = async () => {
   $("srcExport").disabled = true;
   $("expLog").hidden = false;

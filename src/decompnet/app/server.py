@@ -696,6 +696,14 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         return {"job": jobs.start("PS1 debug information", lambda log: net.import_psx_debug(
             slug, decoded, bool(data.get("apply")), str(data["unit"]) if data.get("unit") else None))}
 
+    def p_disc_export(slug, request, data):
+        if not isinstance(data.get("original"), str) or not data["original"].strip():
+            raise NetworkError("provide the original local BIN, IMG, ISO or CUE path")
+        if data.get("image") is not None and not isinstance(data["image"], str):
+            raise NetworkError("image must be a local flat-build path")
+        return {"job": jobs.start("disc export", lambda log: net.export_disc(
+            slug, Path(data["original"]).expanduser(), Path(data["image"]).expanduser() if data.get("image") else None, log))}
+
     def p_export(slug, request, data):
         def work(log):
             res = net.export_rom(slug, log=log, translation_units=data.get("translation_units"))
@@ -788,7 +796,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/function": (lambda s, r, d: net.function_detail(s, r.query_params.get("name", "")), ["GET"]),
         "/api/diff": (lambda s, r, d: net.function_diff(s, r.query_params.get("name", ""),
                                                         r.query_params.get("which", "latest")), ["GET"]),
-        "/api/compiler": (p_compiler, ["POST"]), "/api/export": (p_export, ["POST"]), "/api/open": (p_open, ["POST"]),
+        "/api/compiler": (p_compiler, ["POST"]), "/api/export": (p_export, ["POST"]), "/api/disc/export": (p_disc_export, ["POST"]), "/api/open": (p_open, ["POST"]),
         "/api/compiler/probe": (p_compiler_probe, ["POST"]),
         "/api/compiler/small-data": (lambda s, r, d: net.small_data_evidence(s), ["POST"]),
         "/api/libraries/psyq": (p_psyq, ["POST"]),
