@@ -4,8 +4,9 @@ CPU: MIPS R3000A (MIPS I). Things that look odd at first:
 - Load delay slot: the instruction after a load can't use the loaded value; you'll see `nop`s or
   reordering there. Branch delay slots exist too; there's no branch-likely.
 - `mult`/`div` put results in HI/LO (`mflo`, `mfhi`). Division is followed by checks for divide by zero
-  (`break 7`) and overflow (`break 6`): the PSY-Q assembler adds them, and the project's build (GCC plus
-  maspsx, which imitates Sony's ASPSX) reproduces that. Write a plain `/`.
+  (`break 7`) and overflow (`break 6`): the PSY-Q assembler adds them. The bundled GNU assembler also
+  emits these checks. Projects can optionally select maspsx emulation of a specific ASPSX version;
+  the function brief identifies it when enabled. Write a plain `/`.
 - `$gp`-relative small data (-G4 or -G8): small globals are read with `lw $v0, %gp_rel(sym)($gp)`
   (one instruction) instead of `lui` + `lw`. In a ROM project, declare such globals in context.h
   *without* `extern` (`s32 D_8001B278;`): the compiler then treats them as small data. With `extern`

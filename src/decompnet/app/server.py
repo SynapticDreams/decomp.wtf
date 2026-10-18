@@ -664,9 +664,9 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
     def p_compiler(slug, request, data):
         if data.get("unit"):
-            net.set_unit_compiler(slug, str(data["unit"]), data.get("toolchain"), data.get("flags"))
+            net.set_unit_compiler(slug, str(data["unit"]), data.get("toolchain"), data.get("flags"), data.get("aspsx"))
         else:
-            net.set_compiler(slug, str(data.get("toolchain", "")), data.get("flags"))
+            net.set_compiler(slug, str(data.get("toolchain", "")), data.get("flags"), data.get("aspsx"))
         return net.overview(slug)
 
     def p_export(slug, request, data):

@@ -46,7 +46,7 @@ def next_job(net: Network, agent: Agent) -> dict | None:
                 includes[str(f.relative_to(base))] = f.read_text(errors="replace", encoding="utf-8")
     return {
         "project": fn["slug"], "function": fn["name"], "unit": fn["unit"] or None,
-        "toolchain": cfg["toolchain"], "flags": cfg.get("flags"), "cmd": cfg.get("cmd"),
+        "toolchain": cfg["toolchain"], "flags": cfg.get("flags"), "cmd": cfg.get("cmd"), "aspsx": cfg.get("aspsx"),
         "context": net._context(fn["project_id"], fn["unit"])["header"],
         "include_files": includes,
         "source": fn["best_source"], "best_score": fn["best_score"], "max_score": fn["n_insns"] * 100,
