@@ -579,7 +579,7 @@ async function openProject(slug, tab = "overview") {
   show("project");
   S.slug = slug; S.e = 0; S.a = 0; S.seq = {}; S.scores = new Map(); S.flash = new Map(); S.sessions = []; S.claims = [];
   S.apFeed = null; S.stats = null; S.map = []; S.mapSig = null; geo = null;
-  $("activity").innerHTML = ""; $("thoughts").innerHTML = ""; $("now").innerHTML = ""; $("expLog").hidden = true; $("expResult").innerHTML = ""; $("teamBox").innerHTML = "";
+  $("activity").innerHTML = ""; $("thoughts").innerHTML = ""; setHtml($("now"), ""); $("expLog").hidden = true; $("expResult").innerHTML = ""; $("teamBox").innerHTML = "";
   try {
     if (!S.st) await loadState();
     S.ov = await api(`/api/project?slug=${slug}`);
@@ -1716,17 +1716,27 @@ function reading(c) {
   return min >= 1 ? `reading · ${min} min` : "reading";
 }
 
+/* Live lists are redrawn on every poll (1-2 s): only when their HTML changed, so a click on a button or card that
+   the redraw would replace mid-press (Stop, Disconnect) isn't lost. True when it was redrawn. */
+function setHtml(box, html) {
+  if (box.__html === html) return false;
+  box.innerHTML = html;
+  box.__html = html;
+  return true;
+}
+
 function renderNow(claims) {
   const box = $("now");
   claims = claims.filter((c) => c.agent !== AUTO);
-  if (!claims.length) { box.innerHTML = ""; return; }
-  box.innerHTML = claims.map((c) => {
+  if (!claims.length) { setHtml(box, ""); return; }
+  const html = claims.map((c) => {
     const sc = S.scores.get(c.name) || [];
     const p = pctOf(c.best_score, c.n_insns);
     const [sym, unit] = c.name.split(/@(.*)/s);  // a fork's symbol@file: the symbol first, the file after it
     return `<div class="job" data-fn="${esc(c.name)}"><div class="job-top"><span class="job-name" title="${esc(c.name)}">${esc(sym)}${unit ? `<small>@${esc(unit)}</small>` : ""}</span><span class="job-who" title="${esc(c.agent)}">${esc(c.agent)}</span></div>
       ${spark(sc)}<div class="job-foot"><span>${c.n_insns} insns · ${c.attempts} tries</span><b>${p == null ? reading(c) : pctText(p)}</b></div></div>`;
   }).join("");
+  if (!setHtml(box, html)) return;
   box.querySelectorAll(".job").forEach((j) => { j.onclick = () => openFn(j.dataset.fn); });
 }
 
@@ -1739,7 +1749,7 @@ function renderSessions(sessions) {
   const running = sessions.filter((s) => ["starting", "working", "waiting"].includes(s.state));
   $("stopAll").hidden = running.length < 2;
   $("removeAll").hidden = sessions.length - running.length < 2;
-  box.innerHTML = sessions.map((s) => {
+  const html = sessions.map((s) => {
     const claim = S.claims.find((c) => c.agent === s.agent);
     const dot = s.state === "error" ? "err" : s.state === "working" ? "on" : s.state === "stopped" ? "" : "work";
     const live = ["starting", "working", "waiting"].includes(s.state);
@@ -1757,10 +1767,11 @@ function renderSessions(sessions) {
   const own = new Set(sessions.map((s) => s.agent));
   const outside = [...new Set(S.claims.filter((c) => !own.has(c.agent) && c.agent !== AUTO).map((c) => c.agent))];
   $("disconnectAll").hidden = outside.filter((a) => !a.startsWith("@")).length < 2;
-  box.insertAdjacentHTML("beforeend", outside.map((a) => `<div class="session ext"><div class="session-top"><span class="dot on"></span><b>${esc(a)}</b><span class="tag">${a.startsWith("@") ? "in the room" : "connected agent"}</span>${a.startsWith("@") ? "" : `<button class="ghost" data-kick="${esc(a)}" type="button">Disconnect</button>`}</div>
-      <span class="last">on ${S.claims.filter((c) => c.agent === a).map((c) => fnLink(c.name)).join(", ")}</span></div>`).join(""));
-  box.querySelectorAll(".fn").forEach((x) => { x.onclick = () => openFn(x.dataset.fn); });
   $("noSessions").hidden = sessions.length + outside.length > 0;
+  const ext = outside.map((a) => `<div class="session ext"><div class="session-top"><span class="dot on"></span><b>${esc(a)}</b><span class="tag">${a.startsWith("@") ? "in the room" : "connected agent"}</span>${a.startsWith("@") ? "" : `<button class="ghost" data-kick="${esc(a)}" type="button">Disconnect</button>`}</div>
+      <span class="last">on ${S.claims.filter((c) => c.agent === a).map((c) => fnLink(c.name)).join(", ")}</span></div>`).join("");
+  if (!setHtml(box, html + ext)) return;
+  box.querySelectorAll(".fn").forEach((x) => { x.onclick = () => openFn(x.dataset.fn); });
   box.querySelectorAll("[data-kick]").forEach((b) => {
     b.onclick = async () => {
       const who = b.dataset.kick;

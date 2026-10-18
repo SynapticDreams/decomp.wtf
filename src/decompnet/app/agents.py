@@ -27,7 +27,7 @@ from pathlib import Path
 import httpx
 
 from ..scoring import MECHANICAL, NEAR_MISS, STALL_ATTEMPTS, stage  # noqa: F401 (the tiers' thresholds)
-from ..network import NetworkError
+from ..network import Agent, NetworkError
 from . import tools
 from .engine import RomNetwork
 
@@ -825,6 +825,17 @@ class Manager:
                     _terminate(s.proc)
                 if s.state not in ("error",):
                     s.state = "stopped"
+                if sid is not None and s.agent_id:
+                    # its function goes back now, not when its thread ends: an API helper waiting on its model kept
+                    # it until the reply came (and the room's host is asked off this thread: Stop doesn't wait)
+                    row = self.net.store.one("SELECT id, name, owner, trusted FROM agents WHERE id=?", s.agent_id)
+                    if row is not None:
+                        agent = Agent(row["id"], row["name"], row["owner"], bool(row["trusted"]))
+                        if self.net.links.get(s.slug) is None:
+                            self._free_claims(s, agent)
+                        else:
+                            threading.Thread(target=self._free_claims, args=(s, agent), daemon=True,
+                                             name=f"free-{s.id}").start()
         if sid is not None:
             self.persist(self.running())
 
@@ -1004,18 +1015,23 @@ class Manager:
         if not s.stop.is_set():  # finished by itself (done, budget, errors): no need to resume it
             s.stop.set()
             self.persist(self.running())
+        self._free_claims(s, agent)
+        self.net.starred_only.pop(agent.id, None)
+        self.net.focus.pop(agent.id, None)
+        self.net.pinned.pop(agent.id, None)
+
+    def _free_claims(self, s: Session, agent) -> None:
+        """Give back whatever the helper's agent still holds, so others can take it at once (not the function's fault:
+        no abandon counted). In a room the host holds the real claim, so it's told too."""
         held = self.net.store.one("SELECT f.name FROM claims c JOIN functions f ON f.id=c.function_id WHERE c.agent_id=?", agent.id)
         link = self.net.links.get(s.slug)
-        if held and link is not None:  # in a room, the host holds the real claim
+        if held and link is not None:
             try:
                 link.call("/collab/release", agent, function=held["name"], notes="")
             except Exception:
                 pass
-        with self.net.store.tx() as db:  # release any claim the agent still holds so others can take it
+        with self.net.store.tx() as db:
             db.execute("DELETE FROM claims WHERE agent_id=?", (agent.id,))
-        self.net.starred_only.pop(agent.id, None)
-        self.net.focus.pop(agent.id, None)
-        self.net.pinned.pop(agent.id, None)
 
     # -- a helper pinned to one function
 

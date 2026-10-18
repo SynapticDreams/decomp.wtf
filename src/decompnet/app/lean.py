@@ -437,7 +437,7 @@ class Lean:
                 self.push("info", f"call {self.calls} ({label}): matched 🎉")
                 return f"{self.name} matched 🎉"
             if res["score"] is None:
-                errors.append(res["text"])
+                errors.append(res["text"].split("\n\n⏭")[0])  # the error, not the nudge to release (no tools here)
             elif best is None or res["score"] < best:
                 best = res["score"]
         self.stamp("", None, "")

@@ -26,7 +26,7 @@ from pathlib import Path
 
 from .. import scoring, seeds, similarity, toolchains
 from ..elfobj import FunctionObj
-from ..network import DISCONNECTED, Agent, Network, NetworkError, _hash_token
+from ..network import DISCONNECTED, RELEASE_COOLDOWN, Agent, Network, NetworkError, _hash_token
 from ..rom import detect, match, split
 from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
 
@@ -1369,7 +1369,8 @@ class RomNetwork(Network):
             f"""SELECT f.name FROM functions f WHERE f.project_id=? AND f.status='open'
                 AND f.id NOT IN (SELECT function_id FROM claims WHERE agent_id<>?)
                 AND (? = -1 OR f.n_insns <= ?) {STRATEGY_WHERE.get(strategy, "")}
-                ORDER BY {STRATEGIES[strategy]} LIMIT 12""", proj["id"], agent.id, cap, cap)
+                AND f.name NOT IN (SELECT detail FROM events WHERE project_id=? AND agent_id=? AND kind='release')
+                ORDER BY {STRATEGIES[strategy]} LIMIT 12""", proj["id"], agent.id, cap, cap, proj["id"], agent.id)
         for r in rows:
             try:
                 return link.claim(agent, r["name"], "easiest")
@@ -1869,6 +1870,12 @@ class RomNetwork(Network):
             "SELECT 1 FROM events WHERE project_id=? AND agent_id=? AND kind='release' AND detail=? AND created_at>=?",
             project_id, agent_id, n, since)}
 
+    def released_by_anyone_since(self, project_id: int, names: list[str], since: float) -> set[str]:
+        """Which of `names` anyone gave back since `since`."""
+        return {n for n in names if self.store.one(
+            "SELECT 1 FROM events WHERE project_id=? AND kind='release' AND detail=? AND created_at>=?",
+            project_id, n, since)}
+
     def claim_row(self, agent: Agent, project: str | None = None, function: str | None = None, strategy: str = "easiest"):
         if (pin := self.pinned.get(agent.id)) is not None:  # a helper pinned to one function gets it, and only it
             if function is not None and self._function(function, project)["name"] != pin:
@@ -1882,8 +1889,13 @@ class RomNetwork(Network):
             if only and function is not None and function not in names and not held:
                 raise NetworkError(f"{function} isn't marked ★ Next in line: this helper works only on the starred ones")
             if function is None and agent.id not in self.focus:  # a Focus picks by its own rule, stars included
-                # a starred-only helper that released a star (data, not code...) doesn't get it handed back again
-                given_up = self.released_since(agent.id, proj["id"], names, self.starred_only[agent.id]) if only else set()
+                # A star the helper released (data, not code...) isn't handed back to it: a starred-only helper's
+                # since it started, anyone else's ever, as the default order does. Nor, to any but a starred-only
+                # helper, a star someone released in the last RELEASE_COOLDOWN: it waits its turn in the default
+                # order (one fork measured 240 claims on 8 stars in 3 hours, nothing matched, 800 functions waiting)
+                given_up = self.released_since(agent.id, proj["id"], names, self.starred_only[agent.id] if only else 0)
+                if not only:
+                    given_up |= self.released_by_anyone_since(proj["id"], names, time.time() - RELEASE_COOLDOWN)
                 for name in names:
                     row = self.store.one("SELECT f.id, f.status FROM functions f WHERE f.project_id=? AND f.name=?", proj["id"], name)
                     if row and row["status"] == "open" and name not in given_up and not held and not self.store.one(

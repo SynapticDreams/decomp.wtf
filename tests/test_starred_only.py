@@ -137,3 +137,19 @@ def test_starting_a_starred_only_helper(net, tmp_path, monkeypatch):
     (sid2,) = r.json()["started"]
     assert "only_starred" not in manager.sessions[sid2].options  # only a real true
     assert c.post("/api/claims/clear", json={"slug": "game"}, headers=h).json() == {"cleared": 0}
+
+
+def test_a_star_given_up_isnt_handed_straight_back(net):
+    """One fork measured 240 claims on 8 stars in 3 hours, nothing matched, while 800 functions waited: a helper got
+    back the star it had just released, every time."""
+    first, _ = net.local_agent("first")
+    assert net.claim_row(first, "game")["name"] == "star_b"
+    net.release(first, "star_b", "data, not code", "game")
+    assert net.claim_row(first, "game")["name"] == "star_a"  # not star_b again
+    second, _ = net.local_agent("second")
+    assert net.claim_row(second, "game")["name"] == "easy"  # star_b was given up minutes ago: it waits its turn
+    with net.store.tx() as db:  # an hour later, someone else may try it
+        db.execute("UPDATE events SET created_at=created_at-3600 WHERE kind='release'")
+    net.release(second, "easy", "", "game")
+    third, _ = net.local_agent("third")
+    assert net.claim_row(third, "game")["name"] == "star_b"

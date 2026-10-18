@@ -284,3 +284,40 @@ def test_a_function_with_an_early_return_is_compiled_whole():
     fn = gb_build.compile_function("typedef unsigned char u8;\n"
                                    "u8 f(u8 a, u8 b) { u8 r = a + b; if (r < a) return 0xFF; return r; }\n", "f")
     assert fn.code == bytes.fromhex("4f83b9d03effc9")
+
+
+def test_sdcc_runs_under_the_compile_limits(monkeypatch, tmp_path):
+    """Helpers and the permuter together could start any number of SDCC processes on agent-written source: they wait
+    for the same slots as the other lanes' compilers now, under the same caps (CPU time up to the timeout)."""
+    import threading
+    import time
+
+    from decompnet import compiler
+    from decompnet.rom import gb_build
+
+    running, peak, seen = [0], [0], []
+    lock = threading.Lock()
+
+    class Done:
+        returncode, stdout, stderr = 0, "", ""
+
+    def run(argv, **kw):
+        with lock:
+            running[0] += 1
+            peak[0] = max(peak[0], running[0])
+            seen.append(argv)
+        time.sleep(0.05)
+        with lock:
+            running[0] -= 1
+        return Done()
+
+    monkeypatch.setattr(compiler, "_SLOTS", threading.BoundedSemaphore(2))
+    monkeypatch.setattr(gb_build.subprocess, "run", run)
+    monkeypatch.setattr(gb_build.shutil, "which", lambda name: "/usr/bin/prlimit" if name == "prlimit" else None)
+    threads = [threading.Thread(target=gb_build._run, args=(["sdcc", "-v"], tmp_path, 60)) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert peak[0] == 2 and len(seen) == 6
+    assert seen[0][0] == "prlimit" and "--cpu=65" in seen[0] and seen[0][-2:] == ["sdcc", "-v"]
