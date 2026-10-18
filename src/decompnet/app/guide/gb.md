@@ -22,6 +22,10 @@ its own disassembler (`decompnet.rom.sm83`) and reads cartridges through `mgbdis
   them. Code nothing reached but that reads like code is still split as before, and followed when it
   calls two functions that were reached.
 
+- The import reads which toolchain built the game from its start-up code (GBDK's, version by version). A game
+  GBDK built is C, and its version says whether the pinned GBDK-2020 4.5.0 writes the same code; one no compiler
+  built is assembly, for the assembly track.
+
 ## The matching lane
 
 Matching is done with the pinned **GBDK-2020** toolchain: `sdcc -msm83` for C, `sdasgb` for assembly.
