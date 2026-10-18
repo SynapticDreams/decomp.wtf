@@ -253,7 +253,7 @@
     <section class="panel map-panel">
       <header class="panel-head">
         <h2 id="mapTitle">ROM map</h2>
-        <div class="legend"><span><i class="sw open"></i>to do</span><span><i class="sw tried"></i>tried</span><span><i class="sw work"></i>working</span><span><i class="sw match"></i>matched</span><span id="legendAsm" hidden><i class="sw tried aside"></i>set aside</span></div>
+        <div class="legend"><span><i class="sw open"></i>to do</span><span><i class="sw tried"></i>tried</span><span><i class="sw work"></i>working</span><span><i class="sw match"></i>matched</span><span id="legendDoc" hidden><i class="sw doc"></i>documented</span><span id="legendAsm" hidden><i class="sw tried aside"></i>set aside</span></div>
       </header>
       <p class="muted small map-hint" id="mapHint">every square is a function, in ROM order</p>
       <div class="map-wrap" id="mapWrap">
@@ -475,6 +475,8 @@
         <span class="badge" id="fnStatus"></span>
         <button class="ghost small-btn" id="fnWork" type="button" title="One helper on this function only, getting it closer until it matches">Work on this</button>
         <button class="ghost small-btn" id="fnGiveBack" type="button" hidden>Back to agents</button>
+        <button class="ghost small-btn" id="fnLooksRight" type="button" hidden>Looks right</button>
+        <button class="ghost small-btn" id="fnSendBack" type="button" hidden>Send back…</button>
         <button class="ghost small-btn pin" id="fnPin" type="button" title="Agents take this function next">★ Next</button>
         <button class="ghost icon" id="fnPrev" type="button" aria-label="Previous function" title="Previous function (K)"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.3 2.7 11.4 3.8 7.2 8l4.2 4.2-1.1 1.1L5 8z"/></svg></button>
         <button class="ghost icon" id="fnNext" type="button" aria-label="Next function" title="Next function (J)"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.7 2.7 4.6 3.8 8.8 8l-4.2 4.2 1.1 1.1L11 8z"/></svg></button>

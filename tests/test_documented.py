@@ -73,3 +73,33 @@ def test_someone_elses_claim_is_respected(game):
         db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fid, other.id, 0, 1e12))
     with pytest.raises(NetworkError, match="claimed by other"):
         net.document_function(agent, "g", "Call_002_4a10", GOOD)
+
+
+def test_the_map_and_the_overview_count_documented_routines_apart(game, monkeypatch):
+    net, agent = game
+    monkeypatch.setattr(RomNetwork, "REVIEW_SAMPLE", 1.0)  # (every one picked for a person to look over)
+    before = {r["name"]: r for r in net.function_map("g")}
+    assert before["Call_002_4a10"].get("track") and not before["Call_002_5000"].get("track")  # padding isn't code
+    net.document_function(agent, "g", "Call_002_4a10", "DEF wMenuOpen EQU $c0a2\n" + GOOD)
+    row = {r["name"]: r for r in net.function_map("g")}["ClearMenuBackground"]
+    assert row["status"] == "documented" and row["sample"]
+    ov = net.overview("g")
+    assert (ov["documented"], ov["documented_bytes"]) == (1, len(CODE))
+    assert ov["mapped"]["code"] == len(CODE) + 1 and ov["mapped"]["to_document"] == 0  # (and FillTilemapZero's one byte)
+    detail = net.function_detail("g", "ClearMenuBackground")
+    assert detail["source_kind"] == "documented" and detail["sample"] and detail["track"]
+
+
+def test_a_person_looks_over_a_documented_routine(game, monkeypatch):
+    net, agent = game
+    monkeypatch.setattr(RomNetwork, "REVIEW_SAMPLE", 1.0)
+    net.document_function(agent, "g", "Call_002_4a10", "DEF wMenuOpen EQU $c0a2\n" + GOOD)
+    with pytest.raises(NetworkError, match="what's wrong"):
+        net.review_documented("g", "ClearMenuBackground", False, "no")
+    net.review_documented("g", "ClearMenuBackground", True)
+    assert not net.function_detail("g", "ClearMenuBackground")["sample"]
+    net.review_documented("g", "ClearMenuBackground", False, "the name says menu, but it runs on every frame")
+    fn = net.store.one("SELECT * FROM functions WHERE name='ClearMenuBackground'")
+    assert fn["status"] == "asm" and "ClearMenuBackground:" in fn["best_source"] and fn["matched_source"] is None
+    assert "sent back from review" in net.store.one("SELECT text FROM notes WHERE function_id=? ORDER BY id DESC", fn["id"])["text"]
+    assert "Best attempt so far" in net.get_function("ClearMenuBackground", "g")

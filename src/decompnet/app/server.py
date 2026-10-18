@@ -579,7 +579,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         return JSONResponse({"job": jobs.start("import", work)})
 
     MAP_KEYS = ("name", "vram", "size", "insns", "unit", "status", "best", "attempts", "agent", "matched_at", "matched_by",
-                "why", "review", "review_by")  # (why a function is set aside, and whether an agent set it aside for review)
+                "why", "review", "review_by",  # (why a function is set aside, and whether an agent set it aside for review)
+                "track", "sample")  # (the assembly track: a routine to document; a documented one to look over)
 
     @mcp.custom_route("/api/map", methods=["GET"])
     async def api_map(request: Request) -> Response:
@@ -713,7 +714,11 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     def p_try(slug, request, data):
         """You, editing a function in the GUI: judged like an agent's attempt (and credited to "you")."""
         agent, _ = net.local_agent("you")
-        res = net.attempt(agent, str(data.get("name", "")), str(data.get("source", "")), slug)
+        name, source = str(data.get("name", "")), str(data.get("source", ""))
+        if net._on_asm_track(name, slug):  # a hand-written Game Boy routine: its documented assembly, judged
+            text = net.document_function(agent, slug, name, source)
+            return {"score": 0 if text.startswith("✅") else None, "matched": text.startswith("✅"), "text": text[-4000:]}
+        res = net.attempt(agent, name, source, slug)
         return {"score": res["score"], "matched": res["matched"], "text": res["text"][-4000:]}
 
     def p_release(slug, request, data):
@@ -762,6 +767,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                                 ["POST"]),
         "/api/symbols/remove": (lambda s, r, d: net.remove_symbol_file(s), ["POST"]),
         "/api/coverage/remove": (lambda s, r, d: net.remove_coverage(s), ["POST"]),
+        "/api/documented/review": (lambda s, r, d: net.review_documented(s, str(d.get("function", "")), d.get("ok") is True,
+                                                                          str(d.get("note", ""))), ["POST"]),
         "/api/delete": (p_delete, ["POST"]), "/api/agents/manual": (p_manual, ["POST"]),
         "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]),
