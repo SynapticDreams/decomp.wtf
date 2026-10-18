@@ -219,6 +219,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "split_function": lambda net, agent, slug, function, at, new_name="":
         net.split_function(agent, slug, function, at, new_name),
     "merge_function": lambda net, agent, slug, function: net.merge_function(agent, slug, function),
+    "flag_for_review": lambda net, agent, slug, function, reason="", notes="":
+        net.flag_for_review(agent, slug, function, reason or notes),
     "read_data": lambda net, agent, slug, what, length=64, unit="": (net.forks.read_data(agent, slug, what, length)
                                                             if net.fork_slug(slug) else net.read_data(slug, what, length, unit)),
     "list_functions": lambda net, agent, slug, status="open", limit=40: net.list_functions(slug, status, limit),
@@ -354,6 +356,13 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         """Split a function the disassembler merged with the next one (e.g. after a function that never
         returns). `at` is the address where the second function starts."""
         return await run(ctx, "split_function", function=function, at=at, new_name=new_name)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def flag_for_review(ctx: Context, function: str, reason: str) -> str:
+        """Set a function aside for a person when no agent should work on it as it is: the split took data for
+        code, joined or cut routines wrongly, or the code is something no C writes that the set-aside rules
+        missed. Say why in a sentence. For a function that's just hard, use release_function with notes."""
+        return await run(ctx, "flag_for_review", function=function, reason=reason)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def merge_function(ctx: Context, function: str) -> str:

@@ -562,7 +562,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             return {"slug": slug}
         return JSONResponse({"job": jobs.start("import", work)})
 
-    MAP_KEYS = ("name", "vram", "size", "insns", "unit", "status", "best", "attempts", "agent", "matched_at", "matched_by")
+    MAP_KEYS = ("name", "vram", "size", "insns", "unit", "status", "best", "attempts", "agent", "matched_at", "matched_by",
+                "why", "review", "review_by")  # (why a function is set aside, and whether an agent set it aside for review)
 
     @mcp.custom_route("/api/map", methods=["GET"])
     async def api_map(request: Request) -> Response:
@@ -738,6 +739,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                                                         r.query_params.get("which", "latest")), ["GET"]),
         "/api/compiler": (p_compiler, ["POST"]), "/api/export": (p_export, ["POST"]), "/api/open": (p_open, ["POST"]),
         "/api/resplit": (p_resplit, ["POST"]),
+        "/api/give_back": (lambda s, r, d: net.give_to_agents(s, str(d.get("function", ""))), ["POST"]),
         "/api/delete": (p_delete, ["POST"]), "/api/agents/manual": (p_manual, ["POST"]),
         "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]),

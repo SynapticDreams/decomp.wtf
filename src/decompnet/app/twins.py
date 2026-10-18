@@ -392,6 +392,8 @@ class Twins:
             chunk = found[at:at + 500]
             for r in self.net.store.all(f"SELECT * FROM functions WHERE id IN ({','.join('?' * len(chunk))}) "
                                         "AND status='open'", *chunk):
+                if json.loads(r["meta"] or "{}").get("for_agents"):
+                    continue  # a person gave it back to agents
                 self.net.forks.mark_asm(r, reason=prints[r["id"]].asm)
                 n += 1
         return n
@@ -408,6 +410,8 @@ class Twins:
         marks, trims = [], []
         for r in self.net.store.all("SELECT id, name, target, meta, vram, size, rom_offset FROM functions "
                                     "WHERE project_id=? AND status='open'", proj["id"]):
+            if json.loads(r["meta"] or "{}").get("for_agents"):
+                continue  # a person gave it back to agents: no rule takes it again
             code = r["target"] or b""
             if arch in PIECES:
                 reason, longest = PIECES[arch]
@@ -588,7 +592,8 @@ class Twins:
             log.info("twins: %s from %s not tried: %s", b["name"], a["name"], str(e)[:300])
             return "skip"
         if not source:
-            if self.net.fork_slug(proj["slug"]) and self.net.forks.is_asm(proj, a):
+            if self.net.fork_slug(proj["slug"]) and self.net.forks.is_asm(proj, a) \
+                    and not json.loads(b["meta"] or "{}").get("for_agents"):  # (unless a person gave it back)
                 self.net.forks.mark_asm(b, a["name"])
                 return "asm"
             return "skip"

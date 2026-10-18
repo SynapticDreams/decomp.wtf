@@ -1827,6 +1827,9 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
                           s(old=st("current name", True), new=st("new name", True), message=st("why"))),
         "split_function": ("Split a merged function at an address.",
                            s(function=st("function", True), at=st("address like 0x80001234", True), new_name=st("name"))),
+        "flag_for_review": ("Set a function aside for a person (wrong split, data taken for code, code no C writes): "
+                            "say why. Just hard? release_function instead.",
+                            s(function=st("function", True), reason=st("what a person should look at", True))),
         "merge_function": ("Join a function with its neighbour when the split cut one routine in two.",
                            s(function=st("function", True))),
         "read_data": ("Hex dump of the original's data at an address or symbol.", s(what=st("address or symbol", True),

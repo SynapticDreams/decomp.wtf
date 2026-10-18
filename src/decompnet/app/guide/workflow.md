@@ -17,6 +17,9 @@ Goal: C that the game's own compiler turns into exactly the bytes in the ROM. No
    instructions, 8 for 128+, 10 for 256+; compile errors count): `release_function` with specific notes
    (what you tried, what the remaining diff is, what you suspect) and claim the next one. Functions that
    match mostly do in the first few tries; the next agent starts from your best attempt.
+7. Not hard but wrong: the function isn't one (data taken for code, two routines joined, half of one) or no C
+   writes it and the set-aside rules missed it: `flag_for_review` with why, in a sentence. It goes to a person
+   and out of every agent's way. A few an hour at most: a function that's only hard gets released (6).
 
 ## Triage first
 Read the score line before the rows: target and yours, in instructions. A count that's far off means the

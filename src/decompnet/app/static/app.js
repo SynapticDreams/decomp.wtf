@@ -691,7 +691,7 @@ async function poll(first) {
     const matches = [];
     for (const ev of live.events) {
       S.e = Math.max(S.e, ev.id);
-      if (["match", "split", "merge", "rename", "reopen"].includes(ev.kind)) mapDirty = true;
+      if (["match", "split", "merge", "rename", "reopen", "review"].includes(ev.kind)) mapDirty = true;
       if (!fresh(ev)) continue;
       if (ev.kind === "match") {
         S.flash.set(ev.detail, performance.now());
@@ -1608,7 +1608,7 @@ function applyAttempts(attempts) {
 
 function cellColor(f) {
   if (f.status === "matched") return [colors.match, 1];
-  if (f.status === "asm") return [colors.tried, 0.35];
+  if (f.status === "asm") return f.review ? [colors.work, 0.6] : [colors.tried, 0.35];
   if (f.best != null) return [mix(colors.tried, colors.hi, Math.pow(pctOf(f.best, f.insns) || 0, 3)), 1];
   return [colors.open, 1];
 }
@@ -2048,6 +2048,7 @@ function eventHtml(ev) {
     case "rename": return `${who} renamed ${esc(d)}`;
     case "split": return `${who} split ${esc(d)}`;
     case "merge": return `${who} joined ${esc(d)}`;
+    case "review": return `${who} set ${esc(d)} aside for a person to review`;
     case "files": return `${who ? who + " " : ""}gave code without a source file one: ${esc(d)}`;
     case "import": return `ROM analysed: ${esc(d)}`;
     case "compiler": return `compiler set to ${esc(d)}`;
@@ -2191,7 +2192,8 @@ function fnBadge(d = S.fnDetail) {
   const working = S.claims.find((c) => c.name === d.name);
   const st = $("fnStatus");
   st.className = "badge " + (d.status === "matched" ? "matched" : working ? "working" : "");
-  st.textContent = d.status === "matched" ? "matched" : working ? `${working.agent} working` : d.best != null ? `best ${pctText(pctOf(d.best, d.insns))}` : "not started";
+  st.textContent = d.status === "matched" ? "matched" : d.status === "asm" ? (d.review ? "needs review" : "set aside") : working ? `${working.agent} working` : d.best != null ? `best ${pctText(pctOf(d.best, d.insns))}` : "not started";
+  st.title = d.status === "asm" ? (d.why || "") : "";
 }
 
 function showFnTab(tab) {
@@ -2229,6 +2231,17 @@ async function refreshFn(first) {
     $("fnPin").onclick = () => togglePrio(d.name, !pinned).then(() => refreshFn(false));
     $("fnWork").hidden = S.ov.kind === "fork" || d.status !== "open" || (S.ov.room || {}).role === "guest";
     $("fnWork").onclick = () => openPinHelper(d.name);
+    // a set-aside function back to agents: a rule was wrong about it, or a review found it worth doing
+    $("fnGiveBack").hidden = d.status !== "asm" || (S.ov.room || {}).role === "guest";
+    $("fnGiveBack").title = `${d.review ? "Set aside for review" : "Set aside"}${d.why ? `: ${d.why}` : ""}. Give it back to agents: the set-aside rules leave it alone after.`;
+    $("fnGiveBack").onclick = async () => {
+      try {
+        await api("/api/give_back", { method: "POST", body: { slug: S.slug, function: d.name } });
+        toast(`<code>${esc(d.name)}</code>&nbsp;is back with the agents.`, "match");
+        await refreshFn(false);
+        poll(false);
+      } catch (e) { toast(esc(e.message), "err"); }
+    };
     $("noteAdd").onclick = async () => {
       const text = $("noteText").value.trim();
       if (!text) return;
@@ -2434,19 +2447,21 @@ $("fnNext").onclick = () => stepFn(1);
 /* ------------------------------------------------------------------ function list */
 const L = { q: "", filter: "all", sort: "i", dir: 1, limit: 200, rows: [], hideAsm: true };
 try { L.hideAsm = localStorage.getItem("fnHideAsm") !== "0"; } catch { /* no storage: the default */ }
-const FILTERS = [["all", "All"], ["open", "To do"], ["working", "Working"], ["tried", "Tried"], ["matched", "Matched"]];
-const fnState = (f) => (f.status === "matched" ? "matched" : f.status === "asm" ? "asm" : f.status === "working" ? "working" : f.best != null ? "tried" : "open");
-const STATE_RANK = { working: 0, tried: 1, open: 2, matched: 3, asm: 4 };
+const FILTERS = [["all", "All"], ["open", "To do"], ["working", "Working"], ["tried", "Tried"], ["matched", "Matched"], ["review", "Needs review"]];
+// "review": set aside by an agent for a person to look at (flag_for_review), shown even when assembly is hidden
+const fnState = (f) => (f.status === "matched" ? "matched" : f.status === "asm" ? (f.review ? "review" : "asm") : f.status === "working" ? "working" : f.best != null ? "tried" : "open");
+const STATE_RANK = { working: 0, tried: 1, open: 2, review: 3, matched: 4, asm: 5 };
 
 function renderList() {
   if (!S.map.length || S.tab !== "functions") return;
-  const counts = { all: S.map.length, open: 0, working: 0, tried: 0, matched: 0, asm: 0 };
+  const counts = { all: S.map.length, open: 0, working: 0, tried: 0, matched: 0, asm: 0, review: 0 };
   for (const f of S.map) counts[fnState(f)]++;
   if (L.hideAsm) counts.all -= counts.asm;
   $("fnHideAsm").checked = L.hideAsm;
   $("fnHideAsmN").textContent = counts.asm ? ` (${counts.asm.toLocaleString()})` : "";
   $("fnHideAsmBox").hidden = !counts.asm;
-  $("fnFilter").innerHTML = FILTERS.map(([k, label]) => `<button type="button" role="radio" aria-checked="${L.filter === k}" class="${L.filter === k ? "on" : ""}" data-filter="${k}">${label}<span>${counts[k].toLocaleString()}</span></button>`).join("");
+  if (L.filter === "review" && !counts.review) L.filter = "all";
+  $("fnFilter").innerHTML = FILTERS.filter(([k]) => k !== "review" || counts.review).map(([k, label]) => `<button type="button" role="radio" aria-checked="${L.filter === k}" class="${L.filter === k ? "on" : ""}" data-filter="${k}">${label}<span>${counts[k].toLocaleString()}</span></button>`).join("");
   const q = L.q.trim().toLowerCase();
   let rows = S.map.filter((f) => (L.filter === "all" ? !(L.hideAsm && fnState(f) === "asm") : fnState(f) === L.filter)
     && (!q || f.name.toLowerCase().includes(q) || hex8(f.vram).toLowerCase().includes(q) || (f.unit || "").toLowerCase().includes(q)));
@@ -2460,11 +2475,11 @@ function renderList() {
   $("fnRows").innerHTML = rows.slice(0, L.limit).map((f) => {
     const st = fnState(f), p = pctOf(f.best, f.insns);
     const best = st === "matched" ? `<span class="ok">100%</span>` : p == null ? `<span class="dim">–</span>` : pctText(p);
-    const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">matched</span>` : st === "asm" ? `<span class="st" title="${esc(f.why || "hand-written assembly: no C compiles to it")}">${/padding|data|its end isn't known/.test(f.why || "") ? "not code" : "assembly"}</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
+    const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">matched</span>` : st === "review" ? `<span class="st review" title="${esc((f.review_by ? f.review_by + ": " : "") + (f.why || ""))}">needs review</span>` : st === "asm" ? `<span class="st" title="${esc(f.why || "hand-written assembly: no C compiles to it")}">${/padding|data|its end isn't known/.test(f.why || "") ? "not code" : "assembly"}</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
       : st === "tried" ? `<span class="st tried">tried</span>` : `<span class="st">to do</span>`;
     const pinned = (S.ov?.priority || []).includes(f.name);
     // ☆/★ right in the row: pin many functions for the agents without opening each one (not for done or git-project ones)
-    const star = fork || st === "matched" || st === "asm" ? (pinned ? `<span class="star" title="agents take it next">★</span>` : "")
+    const star = fork || st === "matched" || st === "asm" || st === "review" ? (pinned ? `<span class="star" title="agents take it next">★</span>` : "")
       : `<button type="button" class="star-btn ${pinned ? "on" : ""}" data-star="${esc(f.name)}" title="${pinned ? "Remove from Next in line" : "Agents take it next (★ Next in line)"}">${pinned ? "★" : "☆"}</button>`;
     return `<tr data-fn="${esc(f.name)}" class="${S.fn === f.name ? "sel" : ""}" tabindex="0"><td class="mono dim">${fork ? esc(f.unit || "") : hex8(f.vram)}</td>
       <td class="mono name">${star}${esc(f.name)}</td><td class="r mono">${f.insns.toLocaleString()}</td><td class="r mono">${best}</td>
