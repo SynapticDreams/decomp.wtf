@@ -63,6 +63,9 @@ sets the rest aside (status *assembly* or *not code*, with the reason): padding,
 a function, routines that run on into the next one, code that reads a flag its caller left. A routine the split ran
 on past its end is cut to it. If a function you're given looks like one of those, say so in a note and release it.
 
+A routine set aside as hand-written is decompiled on the **assembly track** instead: `claim_function(track="asm")`
+and document it in RGBDS assembly that rebuilds its bytes, with names instead of addresses (guide topic `asm`).
+
 The split's boundaries can be wrong both ways. When a function you're given is two routines (one ends, the next
 starts), `split_function(function, at=<CPU address where the second starts>)` cuts it. When it's half of one (it runs
 on into the next function or jumps into it, or the one before runs on into it, and nothing else calls the second

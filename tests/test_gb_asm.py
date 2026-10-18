@@ -110,3 +110,12 @@ def test_banked_calls_name_the_bank_that_is_mapped():
     assert gb_asm.judge(routine(**kw, edges={0: 0x8000}), text).ok  # the split followed it into bank 2
     out = problems(text.replace("LevelInit", "TitleInit"), **kw, edges={0: 0x8000})
     assert any(p.startswith("3.") and "TitleInit is in bank 3" in p for p in out)
+
+
+def test_the_draft_rebuilds_the_bytes_and_leaves_the_writing():
+    v = gb_asm.judge(routine(), gb_asm.draft(routine()))
+    assert v.same == v.size == len(CODE)  # it assembles to the routine
+    assert all(p.startswith(("2.", "6.")) for p in v.problems), v.problems  # what's left: names and words
+    text = gb_asm.draft(routine())
+    assert "call FillTilemapZero" in text and "ld a, [wMenuOpen]" in text and "ldh [rLCDC], a" in text
+    assert ".l_4a20:" in text and "ld hl, TILEMAP0" in text

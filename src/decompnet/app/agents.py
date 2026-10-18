@@ -740,6 +740,7 @@ class Session:
                 "tiered": self.tiered, "tier": self.tier, "tier_function": self.tier_function,
                 "usd": round(self.usd, 4), "tokens": self.tokens, "only_starred": bool(self.options.get("only_starred")),
                 "pin": self.options.get("pin") or "", "lean": self.options.get("lean") or "",
+                "track": self.options.get("track") or "",
                 "feed": [f for f in self.feed if f["seq"] > since]}
 
 
@@ -914,8 +915,16 @@ class Manager:
             agent_id, agent_id)
         return row["n"]
 
-    def _left(self, slug: str) -> int:
+    @staticmethod
+    def _asm_left(net, proj) -> int:
+        """Hand-written routines of a project still to document (the assembly track)."""
+        return sum(1 for r in net.store.all("SELECT status, meta FROM functions WHERE project_id=? AND status='asm'",
+                                            proj["id"]) if net.asm_track(r))
+
+    def _left(self, slug: str, track: str = "") -> int:
         proj = self.net.project_row(slug)
+        if track == "asm":
+            return self._asm_left(self.net, proj)
         row = self.net.store.one("SELECT COUNT(*) AS n FROM functions WHERE project_id=? AND status='open'", proj["id"])
         return row["n"]
 
@@ -958,6 +967,12 @@ class Manager:
         if focus:
             self.net.focus[agent.id] = focus[0]
             s.push("info", f"focus: {focus[2]}")
+        track = "asm" if s.options.get("track") == "asm" else ""
+        if track:
+            self.net.tracks[agent.id] = track
+            s.push("info", "track: documenting hand-written routines in assembly")
+        else:
+            self.net.tracks.pop(agent.id, None)
         pin = s.options.get("pin") or ""
         if pin:
             self.net.pinned[agent.id] = pin
@@ -995,8 +1010,8 @@ class Manager:
                     s.state = "waiting"
                     s.stop.wait(30)
                     continue
-            elif not pin and self._left(s.slug) == 0:
-                s.push("info", "nothing left to decompile here 🎉")
+            elif not pin and self._left(s.slug, track) == 0:
+                s.push("info", "nothing left on the assembly track here 🎉" if track else "nothing left to decompile here 🎉")
                 break
             if focus and self.net.strategy_left(s.slug, focus[0], agent.id) == 0:
                 s.push("info", f"stopping: {focus[1]}")
@@ -1293,6 +1308,8 @@ class Manager:
             return tools.FORK_PROMPT.format(title=ov["title"], platform=ov.get("platform_name") or "its platform",
                                             count=s.options.get("per_session", PER_SESSION),
                                             guides=", ".join(f'guide("{g}")' for g in guides))
+        if s.options.get("track") == "asm":
+            return tools.ASM_PROMPT.format(title=ov["title"], count=s.options.get("per_session", PER_SESSION))
         return tools.WORK_PROMPT.format(title=ov["title"], count=s.options.get("per_session", PER_SESSION),
                                         compiler_guide=compiler_guide(ov))
 
@@ -1811,7 +1828,8 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
         "claim_function": ("Claim the next function (or one by name/address). Returns assembly, data, best attempt, "
                            "notes and a draft. count > 1: a batch of small functions to judge together.",
                            s(function=st("optional name or address"), strategy=st("finish | easiest | closest | hardest | random"),
-                             count=it("up to 6 small functions at once"))),
+                             count=it("up to 6 small functions at once"),
+                             track=st("asm (Game Boy): a hand-written routine to document in assembly"))),
         "get_function": ("Show any function by name or address (a long one's assembly in parts: start_line).",
                          s(function=st("name or address", True), start_line=it("assembly line to show from"))),
         "compile_and_diff": ("Compile C for the function, link it at its address and diff against the ROM. "

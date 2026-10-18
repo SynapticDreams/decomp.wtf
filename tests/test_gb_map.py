@@ -299,6 +299,13 @@ def test_import_keeps_the_data_regions_and_splitting_again_reports_them(tmp_path
     out = net.resplit_banked(slug, log=lambda *_: None)
     assert out["data_after"] == out["data_before"] == sum(r["size"] for r in regions)
     assert out["kept"] == out["before"] == out["after"]
+    # splitting again with new functions: each gets its own symbol, at its own address (a rename finds it by name)
+    with net.store.tx() as db:
+        db.execute("DELETE FROM functions WHERE project_id=? AND rom_offset IN (?, ?)", (proj["id"], 0x4000, 0x150))
+        db.execute("DELETE FROM symbols WHERE project_id=? AND address IN (?, ?)", (proj["id"], 0x4000, 0x150))
+    assert net.resplit_banked(slug, apply=True, log=lambda *_: None)["added"] == 2
+    assert not net.store.all("SELECT name FROM functions f WHERE project_id=? AND NOT EXISTS (SELECT 1 FROM symbols s "
+                             "WHERE s.project_id=f.project_id AND s.name=f.name AND s.address=f.vram)", proj["id"])
     net.remove_project(slug)
     assert not net.store.all("SELECT * FROM data_regions WHERE project_id=?", proj["id"])
 
@@ -311,3 +318,26 @@ def test_routines_that_take_their_return_address_or_stop_are_set_aside_with_a_re
     assert "speed switch" in sm83_reason(bytes.fromhex("3e01e04d1000c9"), 0x400)  # ld a,1 · ldh (KEY1),a · stop
     assert sm83_reason(bytes.fromhex("c5e1c9"), 0x400) is None or "return address" not in sm83_reason(
         bytes.fromhex("c5e1c9"), 0x400)  # push bc · pop hl: its own value, not the return address
+
+
+@needs_tools
+def test_splitting_again_keeps_the_names_matched_code_calls(tmp_path):
+    """A function the new split doesn't have goes, but a matched function's C that calls it by name must still
+    compile: its name stays as a symbol (at the same address)."""
+    from decompnet.app.engine import RomNetwork
+
+    net = RomNetwork(tmp_path / "app.db", tmp_path / "work")
+    net.auto_install_tools = False
+    rom = tmp_path / "game.gb"
+    rom.write_bytes(rom_with({0x150: "cd0002 18fe", 0x200: "af c9"}))
+    slug = net.import_rom(rom, confirmed=True, log=lambda *_: None)
+    pid = net._project(slug)["id"]
+    with net.store.tx() as db:  # an older split's function, and a match whose C calls it
+        db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,unit,vram,rom_offset,status) "
+                   "VALUES(?,?,?,?,?,?,?,?,?,?,?)", (pid, "OldPiece", 1, 1, b"\xc9", "[]", "", "bank000", 0x201, 0x201, "open"))
+        db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)", (pid, "OldPiece", 0x201, 1, "func"))
+        db.execute("UPDATE functions SET status='matched', matched_source='void OldPiece(void);\\nvoid f(void) { OldPiece(); }' "
+                   "WHERE project_id=? AND rom_offset=?", (pid, 0x200))
+    net.resplit_banked(slug, apply=True, log=lambda *_: None)
+    assert not net.store.one("SELECT 1 FROM functions WHERE project_id=? AND name='OldPiece'", pid)
+    assert net.store.one("SELECT address FROM symbols WHERE project_id=? AND name='OldPiece'", pid)["address"] == 0x201
