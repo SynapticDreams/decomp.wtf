@@ -138,3 +138,18 @@ def test_import_schedules_the_automatic_probe_after_the_project_exists(tmp_path,
         functions=[], data=[], named={}, segments=[], image='', compiler='PSYQ', gp=0))
     slug = net.import_rom(image, name='SLUS_006.14', confirmed=True, log=lambda _: None)
     assert done.wait(1) and seen == [slug]
+
+
+def test_recognized_libraries_are_excluded_even_if_reopened_for_agents(tmp_path, monkeypatch):
+    fn = FunctionObj('f', 'mips', False, bytes.fromhex('0800e0030000000000000000'), [])
+    net = make_net(tmp_path, [fn])
+    with net.store.tx() as db:
+        db.execute('UPDATE functions SET meta=?', (json.dumps({'kind': 'library', 'for_agents': True}),))
+    monkeypatch.setattr(seeds, 'available', lambda: True)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError('library function used as compiler evidence')
+
+    monkeypatch.setattr(seeds, 'generate_from_asm', unexpected)
+    report = net.probe_compiler('synthetic', log=lambda _: None)
+    assert report['samples'] == [] and report['confidence'] == 'inconclusive'

@@ -593,7 +593,9 @@ class RomNetwork(Network):
                                                   None, "basic types", now, ""))
             self._event(db, pid, None, "import", f"{len(res.functions)} functions from {info['title']}")
         log(f"ready: {len(res.functions)} functions to decompile")
-        if picked.platform == "psx" and self.auto_probe_compilers and seeds.available() and toolchains.installed(toolchain):
+        if picked.platform == "psx" and self.auto_probe_compilers and (
+                (seeds.available() and toolchains.installed(toolchain)) or
+                any((self.workspace / ".decomp" / "psyq-signatures").glob("*.json"))):
             threading.Thread(target=self._automatic_compiler_probe, args=(slug,), daemon=True).start()
         return slug
 
@@ -3055,6 +3057,7 @@ class RomNetwork(Network):
             "compiler": {"toolchain": tc.id, "name": SHORT_NAMES.get(tc.id, tc.name), "flags": cfg["compiler"]["flags"],
                          "aspsx": cfg["compiler"].get("aspsx", ""),
                          "probe": cfg.get("compiler_probe"),
+                         "libraries": cfg.get("psyq_libraries"),
                          "units": cfg["compiler"].get("units", {}),
                          "unit_names": [r["unit"] for r in self.store.all(
                              "SELECT DISTINCT unit FROM functions WHERE project_id=? ORDER BY unit", proj["id"])],
@@ -3616,9 +3619,103 @@ class RomNetwork(Network):
 
     def _automatic_compiler_probe(self, slug: str) -> None:
         try:
+            self.identify_psyq_libraries(slug, apply=True, log=lambda _: None)
+        except Exception:
+            logging.getLogger(__name__).debug("automatic PSY-Q library scan unavailable", exc_info=True)
+        try:
             self.probe_compiler(slug, log=lambda _: None)
         except Exception:
             logging.getLogger(__name__).debug("automatic PS1 compiler probe unavailable", exc_info=True)
+
+    def identify_psyq_libraries(self, slug: str, datasets: list[dict] | None = None,
+                                apply: bool = False, log=print, unit: str | None = None) -> dict:
+        from ..rom import psyq
+        import tempfile
+
+        proj = self._project(slug)
+        if self.fork_slug(slug) or self.cfg(proj).get("platform") != "psx":
+            raise NetworkError("PSY-Q library identification requires a PS1 ROM project")
+        if self._link(slug) is not None:
+            raise NetworkError("identify libraries on the room's host copy")
+        if datasets is not None and (not isinstance(datasets, list) or len(datasets) > 64):
+            raise NetworkError("provide at most 64 signature files at a time")
+        cache = self.workspace / ".decomp" / "psyq-signatures"
+        prepared, total = [], 0
+        for dataset in datasets or []:
+            if not isinstance(dataset, dict):
+                raise NetworkError("each signature file needs text and an SDK version")
+            text, version = dataset.get("text", ""), dataset.get("version") or "unknown"
+            if not isinstance(text, str):
+                raise NetworkError("signature file text must be a string")
+            total += len(text.encode("utf-8"))
+            if total > psyq.MAX_BYTES:
+                raise NetworkError("signature upload exceeds 50 MiB")
+            psyq.parse(text, version)  # validate the whole upload before persisting any file
+            body = json.dumps({"version": version, "records": json.loads(text)}, ensure_ascii=False, separators=(",", ":"))
+            prepared.append((hashlib.sha256(body.encode()).hexdigest(), body))
+        if prepared:
+            cache.mkdir(parents=True, exist_ok=True)
+            for digest, body in prepared:
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=cache, delete=False) as tmp:
+                    tmp.write(body)
+                    staging = Path(tmp.name)
+                staging.replace(cache / f"{digest}.json")
+        signatures, skipped, total = [], 0, 0
+        for path in sorted(cache.glob("*.json")):
+            total += path.stat().st_size
+            if total > 256 << 20:
+                raise NetworkError("local signature cache exceeds 256 MiB")
+            dataset = json.loads(path.read_text(encoding="utf-8"))
+            found, omitted = psyq.parse(json.dumps(dataset["records"], ensure_ascii=False), dataset["version"])
+            signatures.extend(found)
+            skipped += omitted
+            if len(signatures) > psyq.MAX_RECORDS:
+                raise NetworkError("local cache exceeds 50,000 signatures")
+        image, segments = self._rom(proj)
+        if unit is not None:
+            segments = [s for s in segments if s.name == unit]
+            if not segments:
+                raise NetworkError(f"unknown source unit {unit!r}")
+        report = psyq.scan([(s.name, image[s.rom_start:s.rom_end], s.vram, s.rom_start) for s in segments], signatures)
+        report.update({"signatures": len(signatures), "weak_signatures_skipped": skipped, "applied": 0, "renamed": 0,
+                       "label_count": len(report["hits"]), "conflict_count": len(report["conflicts"])})
+        report["unit"] = unit
+        rows = {(f["unit"], f["rom_offset"], f["vram"]): f for f in self.store.all(
+            "SELECT * FROM functions WHERE project_id=?", proj["id"])}
+        if apply and not report["truncated"] and report["hits"]:
+            agent, _ = self.local_agent("you")
+            for hit in report["hits"]:
+                fn = rows.get((hit["unit"], hit["rom_offset"], hit["address"]))
+                if fn is None or fn["rom_offset"] + fn["size"] > hit["matched_end"]:
+                    continue
+                if self.store.one("SELECT 1 FROM claims WHERE function_id=?", fn["id"]):
+                    continue
+                meta = json.loads(fn["meta"] or "{}")
+                if meta.get("for_agents"):
+                    continue
+                desired = hit["name"]
+                if self.store.one("SELECT 1 FROM symbols WHERE project_id=? AND name=? AND address<>?",
+                                  proj["id"], desired, fn["vram"]) or self.store.one(
+                        "SELECT 1 FROM functions WHERE project_id=? AND name=? AND id<>?", proj["id"], desired, fn["id"]):
+                    desired = re.sub(r"\W", "_", hit["unit"]) + "_" + desired
+                if re.search(r"(?:^|_)func_[0-9A-Fa-f]{8}$", fn["name"]) and not self.cfg(proj).get("mapping"):
+                    try:
+                        renamed = self.rename_symbol(agent, slug, fn["name"], desired, "PSY-Q library signature")
+                        report["renamed"] += renamed.startswith("✅")
+                    except NetworkError:
+                        pass  # recognition is still useful when a stable name cannot be replaced
+                meta.update({"kind": "library", "library": hit,
+                             "asm_code": f"recognized PSY-Q library function {hit['name']} (SDK {', '.join(hit['versions'])})"})
+                with self.store.tx() as db:
+                    changed = db.execute("UPDATE functions SET meta=?, status=CASE WHEN status='open' THEN 'asm' ELSE status END "
+                                         "WHERE id=? AND id NOT IN (SELECT function_id FROM claims)", (json.dumps(meta), fn["id"])).rowcount
+                report["applied"] += changed
+        summary = {k: v for k, v in report.items() if k not in ("hits", "conflicts")}
+        summary["hits"] = report["hits"][:100]
+        summary["conflicts"] = report["conflicts"][:100]
+        self._update_cfg(slug, lambda cfg: cfg.__setitem__("psyq_libraries", summary))
+        log(f"PSY-Q signatures: {len(signatures)} usable, {len(report['hits'])} labels, {report['applied']} functions recognized")
+        return report
 
     def probe_compiler(self, slug: str, unit: str | None = None, expanded: bool = False, log=print) -> dict:
         from ..rom import psx_probe

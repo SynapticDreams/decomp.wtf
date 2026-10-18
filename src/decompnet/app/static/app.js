@@ -3084,6 +3084,8 @@ function fillCompilerSettings() {
   $("setAspsx").value = override.aspsx ?? c.aspsx ?? "";
   $("compilerProbePanel").hidden = S.ov.platform !== "psx";
   showCompilerProbe(c.probe);
+  $("psyqPanel").hidden = S.ov.platform !== "psx";
+  showPsyqLibraries(c.libraries);
   $("setUnitReset").hidden = !unit;
 }
 $("setCompilerUnit").onchange = fillCompilerSettings;
@@ -3103,6 +3105,33 @@ $("compilerProbe").onclick = async () => {
     S.ov.compiler.probe = result;
     showCompilerProbe(result);
   } catch (e) { toast(esc(e.message), "err"); } finally { btn.disabled = false; }
+};
+function showPsyqLibraries(report) {
+  const box = $("psyqResult");
+  if (!report) { box.innerHTML = ""; return; }
+  box.innerHTML = `<p class="muted small">${report.signatures} usable signatures · ${report.weak_signatures_skipped} weak signatures skipped · ${report.label_count} labels · ${report.conflict_count} conflicts · ${report.applied} functions recognized${report.truncated ? " · incomplete scan; nothing applied" : ""}</p><p class="muted small">SDK candidates: ${esc((report.best_sdk_versions || []).join(", ") || "none")}. ${esc(report.note)}</p>`
+    + (report.hits.length ? `<table class="small"><thead><tr><th>Unit</th><th>Address</th><th>Library symbol</th><th>SDK</th></tr></thead><tbody>${report.hits.slice(0, 100).map((h) => `<tr><td>${esc(h.unit)}</td><td>${hex8(h.address)}</td><td>${esc(h.name)}</td><td>${esc(h.versions.join(", "))}</td></tr>`).join("")}</tbody></table>` : "");
+}
+async function scanPsyqLibraries(apply, files) {
+  $("psyqScan").disabled = true; $("psyqApply").disabled = true;
+  $("psyqLog").hidden = false;
+  try {
+    const { job } = await api("/api/libraries/psyq", { method: "POST", body: { slug: S.slug, files, apply, unit: $("setCompilerUnit").value || null } });
+    const result = await followJob(job, $("psyqLog"));
+    S.ov.compiler.libraries = result;
+    showPsyqLibraries(result);
+    if (apply) poll(false);
+  } catch (e) { toast(esc(e.message), "err"); } finally { $("psyqScan").disabled = false; $("psyqApply").disabled = false; }
+}
+$("psyqScan").onclick = () => scanPsyqLibraries(false);
+$("psyqApply").onclick = () => scanPsyqLibraries(true);
+$("psyqFiles").onchange = async () => {
+  const files = Array.from($("psyqFiles").files);
+  $("psyqFiles").value = "";
+  if (!files.length) return;
+  if (files.length > 64 || files.reduce((n, f) => n + f.size, 0) > 50 * 1024 * 1024) { toast("Choose at most 64 files, up to 50 MiB total.", "err"); return; }
+  const version = $("psyqVersion").value.trim() || "unknown";
+  await scanPsyqLibraries(false, await Promise.all(files.map(async (f) => ({ version, text: await f.text() }))));
 };
 $("setUnitReset").onclick = async () => {
   try {
