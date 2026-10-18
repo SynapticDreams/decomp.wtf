@@ -122,27 +122,28 @@ def export_gb(net, slug: str, out: Path, log=print) -> dict:
             "log": (proc.stdout + proc.stderr)[-3000:]}
 
 
-def _documented(net, proj, rows, log) -> tuple[list, list[tuple[str, str]]]:
+def _documented(net, proj, rows, log, judge=gb_asm) -> tuple[list, list[tuple[str, str]]]:
     """The routines documented in assembly that go into the build, and the ones that don't, with why. Each is judged
     again with the project's names as they are now: the six checks, the shift test among them, over the whole ROM's
-    names (one whose names changed under it since, or that no longer rebuilds, stays as mgbdis has it)."""
+    names (one whose names changed under it since, or that no longer rebuilds, stays as the disassembly has it).
+    `judge`: rom/gb_asm.py (RGBDS) or rom/sms_asm.py (WLA-DX)."""
     todo = [r for r in rows if r["status"] == "documented" and r["matched_source"] and r["rom_offset"] is not None]
     if not todo:
         return [], []
-    if not gb_asm.available():
-        return [], [(r["name"], "RGBDS isn't installed") for r in todo]
+    if not judge.available():
+        return [], [(r["name"], f"{'WLA-DX' if judge is not gb_asm else 'RGBDS'} isn't installed") for r in todo]
     log(f"judging the {len(todo)} documented routines again with the project's names as they are now")
     routines = [(r, net._routine(proj, r)) for r in todo]
 
-    def judge(item):
+    def check(item):
         r, routine = item
         try:
-            v = gb_asm.judge(routine, r["matched_source"])
-        except gb_asm.AsmError as e:
+            v = judge.judge(routine, r["matched_source"])
+        except judge.AsmError as e:
             return str(e)
         return None if v.ok else (v.problems[0] if v.problems else "it doesn't pass")
     with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 2)) as pool:
-        verdicts = list(pool.map(judge, routines))
+        verdicts = list(pool.map(check, routines))
     kept = [r for r, why in zip(todo, verdicts) if why is None]
     return kept, [(r["name"], why) for r, why in zip(todo, verdicts) if why is not None]
 

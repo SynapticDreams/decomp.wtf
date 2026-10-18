@@ -2937,12 +2937,14 @@ class RomNetwork(Network):
         from ..rom.export import export_rom
         from ..rom.export_gb import export_gb
         from ..rom.export_gba import export_gba
+        from ..rom.export_sms import export_sms
 
         proj = self._project(slug)
         if self.cfg(proj).get("mapping"):
             raise NetworkError("mapping v1 verifies individual functions; complete-disc export is not supported yet")
         platform = self.cfg(proj).get("platform")
-        export = export_gba if platform == "gba" else export_gb if platform in ("gb", "gbc") else export_rom
+        export = export_gba if platform == "gba" else export_gb if platform in ("gb", "gbc") else \
+            export_sms if platform in ("sms", "gg") else export_rom
         res = export(self, slug, Path(proj["root"]) / "source", log=log)
         with self.store.tx() as db:  # shown on the project page: what's in the tree and whether it rebuilds
             cfg = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
@@ -3011,7 +3013,8 @@ class RomNetwork(Network):
             "context_version": self._context(proj["id"])["version"],
             "folder": proj["root"],
             "export": cfg.get("export"),
-            "exportable": not cfg.get("mapping") and cfg.get("platform", "n64") in ("n64", "psx", "ps2", "gba", "gb", "gbc"),
+            "exportable": not cfg.get("mapping") and cfg.get("platform", "n64") in ("n64", "psx", "ps2", "gba", "gb", "gbc",
+                                                                                  "sms", "gg"),
             "mapping": {"version": 1, "regions": list(cfg["mapping"]["regions"])} if cfg.get("mapping") else None,
             "room": self._room_info(proj["slug"]),
         }
