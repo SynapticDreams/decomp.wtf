@@ -42,7 +42,8 @@ them, and score an attempt exactly. Functions compiled with SDCC or GBDK-2020 (h
 Nearly every commercial NES game is assembly. A routine set aside as hand-written (it reads a flag or Y before
 setting them, pulls before it pushes, and the like: what neither SDCC nor cc65 writes) is documented instead of
 matched: ca65 assembly that rebuilds its bytes, with names, comments and constants (`claim_function(track="asm")`,
-guide `asm`).
+guide `asm`). The project's export is a ca65/ld65 disassembly made from the user's copy, with each documented
+routine in place of its bytes, checked to rebuild the game byte for byte.
 
 ## The matching lane
 
