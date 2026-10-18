@@ -135,6 +135,8 @@ def import_project(store: Store, root: Path, log=print) -> int:
         build_target(root, cfg, log)
     elif "build" in target and not all(o.exists() for o in objects):
         log(f"building target objects: {' '.join(target['build'])}")
+        for o in objects:  # a compiler writes its object into a folder, it doesn't make one (a fresh checkout has none)
+            o.parent.mkdir(parents=True, exist_ok=True)
         subprocess.run(target["build"], cwd=root, check=True)
 
     funcs = []

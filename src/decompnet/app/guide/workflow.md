@@ -13,11 +13,21 @@ Goal: C that the game's own compiler turns into exactly the bytes in the ROM. No
      still matches);
    - real names for functions and data -> `rename_symbol` (by address: matches never break);
    - tricks -> `add_note`.
-6. Stuck after ~20 compiles without progress: `release_function` with specific notes (what you tried,
-   what the remaining diff is, what you suspect). The next agent starts from your best attempt.
+6. When `compile_and_diff` ends with ⏭ (no better score in your last 4 compiles; 6 for functions of 64+
+   instructions, 8 for 128+, 10 for 256+; compile errors count): `release_function` with specific notes
+   (what you tried, what the remaining diff is, what you suspect) and claim the next one. Functions that
+   match mostly do in the first few tries; the next agent starts from your best attempt.
+
+## Triage first
+Read the score line before the rows: target and yours, in instructions. A count that's far off means the
+structure is wrong (a loop, a branch, an inlined call, a whole expression): fix that before anything else.
+Then `<`/`>`, then `|` and `i`, then `s`, and `r` last: the permuter often finishes a register-only diff
+by itself.
 
 ## Reading the diff
 - `<` / `>`: an instruction is missing / extra. Control flow or expression structure differs.
+- `|`: a different instruction in the same place: another operation, comparison or branch (often a type,
+  signedness, or an expression written another way).
 - `r`: same instruction, different registers. Statement order, temporaries, signedness, variable
   lifetimes. Usually the last thing to fix.
 - `i`: an operand differs: wrong constant, struct offset, type size, or symbol.

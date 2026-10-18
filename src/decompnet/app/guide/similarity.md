@@ -18,5 +18,5 @@ Revolution SDKs, NitroSDK on DS, PSY-Q on PS1, sead/nn on Switch, RenderWare, Ha
 functions are usually matched already in other public decomps.
 
 Scheduling that works (from people who ran agents on decomps before): easiest functions first, then
-functions similar to ones already matched. Cap the effort per function (around 25-30 compiles) and
-release with notes rather than grinding.
+functions similar to ones already matched. Cap the effort per function (the app says when: ⏭ after 4 to
+10 compiles without a better score, by size) and release with notes rather than grinding.

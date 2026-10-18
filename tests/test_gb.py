@@ -295,7 +295,6 @@ def test_the_page_recognises_a_dropped_game_boy_rom(tmp_path, cgb, platform):
     """The drop zone reads the first bytes itself (nothing is uploaded until confirmed): it must agree with the
     server's three checks, or a Game Boy ROM is turned away as 'not a game'."""
     import json
-    import re
     import subprocess
     from pathlib import Path
 

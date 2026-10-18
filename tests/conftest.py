@@ -1,7 +1,15 @@
+import atexit
 import os
+import shutil
+import tempfile
 
 # the apps the tests start never look for updates on the network (tests/test_updates.py checks that part offline)
 os.environ.setdefault("DECOMP_UPDATES", "off")
+# and never reach the user's own app or its data: a throwaway home for the session, and a port of their own
+_HOME = tempfile.mkdtemp(prefix="decomp-tests-")
+os.environ["DECOMP_HOME"] = _HOME
+os.environ["DECOMP_PORT"] = "16464"
+atexit.register(shutil.rmtree, _HOME, True)
 
 
 import pytest  # noqa: E402

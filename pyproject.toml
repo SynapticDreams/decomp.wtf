@@ -44,3 +44,7 @@ dev = [
 [tool.pytest.ini_options]
 # the room tests drive the room server through Starlette's TestClient, which warns about the timeouts real clients use
 filterwarnings = ["ignore:You should not use the 'timeout' argument with the TestClient"]
+
+[tool.ruff.lint]
+# real problems only (what CI checks): undefined or unused names, syntax errors; no style rules
+select = ["F", "E9"]

@@ -80,7 +80,7 @@ def _base_table() -> list[tuple[str, str, int]]:
     ops[0xCD] = ("call", "{n16}", 3)
 
     for i, name in enumerate(("add", "adc", "sub", "sbc", "and", "xor", "or", "cp")):
-        ops[0xC6 + i * 8] = (name, f"a, {{n8}}" if name not in ("sub", "and", "xor", "or", "cp") else "{n8}", 2)
+        ops[0xC6 + i * 8] = (name, "a, {n8}" if name not in ("sub", "and", "xor", "or", "cp") else "{n8}", 2)
 
     ops[0xE0], ops[0xF0] = ("ldh", "($ff00+{n8}), a", 2), ("ldh", "a, ($ff00+{n8})", 2)
     ops[0xE2], ops[0xF2] = ("ld", "($ff00+c), a", 1), ("ld", "a, ($ff00+c)", 1)
