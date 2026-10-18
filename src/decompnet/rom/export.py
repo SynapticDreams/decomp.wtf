@@ -2,8 +2,8 @@
 
 The tree is a normal decomp project. splat's assembly for every function and all data (with the project's names),
 the matched functions as C, a linker script and a build script that rebuilds the game's image and checks it against
-the original byte for byte. Each function is its own object: a matched one is compiled exactly the way decomp.wtf
-verified it, the rest are assembled. Data stays labeled assembly; a matched function's own constants (strings,
+the original byte for byte. Functions use individual objects or validated shared PS1 source objects; unmatched
+ones are assembled. Data stays labeled assembly; a matched function's own constants (strings,
 jump tables) are mapped onto the game's copy at the addresses the matcher verified, so nothing is duplicated.
 
 Anyone can keep working on it outside decomp.wtf: edit src/, run build.py, and the build says whether it still
@@ -88,7 +88,7 @@ def _segments(config: dict) -> list[dict]:
     return out
 
 
-def export_rom(net, slug: str, out: Path, log=print) -> dict:
+def export_rom(net, slug: str, out: Path, log=print, translation_units: list[dict] | None = None) -> dict:
     """Write the rebuildable tree to `out`, build it once and report: {"path", "identical", "matched", ...}."""
     proj = net._project(slug)
     cfg = net.cfg(proj)
@@ -101,6 +101,10 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
         raise ExportError("this project has no splat configuration to export from")
     image_name = cfg["rom"]["file"]
     image = (work / image_name).read_bytes()
+    from . import translation_units as tu
+
+    all_rows = net.store.all("SELECT * FROM functions WHERE project_id=?", proj["id"])
+    proposals = tu.plans(all_rows, translation_units) if platform == "psx" else []
 
     if out.exists():
         keep = {".git"}
@@ -127,7 +131,7 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
         ld.rename(out / f"splat-{ld.name}")
 
     # 2. which function is where, and which are matched
-    rows = {(r["rom_offset"], r["vram"]): r for r in net.store.all("SELECT * FROM functions WHERE project_id=?", proj["id"])}
+    rows = {(r["rom_offset"], r["vram"]): r for r in all_rows}
     units = net._unit_contexts(proj["id"])
     header = net._context(proj["id"])["header"]
     (out / "include").mkdir(exist_ok=True)
@@ -192,6 +196,8 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
         f["src"] = src.relative_to(out).as_posix()
         f["obj"] = f"build/src/{f['seg']}/{f['name']}.o"
         private += [(f["obj"], section, base) for section, base in bases.items()]
+
+    tu_reports = tu.apply(net, proj, out, image, functions, rows, private, proposals, log)
 
     # 3. everything else splat wrote: entry code, data, bss, binary blobs
     config = yaml.safe_load((out / "splat.yaml").read_text(encoding="utf-8"))
@@ -258,7 +264,10 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
                  "vram": f["vram"], "rom": f["rom"], "asm": f["asm"]}
         if f["kind"] == "c":
             entry["c"] = f["src"]
-            entry["own"] = {sec: base for (obj, sec, base) in private if obj == f["obj"]}
+            entry["own"] = {sec: base for (obj, sec, base) in private if obj == f["obj"]} if f.get("own_owner", True) else {}
+            if f.get("translation_unit"):
+                entry.update({"translation_unit": f["translation_unit"], "text_base": f["text_base"],
+                              "text_offset": f["text_offset"], "c_fallback": f["src_fallback"], "own_fallback": f["own_fallback"]})
         fn_json.append(entry)
 
     # 5. build description, build script, objdiff, docs
@@ -275,6 +284,7 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
         "as_flags": [*AS_FLAGS[platform], "-G0", "-no-pad-sections", "-I", "include"],
         "ld_flags": [LD_ENDIAN[platform], "--no-check-sections"],
         "assembly": objects, "segments": layout, "functions": fn_json,
+        "translation_units": tu_reports,
         "symbols": {k: v for k, v in sorted(absolute.items(), key=lambda kv: kv[1])},
     }
     (out / "build.json").write_text(json.dumps(build, indent=1), encoding="utf-8")
@@ -299,9 +309,29 @@ def export_rom(net, slug: str, out: Path, log=print) -> dict:
     proc = subprocess.run(capped([sys.executable, "build.py"]), cwd=out, capture_output=True, text=True, timeout=3600,
                           encoding="utf-8", errors="replace")
     identical = proc.returncode == 0 and "identical" in proc.stdout
+    if not identical and any(r["status"] == "combined object" for r in tu_reports):
+        log("combined export did not verify; restoring verified individual objects")
+        for f in build["functions"]:
+            if f.get("translation_unit"):
+                f["c"], f["own"] = f["c_fallback"], f["own_fallback"]
+                for key in ("translation_unit", "text_base", "text_offset"):
+                    f.pop(key, None)
+        for f, unit in zip(functions, units_json):
+            if f.get("translation_unit"):
+                unit["base_path"] = f["obj_fallback"]
+                unit["metadata"]["source_path"] = f["src_fallback"]
+        for report in tu_reports:
+            if report["status"] == "combined object":
+                report.update({"status": "individual functions", "reason": "combined full-image rebuild did not verify"})
+        (out / "build.json").write_text(json.dumps(build, indent=1), encoding="utf-8")
+        (out / "objdiff.json").write_text(json.dumps({"build_base": False, "build_target": False, "units": units_json}, indent=2),
+                                          encoding="utf-8")
+        proc = subprocess.run(capped([sys.executable, "build.py"]), cwd=out, capture_output=True, text=True, timeout=3600,
+                              encoding="utf-8", errors="replace")
+        identical = proc.returncode == 0 and "identical" in proc.stdout
     if not identical:
         log((proc.stdout + proc.stderr)[-3000:])
-    return {"path": str(out), "identical": identical, "matched": matched, "functions": len(functions),
+    return {"path": str(out), "identical": identical, "matched": matched, "functions": len(functions), "translation_units": tu_reports,
             "fallback": as_fallback, "log": (proc.stdout + proc.stderr)[-3000:]}
 
 
@@ -324,6 +354,7 @@ A matching decompilation of {title} for the {names[platform]}, started with [dec
 | Path | What it is |
 | :-- | :-- |
 | `src/<segment>/<function>.c` | Decompiled functions, one per file, each matching the original. |
+| `src/units/` | Validated shared PS1 source groups, when enabled in `build.json`. |
 | `asm/nonmatchings/` | Assembly of every function (the target for the decompiled ones). |
 | `asm/data/`, `asm/*.s`, `assets/` | Data, start-up code and binary parts, still as assembly or binary. |
 | `include/common.h` | Types, structs and prototypes worked out so far. |
@@ -335,6 +366,12 @@ Keep going with any tool: write a function in C under `src/`, add it to `build.j
 run `build.py`. When it says *identical*, the function matches. This is the base for ports and mods: once
 everything is C, the game can be rebuilt, changed and moved to other platforms.
 
+PS1 source groups are recorded under `translation_units` in `build.json`, including native member offsets,
+alignment, padding and rejected-group reasons. A debug source basename is provisional provenance. Shared
+objects are used only after compilation and layout checks; the export is then verified as a complete image.
+Individual source files remain available as fallbacks. `python build.py check NAME` validates every member
+when NAME belongs to an active shared source. Function-address assertions prevent silent layout drift.
+
 The game's code and data belong to their rights holder: keep this tree to yourself unless you have the right to
 share it.{chr(10) + chr(10) + '## Notes' + notes if notes else ''}
 """, encoding="utf-8")
@@ -342,9 +379,9 @@ share it.{chr(10) + chr(10) + '## Notes' + notes if notes else ''}
 
 - Goal: C that the original compiler turns into exactly the original bytes. `python build.py` must end with
   "identical".
-- Pick a function from `asm/nonmatchings/`, write it as `src/<segment>/<name>.c` (one function, `#include
-  "common.h"` first), add an entry `{"kind": "c", "src": ..., "obj": ...}` to `build.json` objects and point the
-  function's line in `game.ld` at the new object.
+- Pick a function from `asm/nonmatchings/`, write it as `src/<segment>/<name>.c` with the appropriate common
+  header first, then run `python build.py check NAME`. Shared source groups are listed in `build.json`;
+  checking a member checks the entire active group. Run `python build.py` for complete-image verification.
 - Shared types and prototypes go in `include/common.h`. Never edit `baserom*`, `asm/` or the addresses in
   `game.ld` to force a match.
 """, encoding="utf-8")

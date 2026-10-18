@@ -694,7 +694,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
     def p_export(slug, request, data):
         def work(log):
-            res = net.export_rom(slug, log=log)
+            res = net.export_rom(slug, log=log, translation_units=data.get("translation_units"))
             return {k: v for k, v in res.items() if k != "log"} | {"log": res.get("log", "")[-1500:]}
         return {"job": jobs.start("export", work)}
 

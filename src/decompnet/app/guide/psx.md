@@ -91,8 +91,9 @@ jump table. Compare both code and referenced data.
 
 Keep object alignment and padding separate from instruction mismatches. GCC may align jump-table or
 constant sections more strongly than the final image. A function-level byte match does not establish
-translation-unit data order, BSS placement or whole-disc layout. Existing exports build one object per
-function; a source-file basename in debug evidence does not by itself recreate an original translation unit.
+translation-unit data order, BSS placement or whole-disc layout. Exports retain individual source files. PS1 groups proposed from debug source basenames or an operator
+request become shared source objects only when native offsets, padding, code/data and the complete rebuilt
+image verify; rejected groups keep individual files. A basename alone does not prove an original translation unit.
 
 Overlays sharing a runtime address remain separate units. Use the full function name and selected unit
 for data reads and compiler settings. Disc import records discovered member offsets; opaque archive
