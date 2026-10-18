@@ -52,3 +52,12 @@ builds and donated workers use the same driver and pinned tools.
 ASPSX versions can produce different bytes for the same compiler output. For example, the regression fixtures
 check constant loading across 2.21 and 2.56 and division guards across several versions. A version choice is a
 matching hypothesis; the normal byte comparison remains authoritative.
+
+## Compiler variants
+
+The pinned compiler registry offers GCC 2.5.7, 2.6.0, 2.6.3, 2.7.2, 2.7.2 CDK, 2.8.0, 2.8.1, 2.91.66 and 2.95.2
+for PS1. GCC 2.7.2 remains the initial default. Install alternatives in **Compilers & tools**, then select them
+for the project or a source unit. All variants use the PS1 m2c draft target and support optional ASPSX emulation.
+
+The additional compiler packs use verified Linux assets from decompals/old-gcc release 0.17 and pinned binutils
+2.6. On Windows these Linux compilers run through the existing WSL integration.

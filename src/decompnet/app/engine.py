@@ -55,6 +55,11 @@ COMPILERS = {
 SHORT_NAMES = {"gcc-2.7.2-kmc": "KMC GCC 2.7.2", "ido-7.1": "IDO 7.1", "ido-5.3": "IDO 5.3",
                "gcc-2.7.2-psx": "GCC 2.7.2 (PS1)", "gcc-2.8.1-psx": "GCC 2.8.1 (PS1)", "ee-gcc-2.96": "EE-GCC 2.96",
                "agbcc": "agbcc", "gbdk-2020": "GBDK-2020 (SDCC)"}
+for _tc in toolchains.registry().values():
+    if _tc.platform == "PS1":
+        COMPILERS.setdefault(_tc.id, "PlayStation games (PSY-Q era GCC)")
+        SHORT_NAMES.setdefault(_tc.id, "GCC " + _tc.id.removeprefix("gcc-").removesuffix("-psx").replace("-cdk", " CDK") + " (PS1)")
+
 # CodeWarrior versions in the `mwcc` pack (GameCube, Wii) and the `mwccarm` pack (DS), for games started from scratch.
 MW_VERSIONS = {
     "gc": ["GC/1.0", "GC/1.1", "GC/1.1p1", "GC/1.2.5", "GC/1.2.5n", "GC/1.3", "GC/1.3.2", "GC/1.3.2r", "GC/2.0",
@@ -82,7 +87,7 @@ TOOLS = {
 }
 # Functions this small are handed out in batches (claim_function count): agents match most on the first try.
 BATCH_INSNS = 48
-PLATFORM_COMPILERS = {"n64": ["gcc-2.7.2-kmc", "ido-7.1", "ido-5.3"], "psx": ["gcc-2.7.2-psx", "gcc-2.8.1-psx"],
+PLATFORM_COMPILERS = {"n64": ["gcc-2.7.2-kmc", "ido-7.1", "ido-5.3"], "psx": [tc.id for tc in toolchains.registry().values() if tc.platform == "PS1"],
                       "ps2": ["ee-gcc-2.96"], "gba": ["agbcc"], "gb": ["gbdk-2020"], "gbc": ["gbdk-2020"],
                       "sms": ["gbdk-2020"], "gg": ["gbdk-2020"], "nes": ["gbdk-2020"]}
 # Platforms whose functions live in banks and are matched with SDCC (rom/gb_build.py), by the CPU they run.
