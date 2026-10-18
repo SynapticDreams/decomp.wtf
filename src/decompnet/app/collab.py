@@ -394,7 +394,13 @@ class Room:
                         "score": r["best_score"], "source": r["best_source"]} for r in best]
         last = net.store.one("SELECT MAX(t.id) AS m FROM attempts t JOIN functions f ON f.id=t.function_id WHERE f.project_id=?", pid)
         out["a"] = max(a, last["m"] or 0)
-        if first or kinds & {"rename", "split", "merge"}:
+        if first or "documented" in kinds:  # routines documented in assembly (the Game Boy's assembly track): the new ones
+            since = min((ev["created_at"] for ev in events if ev["kind"] == "documented"), default=0) - 60  # (its row was saved just before)
+            out["documented"] = [dict(r) for r in net.store.all(
+                "SELECT f.name, f.vram, f.rom_offset, f.size, f.matched_source AS source, a.name AS agent FROM functions f "
+                "LEFT JOIN agents a ON a.id=f.matched_agent_id WHERE f.project_id=? AND f.status='documented' "
+                "AND (? OR f.matched_at >= ?)", pid, first, since)]
+        if first or kinds & {"rename", "split", "merge", "documented"}:  # (documenting names a routine and what it uses)
             out["symbols"] = [dict(r) for r in net.store.all(
                 "SELECT name, address, size, kind FROM symbols WHERE project_id=?", pid) if not AUTO_NAME.match(r["name"])]
             out["functions"] = [dict(r) for r in net.store.all(
@@ -538,8 +544,20 @@ def host_app(net, rooms: dict[str, Room], tunnel: bool = False) -> Starlette:
 
     def claim(room, member, d):
         agent = room.agent_for(member, d.get("agent"))
-        fn = net.claim_row(agent, room.slug, d.get("function") or None, str(d.get("strategy") or "easiest"))
+        if d.get("track") == "asm":  # a hand-written Game Boy routine to document
+            fn = net.claim_asm_row(agent, room.slug, d.get("function") or None)
+        else:
+            fn = net.claim_row(agent, room.slug, d.get("function") or None, str(d.get("strategy") or "easiest"))
         return {"function": fn["name"] if fn else None, "vram": fn["vram"] if fn else None}
+
+    def document(room, member, d):
+        """A member's documented routine: judged again here (this copy is the room's), and kept when it passes."""
+        agent = room.agent_for(member, d.get("agent"))
+        name = str(d.get("function", ""))
+        if isinstance(d.get("rom_offset"), int):  # (by its bytes: documenting renames, so names part ways for a moment)
+            row = net._room_function(room.proj["id"], name, None, d["rom_offset"], d.get("size"))
+            name = row["name"] if row is not None else name
+        return {"text": net.document_function(agent, room.slug, name, str(d.get("source", ""))[:65536])}
 
     def attempt(room, member, d):
         agent = room.agent_for(member, d.get("agent"))
@@ -635,6 +653,7 @@ def host_app(net, rooms: dict[str, Room], tunnel: bool = False) -> Starlette:
         Route("/collab/whoami", endpoint(whoami)),
         Route("/collab/claim", endpoint(claim), methods=["POST"]),
         Route("/collab/attempt", endpoint(attempt), methods=["POST"]),
+        Route("/collab/document", endpoint(document), methods=["POST"]),
         Route("/collab/best", endpoint(best), methods=["POST"]),
         Route("/collab/release", endpoint(release), methods=["POST"]),
         Route("/collab/context", endpoint(context), methods=["POST"]),
@@ -854,8 +873,9 @@ class Link:
 
     # -- actions, called by RomNetwork for a linked project
 
-    def claim(self, agent: Agent, function: str | None, strategy: str) -> str | None:
-        return self._req("POST", "/collab/claim", {"agent": agent.name, "function": function, "strategy": strategy})["function"]
+    def claim(self, agent: Agent, function: str | None, strategy: str, track: str = "") -> str | None:
+        return self._req("POST", "/collab/claim", {"agent": agent.name, "function": function, "strategy": strategy,
+                                                   **({"track": track} if track else {})})["function"]
 
     def attempt(self, agent: Agent, function: str, source: str) -> dict:
         return self._req("POST", "/collab/attempt", {"agent": agent.name, "function": function, "source": source})
@@ -903,11 +923,16 @@ class Link:
             if _contained(b["source"]):
                 net.apply_remote_best(slug, b["vram"], b["score"], b["source"], name=b.get("name"),
                                       rom_offset=b.get("rom_offset"), size=b.get("size"))
+        for ev in st.get("events") or []:  # (before the documented ones: one sent back may be documented again since)
+            if ev["kind"] == "reopen" and str(ev["detail"]).endswith(": sent back to document again"):
+                net.apply_remote_sent_back(slug, str(ev["detail"]).rsplit(":", 1)[0])
+        if st.get("documented"):
+            net.apply_remote_documented(slug, st["documented"])
         for n in st.get("notes") or []:
             net.apply_remote_note(slug, n["id"], n["vram"], n["text"], n["agent"] or "host", n["created_at"],
                                   name=n.get("function"), rom_offset=n.get("rom_offset"))
         for ev in st.get("events") or []:
-            if ev["kind"] in ("match", "claim", "release", "context", "rename", "split", "merge", "collab") \
+            if ev["kind"] in ("match", "claim", "release", "context", "rename", "split", "merge", "collab", "documented") \
                     and not (ev["agent"] or "").startswith(mine):
                 net.remote_event(pid, ev["kind"], ev["detail"], ev["agent"] or "host", ev["created_at"])
         self.claims = [c for c in st.get("claims") or [] if not (c["agent"] or "").startswith(mine)]

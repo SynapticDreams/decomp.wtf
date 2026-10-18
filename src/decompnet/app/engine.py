@@ -2295,8 +2295,29 @@ class RomNetwork(Network):
             "SELECT * FROM projects WHERE id=?", self._function(function, None)["project_id"])
         if (proj["arch"] or "") != "sm83" or self.fork_slug(proj["slug"]):
             raise NetworkError("the assembly track is for Game Boy projects for now")
-        if self._link(proj["slug"]) is not None:
-            raise NetworkError("in a room, the assembly track comes later: work on the C track (claim_function)")
+        if (link := self._link(proj["slug"])) is not None:  # a room: its host hands the routine out (and judges it)
+            asked = self._function(function, proj["slug"])["name"] if function else None
+            name = link.claim(agent, asked, "easiest", track="asm")
+            if name is None:
+                return "Nothing left on the assembly track in this room: every hand-written routine is documented or being worked on. 🎉"
+            link.sync()
+            if not self.asm_track(self._function(name, proj["slug"])):  # (a host without the track hands out C)
+                try:
+                    link.call("/collab/release", agent, function=name, notes="")
+                except NetworkError:
+                    pass
+                raise NetworkError("the room's host runs an older decomp.wtf without the assembly track: work on the C "
+                                   "track (claim_function), or ask them to update")
+            function = name
+        fn = self.claim_asm_row(agent, proj["slug"], function)
+        if fn is None:
+            return f"Nothing left on the assembly track in {proj['slug']}: every hand-written routine is documented or being worked on. 🎉"
+        return self._brief(fn, agent, header="CLAIMED")
+
+    def claim_asm_row(self, agent: Agent, project: str, function: str | None = None):
+        """The routine a claim on the assembly track takes here (None: nothing left), claimed for `agent`. A room's host
+        hands its members' claims out with it."""
+        proj = self._project(project)
         now = time.time()
         with self.store.tx() as db:
             self._expire_claims(db)
@@ -2327,14 +2348,14 @@ class RomNetwork(Network):
                         fn = row
                         break
                 if fn is None:
-                    return f"Nothing left on the assembly track in {proj['slug']}: every hand-written routine is documented or being worked on. 🎉"
+                    return None
                 db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
                 self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
-        return self._brief(fn, agent, header="CLAIMED")
+        return fn
 
     def compile_and_diff(self, agent: Agent, function: str, source: str, project: str | None = None) -> str:
         """C for the C track; for a hand-written Game Boy routine (the assembly track), its documented assembly."""
-        if not self.fork_slug(project) and self._link(project) is None and self._on_asm_track(function, project):
+        if not self.fork_slug(project) and self._on_asm_track(function, project):
             return self.document_function(agent, project, function, source)
         return super().compile_and_diff(agent, function, source, project)
 
@@ -2457,8 +2478,16 @@ class RomNetwork(Network):
             verdict = gb_asm.judge(self._routine(proj, fn), text)
         except gb_asm.AsmError as e:
             raise NetworkError(str(e)) from None
-        score = 0 if verdict.ok else (len(verdict.problems) if verdict.same == len(fn["target"] or b"") else
-                                      1000 + len(fn["target"] or b"") - verdict.same)
+        link, hosted = self._link(proj["slug"]), ""
+        if verdict.ok and link is not None:  # a room: its host judges it again on its own copy, and keeps it
+            try:
+                hosted = link.call("/collab/document", agent, function=fn["name"], source=text,
+                                   rom_offset=fn["rom_offset"], size=fn["size"])
+            except NetworkError as e:
+                hosted = f"❌ {e}"
+        ok = verdict.ok and (link is None or hosted.startswith("✅"))
+        score = 0 if ok else 1 if verdict.ok else (len(verdict.problems) if verdict.same == len(fn["target"] or b"") else
+                                                   1000 + len(fn["target"] or b"") - verdict.same)
         now = time.time()
         with self.store.tx() as db:
             db.execute("INSERT INTO attempts(function_id,agent_id,score,compiled,context_version,source,created_at,via) "
@@ -2467,8 +2496,8 @@ class RomNetwork(Network):
             db.execute("UPDATE functions SET attempts=attempts+1 WHERE id=?", (fn["id"],))
             db.execute("UPDATE functions SET best_score=?, best_source=?, best_agent_id=? WHERE id=? AND status='asm' "
                        "AND (best_score IS NULL OR best_score > ?)", (score, text, agent.id, fn["id"], score))
-            if verdict.ok:
-                meta = json.loads(fn["meta"] or "{}") | ({"sample": True} if random.random() < self.REVIEW_SAMPLE else {})
+            if ok:  # (a room's host picks what a person looks over, not its members)
+                meta = json.loads(fn["meta"] or "{}") | ({"sample": True} if link is None and random.random() < self.REVIEW_SAMPLE else {})
                 db.execute("UPDATE functions SET status='documented', matched_source=?, matched_agent_id=?, matched_at=?, "
                            "meta=? WHERE id=? AND status='asm'", (verdict.text, agent.id, now, json.dumps(meta), fn["id"]))
                 for name, value in verdict.defines.items():
@@ -2479,6 +2508,14 @@ class RomNetwork(Network):
         if not verdict.ok:
             return (f"❌ not yet ({len(fn['target'] or b'')} bytes, {verdict.same} the same):\n"
                     + "\n".join(f"- {p}" for p in verdict.problems))
+        if link is not None:
+            if not ok:
+                return ("❌ it passes every check on your copy, but the room's host didn't take it (what the host has may "
+                        f"differ: sync, then try again):\n{hosted}")
+            for cache in (self._syms, self._xrefs):
+                cache.pop(proj["id"], None)
+            link.sync()  # (the host's new name for it, and the names it defined)
+            return hosted + "\nShared with the room: the host judged it too and keeps it."
         name = fn["name"]
         if verdict.label and verdict.label != name:
             try:
@@ -2500,6 +2537,8 @@ class RomNetwork(Network):
         fn = self._function(function, slug)
         if fn["status"] != "documented":
             raise NetworkError(f"{fn['name']} isn't documented ({fn['status']})")
+        if self._link(slug) is not None:
+            raise NetworkError("the room's host looks its documented routines over")
         meta = {k: v for k, v in json.loads(fn["meta"] or "{}").items() if k != "sample"}
         note = " ".join(str(note or "").split())
         with self.store.tx() as db:
@@ -2652,6 +2691,34 @@ class RomNetwork(Network):
             db.execute("UPDATE functions SET status='matched', matched_source=?, matched_agent_id=?, matched_at=?, "
                        "best_score=0, best_source=? WHERE id=?", (source, aid, time.time(), source, row["id"]))
             db.execute("DELETE FROM claims WHERE function_id=?", (row["id"],))
+
+    def apply_remote_documented(self, slug: str, rows: list[dict]) -> None:
+        """Mirror the routines the room's host documented in assembly (it judged them on the same ROM). Only text the
+        judge would take is: a member checks what it keeps (no INCLUDE, INCBIN or macros)."""
+        from ..rom import gb_asm
+
+        proj = self._project(slug)
+        for r in rows:
+            row = self._room_function(proj["id"], r.get("name"), r.get("vram"), r.get("rom_offset"), r.get("size"))
+            source = str(r.get("source") or "")
+            if row is None or row["status"] in ("documented", "matched") or not gb_asm.contained(source):
+                continue
+            aid = self._remote_agent(r.get("agent") or "host")
+            with self.store.tx() as db:
+                db.execute("UPDATE functions SET status='documented', matched_source=?, matched_agent_id=?, matched_at=? "
+                           "WHERE id=?", (source, aid, time.time(), row["id"]))
+                db.execute("DELETE FROM claims WHERE function_id=?", (row["id"],))
+
+    def apply_remote_sent_back(self, slug: str, name: str) -> None:
+        """The room's host sent a documented routine back from review: on the assembly track again, its text the best
+        attempt to start from (as review_documented does)."""
+        proj = self._project(slug)
+        row = self._room_function(proj["id"], name)
+        if row is None or row["status"] != "documented":
+            return
+        with self.store.tx() as db:
+            db.execute("UPDATE functions SET status='asm', best_source=matched_source, best_score=1, matched_source=NULL, "
+                       "matched_agent_id=NULL, matched_at=NULL WHERE id=?", (row["id"],))
 
     def apply_remote_match_named(self, slug: str, name: str, agent_name: str) -> None:
         """A git project's room: who matched a function (the code itself arrives with the host's commits)."""

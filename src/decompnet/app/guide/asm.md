@@ -9,6 +9,10 @@ has addresses. It's kept as the project's source for that routine and goes into 
 comes on it too. Send the whole routine with `compile_and_diff(function, source)`. The answer lists every check it
 still fails; accepted, the function is **documented** under its label's name.
 
+In a room, the host hands the routines out. A routine that passes every check on your copy goes to the host, which
+judges it again on its own copy and keeps it for the room; members get the room's documented routines as they sync.
+The host picks the ones a person looks over, and one sent back comes back on the track with what's wrong in a note.
+
 ## The six checks
 
 1. **The same bytes.** It's assembled at the routine's address in its bank (rgbasm and rgblink, with hardware.inc
