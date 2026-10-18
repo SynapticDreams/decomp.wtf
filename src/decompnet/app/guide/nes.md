@@ -13,10 +13,13 @@ them, and score an attempt exactly. Functions compiled with SDCC or GBDK-2020 (h
   trainer, then the PRG ROM (the code and data) in 16 KiB units, then the CHR ROM (graphics). Only the PRG is code.
   Offsets in the app are **file offsets** (header included).
 - The PRG is split into banks, shown at the CPU address the mapper usually puts them at: NROM and CNROM at 0x8000;
-  MMC1, UxROM and UNROM 512 as 16 KiB banks with the last fixed at 0xC000 and the others at 0x8000; MMC3 as 8 KiB banks
-  with the last two fixed at 0xC000 and 0xE000; AxROM and GxROM as 32 KiB banks at 0x8000. A mapper the app doesn't
-  know is read like UxROM (the import says so). Which bank the CPU sees at a moment is decided by writes to mapper
-  registers at run time, so this is the usual picture, not a promise. Names spell the bank and the address:
+  MMC1, UxROM and UNROM 512 as 16 KiB banks with the last fixed at 0xC000 and the others at 0x8000 (MMC1 over 256 KiB:
+  each half's last bank at 0xC000); MMC3 as 8 KiB banks with the last two fixed at 0xC000 and 0xE000; Namco 163,
+  FME-7, VRC7, MMC5 and the like as 8 KiB banks with the last at 0xE000, VRC2/VRC4 and the Irem and Taito boards with
+  the last 16 KiB fixed, MMC2 with the last 24 KiB, VRC6 as a 16 KiB bank at 0x8000 plus the last 8 KiB; AxROM and
+  GxROM as 32 KiB banks at 0x8000. A mapper the app doesn't know is read like UxROM (the import says so). Which bank
+  the CPU sees at a moment is decided by writes to mapper registers at run time, so this is the usual picture, not a
+  promise: a switched window reached from another bank is left unresolved. Names spell the bank and the address:
   `func_<bank>_<address>`.
 - Functions are found from the **three vectors** (NMI, reset and IRQ, the last six bytes of the PRG) by following
   `jsr` and `jmp`, then `jsr` targets in code nothing reached, then tables of three or more addresses that each

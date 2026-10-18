@@ -16,8 +16,16 @@ so the model is the common arrangement of each mapper, the way the Game Boy lane
   * MMC1 (1), UxROM (2), UNROM 512 (30), 94 and the many look-alikes: 16 KiB banks, the last one fixed at 0xC000, the
     others shown at 0x8000. (An unknown mapper is read this way too.)
   * Mapper 180: the first bank fixed at 0x8000, the others at 0xC000.
+  * MMC1 with more than 256 KiB of PRG (SUROM, SOROM, SXROM): each 256 KiB half has its last bank fixed at 0xC000.
+  * Mapper 180 and 92: the first bank fixed at 0x8000, the others at 0xC000; 97: the last fixed at 0x8000.
   * MMC3 (4, 118, 119): 8 KiB banks, the last two fixed at 0xC000 and 0xE000, the rest shown at 0x8000.
+  * 8 KiB banks with the last fixed at 0xE000 and three windows switched (Namco 163, FME-7, VRC7, MMC5, Jaleco
+    SS88006, Irem H3001, Taito X1-005); with the last 16 KiB fixed (VRC2, VRC4, Irem G-101, Taito TC0190/TC0690);
+    with the last 24 KiB fixed (MMC2). Switched banks are shown at 0x8000.
+  * VRC6 (24, 26): a 16 KiB bank at 0x8000 (8 KiB units: even ones at 0x8000, odd at 0xA000), the last 8 KiB fixed.
+  * Mapper 31: 4 KiB banks, each at its slot of eight (bank n at 0x8000 + 0x1000 * (n % 8)), the last at 0xF000.
   * AxROM (7), GxROM (66), BNROM (34), 11, 79: 32 KiB banks at 0x8000.
+A switched window reached from code in another bank is left unresolved: which bank is there is the game's choice.
 The reset, NMI and IRQ vectors are the last six bytes of the PRG. A function's name spells its bank and CPU address
 (`func_<bank>_<address>`), because two banks can hold code at the same address.
 
@@ -31,6 +39,7 @@ that each point at a function are taken as one.
 from __future__ import annotations
 
 import bisect
+import functools
 import hashlib
 import re
 from dataclasses import dataclass
@@ -50,14 +59,22 @@ MIN_TABLE = 3          # addresses in a row that make a handler table
 #: mapper number -> (name, banking model). See the module docstring; anything not listed is read like UxROM.
 MAPPERS: dict[int, tuple[str, str]] = {
     0: ("NROM", "nrom"), 1: ("MMC1", "last"), 2: ("UxROM", "last"), 3: ("CNROM", "nrom"),
-    4: ("MMC3", "mmc3"), 5: ("MMC5", "last"), 7: ("AxROM", "all"), 9: ("MMC2", "last"), 10: ("MMC4", "last"),
-    11: ("Color Dreams", "all"), 19: ("Namco 163", "last"), 21: ("VRC4", "last"), 22: ("VRC2", "last"),
-    23: ("VRC2/4", "last"), 24: ("VRC6", "last"), 25: ("VRC4", "last"), 26: ("VRC6", "last"), 30: ("UNROM 512", "last"),
-    34: ("BNROM", "all"), 66: ("GxROM", "all"), 69: ("FME-7", "last"), 71: ("Camerica", "last"), 79: ("NINA-03/06", "all"),
-    94: ("UN1ROM", "last"), 118: ("TxSROM", "mmc3"), 119: ("TQROM", "mmc3"), 180: ("UNROM (reversed)", "first"),
-    206: ("DxROM", "mmc3"),
+    4: ("MMC3", "mmc3"), 5: ("MMC5", "w8a"), 7: ("AxROM", "all"), 9: ("MMC2", "w8c"), 10: ("MMC4", "last"),
+    11: ("Color Dreams", "all"), 18: ("Jaleco SS88006", "w8a"), 19: ("Namco 163", "w8a"), 21: ("VRC4", "w8b"),
+    22: ("VRC2", "w8b"), 23: ("VRC2/4", "w8b"), 24: ("VRC6", "vrc6"), 25: ("VRC4", "w8b"), 26: ("VRC6", "vrc6"),
+    30: ("UNROM 512", "last"), 31: ("NSF-style", "k4"), 32: ("Irem G-101", "w8b"), 33: ("Taito TC0190", "w8b"),
+    34: ("BNROM", "all"), 48: ("Taito TC0690", "w8b"), 65: ("Irem H3001", "w8a"), 66: ("GxROM", "all"),
+    69: ("FME-7", "w8a"), 71: ("Camerica", "last"), 79: ("NINA-03/06", "all"), 80: ("Taito X1-005", "w8a"),
+    85: ("VRC7", "w8a"), 92: ("Jaleco JF-19", "first"), 94: ("UN1ROM", "last"), 97: ("Irem TAM-S1", "lastlow"),
+    118: ("TxSROM", "mmc3"), 119: ("TQROM", "mmc3"), 180: ("UNROM (reversed)", "first"), 206: ("DxROM", "mmc3"),
+    207: ("Taito X1-005", "w8a"),
 }
-_UNIT = {"nrom": PRG_UNIT, "last": PRG_UNIT, "first": PRG_UNIT, "mmc3": 0x2000, "all": 0x8000}
+_UNIT = {"nrom": PRG_UNIT, "last": PRG_UNIT, "first": PRG_UNIT, "lastlow": PRG_UNIT, "surom": PRG_UNIT, "mmc3": 0x2000,
+         "w8a": 0x2000, "w8b": 0x2000, "w8c": 0x2000, "vrc6": 0x2000, "k4": 0x1000, "all": 0x8000}
+# 8 KiB-window mappers: what $8000, $A000, $C000 and $E000 show: None (a switched bank) or a fixed one, counted from
+# the end (-1: the last)
+_WINDOWS = {"w8a": (None, None, None, -1), "w8b": (None, None, -2, -1), "w8c": (None, -3, -2, -1),
+            "vrc6": (None, None, None, -1)}
 
 
 # ---------------------------------------------------------------- the header
@@ -156,6 +173,18 @@ class Layout:
 
     def base(self, bank: int) -> int:
         """The CPU address where `bank` is shown."""
+        n = self.banks
+        if self.kind in _WINDOWS:
+            fixed = {n + k: 0x8000 + 0x2000 * w for w, k in enumerate(_WINDOWS[self.kind]) if k is not None and n + k >= 0}
+            if bank in fixed:
+                return fixed[bank]
+            return 0xA000 if self.kind == "vrc6" and bank % 2 else 0x8000  # (VRC6: a 16 KiB bank, in 8 KiB halves)
+        if self.kind == "k4":
+            return 0xF000 if bank == n - 1 else 0x8000 + 0x1000 * (bank % 8)
+        if self.kind == "surom":
+            return 0xC000 if bank % 16 == 15 or bank == n - 1 else 0x8000
+        if self.kind == "lastlow":
+            return 0x8000 if bank == n - 1 else 0xC000
         if self.kind == "nrom":
             # a 16 KiB program is shown at 0xC000: its vectors are at 0xFFFA, so that is where its code is assembled
             return 0xC000 if self.size <= PRG_UNIT else 0x8000 + PRG_UNIT * bank
@@ -170,6 +199,8 @@ class Layout:
     def bank_of(self, p: int) -> int:
         return p // self.unit
 
+
+
     def cpu(self, p: int) -> int:
         """The CPU address of the byte at PRG offset `p`."""
         return self.base(p // self.unit) + p % self.unit
@@ -180,6 +211,27 @@ class Layout:
         if cpu < 0x8000:
             return None
         n, unit, p = self.banks, self.unit, None
+        if self.kind in _WINDOWS or self.kind == "k4":
+            window = cpu & ~(unit - 1)
+            fixed = _fixed_windows(self.kind, n)
+            if window in fixed:
+                p = fixed[window] * unit + (cpu & (unit - 1))
+            elif self.base(from_bank) == window:
+                p = from_bank * unit + (cpu & (unit - 1))  # (its own window: its own bank)
+            return p if p is not None and 0 <= p < self.size else None
+        if self.kind == "surom":  # each 256 KiB half's last bank is at 0xC000
+            half = from_bank // 16 * 16
+            if cpu >= 0xC000:
+                p = min(half + 15, n - 1) * unit + cpu - 0xC000
+            elif self.base(from_bank) == 0x8000:
+                p = from_bank * unit + cpu - 0x8000
+            return p if p is not None and 0 <= p < self.size else None
+        if self.kind == "lastlow":
+            if cpu < 0xC000:
+                p = (n - 1) * unit + cpu - 0x8000
+            elif self.base(from_bank) == 0xC000:
+                p = from_bank * unit + cpu - 0xC000
+            return p if p is not None and 0 <= p < self.size else None
         if self.kind == "nrom":
             p = (cpu - 0x8000) % PRG_UNIT if self.size <= PRG_UNIT else cpu - 0x8000
         elif self.kind == "last":
@@ -209,10 +261,20 @@ class Layout:
         return p if p is not None and 0 <= p < self.size else None
 
 
+@functools.lru_cache(maxsize=64)
+def _fixed_windows(kind: str, n: int) -> dict[int, int]:
+    """{CPU address of a window: the bank always shown there} for a mapper with fixed windows."""
+    if kind == "k4":
+        return {0xF000: n - 1}
+    return {0x8000 + 0x2000 * w: n + k for w, k in enumerate(_WINDOWS[kind]) if k is not None and n + k >= 0}
+
+
 def layout_of(header: dict) -> Layout:
     kind = MAPPERS.get(header["mapper"], ("", "last"))[1]
     if kind == "nrom" and header["prg_size"] > 2 * PRG_UNIT:
         kind = "last"  # a CNROM header with more than 32 KiB of PRG isn't one
+    if header["mapper"] == 1 and header["prg_size"] > 16 * PRG_UNIT:
+        kind = "surom"  # MMC1 over 256 KiB (SUROM, SOROM, SXROM): two halves, each with its last bank fixed
     return Layout(kind, _UNIT[kind], header["prg_size"])
 
 

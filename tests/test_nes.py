@@ -454,3 +454,32 @@ def test_the_app_tells_an_agent_what_is_still_at_address_zero(tmp_path):
     unpinned = ADD3.replace("{n}", "func_001_c040").split("\n", 1)[1]   # without its pin comment
     out = net.compile_and_diff(agent, "func_001_c040", unpinned, slug)
     assert not out.startswith("✅") and "func_001_c040_PARM_3" in out and "/* pin" in out
+
+
+# ------------------------------------------------------------------ the mappers' layouts
+
+def _mapper(mapper: int, prg_units: int) -> nes.Layout:
+    return nes.layout_of({"mapper": mapper, "prg_size": prg_units * nes.PRG_UNIT})
+
+
+def test_8kib_mappers_show_their_fixed_banks_where_they_are():
+    vrc4 = _mapper(21, 8)  # 128 KiB: 16 banks of 8 KiB, the last 16 KiB fixed
+    assert (vrc4.unit, vrc4.base(3), vrc4.base(14), vrc4.base(15)) == (0x2000, 0x8000, 0xC000, 0xE000)
+    assert vrc4.target(0xC123, 3) == 14 * 0x2000 + 0x123 and vrc4.target(0x8123, 3) == 3 * 0x2000 + 0x123
+    assert vrc4.target(0xA123, 3) is None and vrc4.target(0x8123, 15) is None  # (switched: the game's choice)
+    mmc2 = _mapper(9, 8)
+    assert [mmc2.base(b) for b in (12, 13, 14, 15)] == [0x8000, 0xA000, 0xC000, 0xE000]
+    n163 = _mapper(19, 8)
+    assert [n163.base(b) for b in (13, 14, 15)] == [0x8000, 0x8000, 0xE000]
+
+
+def test_vrc6_mapper_31_suro_and_97():
+    vrc6 = _mapper(24, 8)  # a 16 KiB bank at $8000 in 8 KiB halves
+    assert (vrc6.base(4), vrc6.base(5), vrc6.base(15)) == (0x8000, 0xA000, 0xE000)
+    m31 = _mapper(31, 8)  # 32 banks of 4 KiB
+    assert (m31.unit, m31.base(9), m31.base(31), m31.target(0xF010, 9)) == (0x1000, 0x9000, 0xF000, 31 * 0x1000 + 0x10)
+    surom = _mapper(1, 32)  # 512 KiB: two halves, each with its last bank at $C000
+    assert (surom.base(15), surom.base(16), surom.base(31)) == (0xC000, 0x8000, 0xC000)
+    assert surom.target(0xC010, 20) == 31 * 0x4000 + 0x10 and surom.target(0xC010, 3) == 15 * 0x4000 + 0x10
+    m97 = _mapper(97, 8)
+    assert (m97.base(7), m97.base(2), m97.target(0x8010, 2)) == (0x8000, 0xC000, 7 * 0x4000 + 0x10)
