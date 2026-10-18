@@ -399,6 +399,15 @@
         </div>
       </section>
     </div>
+    <section class="panel" id="resplitPanel" hidden>
+      <header class="panel-head"><h2>Split the game again</h2></header>
+      <div class="pad">
+        <p class="muted small">Find the game's functions again with this version's splitter. A function whose start, address and bytes don't change keeps everything; matched functions are always kept; notes on a function that goes move to the function that covers its place now. Stop the project's helpers before you apply it.</p>
+        <div class="row"><button class="ghost small-btn" id="resplitPreview" type="button">See what would change</button><button class="primary small-btn" id="resplitApply" type="button" hidden>Split again</button></div>
+        <pre class="joblog" id="resplitLog" hidden></pre>
+        <div id="resplitResult"></div>
+      </div>
+    </section>
     <section class="panel danger-zone">
       <header class="panel-head"><h2>Remove project</h2></header>
       <div class="pad row"><p class="muted small grow">Matched functions and notes are deleted from decomp.wtf. You can keep or delete the project folder.</p><button class="ghost danger" id="deleteBtn" type="button">Remove project…</button></div>

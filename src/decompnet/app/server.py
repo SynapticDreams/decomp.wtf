@@ -652,6 +652,21 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             return {k: v for k, v in res.items() if k != "log"} | {"log": res.get("log", "")[-1500:]}
         return {"job": jobs.start("export", work)}
 
+    def p_resplit(slug, request, data):
+        """Split a Game Boy, Master System or NES game again with this version's splitter, keeping the work done on
+        it (engine.resplit_banked): a preview by default, `apply` to do it, with the project's helpers stopped."""
+        apply = data.get("apply") is True
+        if apply:
+            if any(s.slug == slug and s.state in ("starting", "working", "waiting") and not s.stop.is_set()
+                   for s in manager.sessions.values()):
+                raise NetworkError("stop this project's helpers first: splitting again changes the functions they hold")
+            net.permuter.stop(slug)
+            net.stop_autopilot(slug)
+
+        def work(log):
+            return net.resplit_banked(slug, apply=apply, log=log)
+        return {"job": jobs.start("resplit", work)}
+
     def p_open(slug, request, data):
         why = hostenv.open_folder(Path(net.project_row(slug)["root"]))
         return {"ok": why is None, "message": why}
@@ -719,6 +734,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/diff": (lambda s, r, d: net.function_diff(s, r.query_params.get("name", ""),
                                                         r.query_params.get("which", "latest")), ["GET"]),
         "/api/compiler": (p_compiler, ["POST"]), "/api/export": (p_export, ["POST"]), "/api/open": (p_open, ["POST"]),
+        "/api/resplit": (p_resplit, ["POST"]),
         "/api/delete": (p_delete, ["POST"]), "/api/agents/manual": (p_manual, ["POST"]),
         "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]),

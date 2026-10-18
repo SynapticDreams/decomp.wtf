@@ -2908,7 +2908,27 @@ async function renderProjectSettings() {
     fork && ov.repo_url ? ["Repository", ov.repo_url.replace(/^https?:\/\//, "")] : null,
     ["Functions", `${ov.functions.toLocaleString()} (${bytes(ov.bytes || 0)} of code)`], ["Folder", ov.folder]].filter(Boolean);
   $("projFacts").innerHTML = facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v || "—")}</dd></div>`).join("");
+  // splitting again: the banked lanes, on a project of the user's own (a room member's copy follows its host's)
+  const banked = ["gb", "gbc", "sms", "gg", "nes"].includes(ov.platform) && !fork && ov.room?.role !== "guest";
+  if ($("resplitPanel").hidden === banked) { $("resplitApply").hidden = true; $("resplitResult").innerHTML = ""; $("resplitLog").hidden = true; }
+  $("resplitPanel").hidden = !banked;
 }
+
+/* What splitting again would change (or did): a preview first, then the same with "apply". */
+async function resplit(apply) {
+  const btn = apply ? $("resplitApply") : $("resplitPreview");
+  btn.disabled = true;
+  $("resplitLog").hidden = false;
+  try {
+    const { job } = await api("/api/resplit", { method: "POST", body: { slug: S.slug, apply } });
+    const r = await followJob(job, $("resplitLog"));
+    $("resplitResult").innerHTML = `<div class="notice ${apply ? "room" : ""}"><span>${apply ? "<b>Split again.</b> " : ""}${plural(r.before, "function")} → ${plural(r.after, "function")}: ${r.kept.toLocaleString()} unchanged keep their work, ${r.added.toLocaleString()} new, ${r.removed.toLocaleString()} ${apply ? "gone" : "would go"}; all ${r.matched_kept.toLocaleString()} matched kept${r.notes_moved ? `, notes of ${plural(r.notes_moved, "function")} ${apply ? "moved" : "would move"}` : ""}.</span></div>`;
+    $("resplitApply").hidden = apply;
+    if (apply) { S.ov = await api(`/api/project?slug=${S.slug}`); renderProjectSettings(); poll(false); }
+  } catch (e) { toast(esc(e.message), "err"); } finally { btn.disabled = false; }
+}
+$("resplitPreview").onclick = () => resplit(false);
+$("resplitApply").onclick = () => resplit(true);
 $("setTcReset").onclick = () => { $("setFlags").value = ""; };
 $("setTcSave").onclick = async () => {
   try {

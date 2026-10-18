@@ -10,15 +10,18 @@ Plenty of ROMs have no header at all (early Japanese games, much homebrew), so a
 plausible size is accepted too. Dumps with a 512-byte copier header in front are stripped of it.
 
 Banking. The Sega mapper has three 16 KiB slots: slot 0 (0x0000) shows bank 0, slot 1 (0x4000) and slot 2 (0x8000)
-show any bank, set by writes to 0xFFFE and 0xFFFF. Which bank is mapped when is not in the ROM, so the model here is
-the power-on one: bank 0 at 0x0000, bank 1 at 0x4000, bank 2 at 0x8000 in a ROM of three banks or fewer; in a bigger
-ROM every bank above 0 is shown in slot 1 (0x4000), the way the Game Boy lane shows its banks. A function's name
-spells its bank and CPU address (`func_<bank>_<address>`), because two banks can hold code at the same address.
+show any bank, set by writes to 0xFFFE and 0xFFFF. Which bank is mapped when is in the code, not in the ROM's layout:
+discovery follows the code with the banks it maps (`sms_trace`), so each function runs at the address its bank is
+mapped to when it's called, and a bank no code was followed into is placed where the game pages its banks. The
+power-on model (bank 0 at 0x0000, bank 1 at 0x4000, bank 2 at 0x8000 in a ROM of three banks or fewer; in a bigger
+ROM every other bank at 0x4000) is what's left when nothing says otherwise. A function's name spells its bank and
+the CPU address it runs at (`func_<bank>_<address>`), because two banks can hold code at the same address.
 """
 
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 
 from . import gb, z80
@@ -144,28 +147,32 @@ def cpu_address(flat: int, size: int) -> int:
     return slot_base(bank_of(flat), size) + flat % BANK_SIZE
 
 
-def function_name(flat: int, size: int) -> str:
-    return f"func_{bank_of(flat):03d}_{cpu_address(flat, size):04x}"
+def function_name(flat: int, size: int, cpu: int | None = None) -> str:
+    """`func_<bank>_<address>`: the address the code runs at (`cpu`, as discovery found it), else the power-on one."""
+    return f"func_{bank_of(flat):03d}_{(cpu_address(flat, size) if cpu is None else cpu):04x}"
 
 
 def segment_vram(bank: int, size: int) -> int:
     return slot_base(bank, size)
 
 
-def target_flat(cpu: int, from_bank: int, size: int) -> int | None:
+def target_flat(cpu: int, from_bank: int, size: int, here: int | None = None) -> int | None:
     """The flat ROM offset a call or jump to `cpu` reaches from code in `from_bank`, or None for RAM and ports.
 
-    Slot 0 is always bank 0. Slot 1 is the caller's own bank when that bank is shown there, else bank 1 (the
-    power-on mapping); slot 2 is bank 2, or the caller's own bank when it is shown there."""
+    Into the slot the code runs from (`here`, its own CPU address, when known), its own bank. Otherwise slot 0 is
+    always bank 0; slot 1 is the caller's own bank when that bank is shown there, else bank 1 (the power-on
+    mapping); slot 2 is bank 2, or the caller's own bank when it is shown there."""
     if cpu < 0x4000:
         return cpu
+    if cpu >= 0xC000:
+        return None
+    if here is not None and here >= 0x4000 and here >> 14 == cpu >> 14:
+        return from_bank * BANK_SIZE + (cpu & (BANK_SIZE - 1))
     if cpu < 0x8000:
         bank = from_bank if slot_base(from_bank, size) == 0x4000 else 1
         return bank * BANK_SIZE + (cpu - 0x4000)
-    if cpu < 0xC000:
-        bank = from_bank if slot_base(from_bank, size) == 0x8000 else 2
-        return bank * BANK_SIZE + (cpu - 0x8000)
-    return None
+    bank = from_bank if slot_base(from_bank, size) == 0x8000 else 2
+    return bank * BANK_SIZE + (cpu - 0x8000)
 
 
 def banks(data: bytes) -> list[bytes]:
@@ -174,48 +181,49 @@ def banks(data: bytes) -> list[bytes]:
 
 # ---------------------------------------------------------------- function discovery
 
-def _walk(data: bytes, start: int, hard: int, starts: set[int]):
-    """Walk the function that begins at flat offset `start`: yield (flat, cpu_text, length) per instruction.
+def _walk(data: bytes, start: int, cpu: int, hard: int, starts: set[int]):
+    """Walk the function that begins at flat offset `start`, running at CPU address `cpu`: yield (flat, text,
+    length) per instruction.
 
     It ends at an unconditional return or jump once every forward branch seen so far has been passed, so a `ret nc`
     in the middle, the `ret` before an `else` branch's target or a loop's back-edge does not end it. An unconditional
     jump is part of the function only when something before it already branches past it (the `else` of an
     if/else); otherwise nothing after it can be reached from here and it leaves the function: a tail call, or the
-    reset vector's `jp init`. It never runs past `hard`, `MAX_FUNCTION`, or the end of the ROM."""
+    reset vector's `jp init`. It never runs past `hard`, `MAX_FUNCTION`, the end of its bank or of the ROM."""
     size = len(data)
     bank = bank_of(start)
     limit = start
     off = start
-    end = min(hard, start + MAX_FUNCTION, size)
+    end = min(hard, start + MAX_FUNCTION, size, (bank + 1) * BANK_SIZE)
     while off < end:
-        text, ln = z80.decode(data[off:off + 4], cpu_address(off, size))
+        here = cpu + off - start
+        text, ln = z80.decode(data[off:off + 4], here)
         yield off, text, ln
         nxt = off + max(1, ln)
         kind, target = z80.flow(text)
         if kind in ("ret", "jump") and nxt > limit:
             return
         if target is not None and kind in ("jump", "cjump"):
-            flat = target_flat(target, bank, size)
+            flat = target_flat(target, bank, size, here)
             if flat is not None and flat > off and flat not in starts and flat < end:
                 limit = max(limit, flat)
         off = nxt
 
 
-def _extent(data: bytes, start: int, hard: int, starts: set[int]) -> bytes:
+def _extent(data: bytes, start: int, cpu: int, hard: int, starts: set[int]) -> bytes:
     """A function's bytes: from its start up to and including the instruction that ends it, never past `hard`.
 
     Exact extents matter for matching: a candidate compiled from C produces the function and nothing else."""
     end = start
-    for off, _text, ln in _walk(data, start, hard, starts):
+    for off, _text, ln in _walk(data, start, cpu, hard, starts):
         end = off + max(1, ln)
     return data[start:end]
 
 
-def _clean(data: bytes, start: int, code: bytes) -> bool:
+def _clean(data: bytes, start: int, cpu: int, code: bytes) -> bool:
     """A real function decodes without undefined opcodes and ends on an instruction that leaves it."""
-    if not code:
+    if not code or code[:2] in (b"\x00\x00", b"\xff\xff"):
         return False
-    cpu = cpu_address(start, len(data))
     last = None
     for _a, text, _ln in z80.disassemble(code, cpu):
         if text.startswith("db "):
@@ -224,53 +232,105 @@ def _clean(data: bytes, start: int, code: bytes) -> bool:
     return last is not None and z80.is_return(last)
 
 
-def candidates(data: bytes, limit: int = 4000) -> dict[int, str]:
-    """{flat offset: how it was found} for every plausible function start.
+_CALLS = (0xCD, 0xC4, 0xCC, 0xD4, 0xDC, 0xE4, 0xEC, 0xF4, 0xFC)
 
-    The reset vector, the RST handlers and the NMI are starts. From them, the calls and tail jumps of each function
-    found are followed (recursive descent). On top of that every bank is swept for `call nn` and `rst`, the same
-    union the Game Boy lane builds: calls made from code the descent never reached (a table of handlers, another
-    bank) still name functions, kept only when what they point at reads as a function."""
+
+def _code_like(data: bytes, bank: int) -> bool:
+    """A bank that reads like code: Z80 code is full of `ret` and `call` (a bank of it has hundreds of each), a bank
+    of graphics, maps or text a handful."""
+    chunk = data[bank * BANK_SIZE:(bank + 1) * BANK_SIZE]
+    return chunk.count(0xC9) + chunk.count(0xCD) >= max(48, len(chunk) // 256)
+
+
+def _swept(data: bytes, bank: int, base: int, known: set[int]) -> dict[int, tuple[int, str]]:
+    """Function starts named by `call nn` bytes anywhere in `bank` (code nothing reached yet, a table of handlers):
+    calls into bank 0, and into the slot the bank's own code runs from (`base`), which is its own bank. Kept only
+    when what they point at reads as a function."""
+    size, out = len(data), {}
+    lo, hi = bank * BANK_SIZE, min((bank + 1) * BANK_SIZE, size)
+    for off in range(lo, hi - 2):
+        if data[off] not in _CALLS:
+            continue
+        target = data[off + 1] | (data[off + 2] << 8)
+        if target < 0x4000:
+            flat, cpu = target, target
+        elif bank and base >= 0x4000 and target >> 14 == base >> 14:
+            flat, cpu = bank * BANK_SIZE + (target & (BANK_SIZE - 1)), target
+        else:
+            continue  # into a slot whose bank depends on what the code mapped: the following finds those
+        if flat < size and flat not in known and flat not in out and _clean(data, flat, cpu, _extent(data, flat, cpu, size, known)):
+            out[flat] = (cpu, "call")
+    return out
+
+
+def candidates(data: bytes, limit: int = 4000, labels: dict | None = None) -> tuple[dict[int, tuple[int, str]], dict[int, int]]:
+    """({flat offset: (CPU address it runs at, how it was found)}, {bank: CPU address its code runs at}).
+
+    Bank 0 is always at 0x0000, so the calls into it, wherever they are, name functions there; with the vectors (and
+    a symbol file's labels, `labels`) they seed following the code with the banks it maps (sms_trace): that finds
+    the functions it reaches, and where each bank's code runs. Then every other bank is swept for calls within the
+    slot it runs from, and the code followed again from all of it."""
+    from . import sms_trace
+
     size = len(data)
-    found: dict[int, str] = {}
-    for v in VECTORS:
-        if v < size:
-            found.setdefault(v, "vector")
+    seeds = {v: (v, "vector") for v in VECTORS if v < size}
+    if labels:
+        seeds.update({f: c for f, c in sms_trace.sym_seeds(labels, data).items() if f not in seeds})
+    seeds.update({f: c for f, c in _swept(data, 0, 0, set(seeds)).items() if f not in seeds})
+    # a first pass learns which slots the game pages; then code entered from anywhere nothing was followed from
+    # doesn't assume the power-on bank in those (a call there would land in a data bank)
+    probe = sms_trace.Tracer(data).follow(seeds)
+    tracer = sms_trace.Tracer(data, paged={s for s, n in probe.slot_writes.items() if n})
+    found = tracer.follow(seeds)
+    bases = dict(found.bank_base)
+    for bank in range(1, -(-size // BANK_SIZE)):  # banks nothing was followed into: where they most likely run
+        if bank not in bases and (base := tracer.default_base(bank)) is not None:
+            bases[bank] = base
+    more = dict(found.starts)
+    code_banks = {flat // BANK_SIZE for flat in found.starts}
+    for bank in range(1, -(-size // BANK_SIZE)):
+        if bank in code_banks or _code_like(data, bank):  # (in a bank of graphics or text, CD bytes aren't calls)
+            more.update(_swept(data, bank, bases.get(bank, slot_base(bank, size)), set(more)))
+    paged = {s for s, n in probe.slot_writes.items() if n}
+    if len(more) > len(found.starts):
+        found = sms_trace.Tracer(data, paged=paged).follow({**more, **seeds})
+        bases = {**bases, **found.bank_base}
+    # code nothing points at (called through pointers kept in RAM, which this can't follow): what starts right where
+    # a function ends, in a bank that has code, and reads like a function, is the next one. While that finds more.
+    seeds = {**more, **seeds}
+    for _ in range(8):
+        gaps = _after_functions(data, found.starts)
+        if not gaps:
+            break
+        seeds.update(gaps)
+        found = sms_trace.Tracer(data, paged=paged).follow(seeds)
+        bases = {**bases, **found.bank_base}
+    starts = dict(sorted(found.starts.items())[:limit])
+    return starts, bases
 
-    def follow(start: int) -> None:
-        todo = [start]
-        while todo and len(found) < limit:
-            s = todo.pop()
-            hard = size  # the descent runs to the ROM's end; the final cut uses the next start
-            code = _extent(data, s, hard, set(found))
-            bank = bank_of(s)
-            for _a, text, _ln in z80.disassemble(code, cpu_address(s, size)):
-                kind, target = z80.flow(text)
-                if target is None or kind not in ("call", "jump", "cjump"):
-                    continue
-                flat = target_flat(target, bank, size)
-                if flat is None or not 0 <= flat < size or flat in found:
-                    continue
-                if kind == "call" or not (s <= flat < s + len(code)):
-                    found[flat] = "call" if kind == "call" else "jump"
-                    todo.append(flat)
 
-    for v in list(found):
-        follow(v)
-    # a sweep of every bank for calls the descent never saw
-    for bank in range(-(-size // BANK_SIZE)):
-        lo, hi = bank * BANK_SIZE, min((bank + 1) * BANK_SIZE, size)
-        for off in range(lo, hi - 2):
-            op = data[off]
-            if op in (0xCD, 0xC4, 0xCC, 0xD4, 0xDC, 0xE4, 0xEC, 0xF4, 0xFC):
-                flat = target_flat(data[off + 1] | (data[off + 2] << 8), bank, size)
-                if flat is not None and 0 <= flat < size and flat not in found:
-                    if _clean(data, flat, _extent(data, flat, size, set(found))):
-                        found[flat] = "call"
-                        follow(flat)
-            if len(found) >= limit:
-                break
-    return dict(sorted(found.items()))
+def _after_functions(data: bytes, starts: dict[int, tuple[int, str]]) -> dict[int, tuple[int, str]]:
+    """{flat: (cpu, "after")} for plausible function starts right where a function ends, where no function starts
+    yet and no function's bytes run on."""
+    from . import sms_trace
+
+    size, order = len(data), sorted(starts)
+    known = set(order)
+    spans = []
+    for i, start in enumerate(order):
+        cpu = starts[start][0]
+        hard = order[i + 1] if i + 1 < len(order) else size
+        spans.append((start, start + len(_extent(data, start, cpu, hard, known)), cpu))
+    out = {}
+    for k, (start, end, cpu) in enumerate(spans):
+        if end == start or end in known or end % BANK_SIZE == 0 or end >= size:
+            continue
+        if k + 1 < len(spans) and spans[k + 1][0] < end:
+            continue  # (the next function starts inside this one's bytes)
+        here = cpu + (end - start)
+        if sms_trace.plausible(data, end, here):
+            out[end] = (here, "after")
+    return out
 
 
 def refs_of(code: bytes, cpu: int, bank: int, size: int) -> list[tuple[int, int, int]]:
@@ -280,37 +340,53 @@ def refs_of(code: bytes, cpu: int, bank: int, size: int) -> list[tuple[int, int,
         kind, target = z80.flow(text)
         if target is None or kind not in ("call", "jump", "cjump"):
             continue
-        flat = target_flat(target, bank, size)
+        flat = target_flat(target, bank, size, a)
         if flat is not None and 0 <= flat < size and not (cpu <= target < cpu + len(code)):
             out.append((a - cpu, 10, target))
     return out
 
 
-def functions(data: bytes, log=lambda *_: None) -> list[gb.GbFunction]:
-    """Every discovered function, disassembled. (The record type is shared with the Game Boy lane.)"""
-    found = candidates(data)
+def functions(data: bytes, log=lambda *_: None, labels: dict | None = None,
+              report: dict | None = None) -> list[gb.GbFunction]:
+    """Every discovered function, disassembled at the address it runs at. (The record type is shared with the Game
+    Boy lane.) `labels` ({(bank, address): name}, from a symbol file) name what they label; `report` gets
+    {"bank_base": {bank: CPU address}} for the banks whose code was found running somewhere."""
+    found, bases = candidates(data, labels=labels)
     if not found:
         raise RomError("no code found in this ROM: every candidate address pointed outside it")
     size = len(data)
     starts = sorted(found)
     known = set(starts)
+    taken: set[str] = set()
     out: list[gb.GbFunction] = []
     for i, start in enumerate(starts):
+        cpu = found[start][0]
         hard = starts[i + 1] if i + 1 < len(starts) else min(start + MAX_FUNCTION, size)
-        code = _extent(data, start, hard, known)
-        insns = list(z80.disassemble(code, cpu_address(start, size)))
+        code = _extent(data, start, cpu, hard, known)
+        insns = list(z80.disassemble(code, cpu))
         if not insns:
             continue
-        cpu = cpu_address(start, size)
-        out.append(gb.GbFunction(name=function_name(start, size), vram=cpu, rom=start, bank=bank_of(start), code=code,
+        label = (labels or {}).get((bank_of(start), cpu))
+        name = label if label and label not in taken and re.fullmatch(r"[A-Za-z_]\w*", label) else \
+            function_name(start, size, cpu)
+        taken.add(name)
+        out.append(gb.GbFunction(name=name, vram=cpu, rom=start, bank=bank_of(start), code=code,
                                  n_insns=len(insns), asm=z80.asm_text(code, cpu, width=4),
                                  refs=refs_of(code, cpu, bank_of(start), size)))
-    log(f"found {len(out)} functions in {-(-size // BANK_SIZE)} banks")
+    if report is not None:
+        report["bank_base"] = bases
+    moved = sorted(b for b, base in bases.items() if base != slot_base(b, size))
+    log(f"found {len(out)} functions in {-(-size // BANK_SIZE)} banks"
+        + (f"; code in bank{'s' if len(moved) > 1 else ''} {', '.join(map(str, moved))} runs at the address the "
+           "game maps it to, not the power-on one" if moved else ""))
     return out
 
 
 def split(path: Path, workdir: Path, log=lambda *_: None, report: dict | None = None) -> list[gb.GbFunction]:
-    """A ROM file's functions. (`report` gets {"splitter": "built-in"}: there is no external tool for the Z80.)"""
+    """A ROM file's functions. (`report` gets {"splitter": "built-in"}: there is no external tool for the Z80, and
+    the banks' addresses.) A WLA-DX symbol file next to the ROM (`game.sym` for `game.sms`) seeds and names them."""
+    from . import sms_trace
+
     if report is not None:
         report["splitter"] = "built-in"
     data = strip_copier_header(Path(path).read_bytes())
@@ -319,4 +395,9 @@ def split(path: Path, workdir: Path, log=lambda *_: None, report: dict | None = 
     info = read_info(data, Path(path).name)
     log(f"{info['platform'].upper()}: {info['title']} ({info['cartridge']}"
         f"{', header found' if info['header'] else ', no header'})")
-    return functions(data, log=log)
+    labels = None
+    sym = Path(path).with_suffix(".sym")
+    if sym.is_file():
+        labels = sms_trace.read_sym(sym.read_text(encoding="utf-8", errors="replace"))
+        log(f"{len(labels)} labels from {sym.name}")
+    return functions(data, log=log, labels=labels, report=report)

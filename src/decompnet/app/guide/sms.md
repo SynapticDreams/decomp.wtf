@@ -9,13 +9,15 @@ encoding. Both consoles use the same mapper and the same compiler, so everything
 - A Sega header is recognised by content: `TMR SEGA` at 0x7FF0 (0x3FF0 or 0x1FF0 in a ROM of 16 or 8 KiB).
   Its last byte gives the region (Master System or Game Gear) and the size. A ROM with no header is still
   taken when it is named `.sms` or `.gg` and has a plausible size. A 512-byte copier header is dropped.
-- The cartridge is split into **16 KiB banks**. Bank 0 is at 0x0000, bank 1 at 0x4000, bank 2 at 0x8000 in a
-  ROM of three banks or fewer. In a bigger ROM every bank above 0 is shown at 0x4000. Which bank is mapped
-  when is decided by writes to 0xFFFE/0xFFFF at run time, so this is the power-on picture, not a promise.
-  Names spell the bank and the address: `func_<bank>_<address>`.
-- Functions are found from the reset vector, the RST handlers and the NMI by following calls and tail
-  jumps, plus a sweep of every bank for `call`s that nothing reached. **Code that is only reached through
-  a pointer table or `jp (hl)` is not found**, and data inside a function's range is not told apart from code.
+- The cartridge is split into **16 KiB banks**. Bank 0 is at 0x0000. Which bank is mapped where is decided by writes
+  to 0xFFFE/0xFFFF at run time, so the code is followed with the banks it maps (`ld a,5 / ld ($ffff),a` puts bank
+  5 at 0x8000): each function runs at the address its bank is mapped to when it's called, and its calls and jumps
+  into its own bank read as the ROM has them. Most games keep bank 1 at 0x4000 and page the rest into 0x8000.
+  Names spell the bank and the address the code runs at: `func_<bank>_<address>`.
+- Functions are found from the reset vector, the RST handlers and the NMI by following calls, tail jumps, bank
+  switchers and the tables dispatchers read (`ld hl,table / jp dispatch`), plus a sweep for `call`s in the banks
+  that hold code and code that starts right where a function ends. Code reached only through pointers kept in RAM
+  may still be missing, and data inside a function's range is not told apart from code.
 
 ## The matching lane
 
