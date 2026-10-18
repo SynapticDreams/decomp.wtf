@@ -130,6 +130,15 @@ def _data_size(kind: str, args: str) -> int:
     return size
 
 
+def contained(text: str) -> bool:
+    """Whether text is only what the judge takes: no INCLUDE, INCBIN, macros or other directives (a room member checks
+    what its host sends before keeping it)."""
+    try:
+        return not any("isn't taken here" in p for p in parse(text)[3])
+    except AsmError:
+        return False
+
+
 def parse(text: str) -> tuple[list[_Item], list[tuple[int, str]], list[str], list[str]]:
     """(items, labels as (line, name), the comment lines before the first label, problems): one statement a line."""
     if len(text) > MAX_TEXT:

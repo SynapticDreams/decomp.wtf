@@ -17,8 +17,8 @@ pytestmark = pytest.mark.skipif(not gb_asm.available(), reason="needs RGBDS")
 HAND = json.dumps({"asm_code": "reads hl before setting it: SDCC passes arguments in a, e, de and bc, never in hl"})
 
 
-@pytest.fixture
-def game(tmp_path):
+def make_game(tmp_path) -> RomNetwork:
+    """A Game Boy Color project "g" with one hand-written routine to document (the judge's test routine, bank 2)."""
     net = RomNetwork(tmp_path / "d.db", tmp_path)
     cfg = {"kind": "rom", "platform": "gbc", "arch": "sm83", "rom": {"size": 0x10000, "mbc": "MBC5", "file": "rom.gbc"},
            "compiler": {"toolchain": "gbdk-2020", "flags": []}}
@@ -33,6 +33,12 @@ def game(tmp_path):
             db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,unit,vram,rom_offset,status,meta) "
                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (pid, name, len(code), 1, code, "[]", "", "bank002", cpu, flat, status, meta))
             db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)", (pid, name, cpu, len(code), "func"))
+    return net
+
+
+@pytest.fixture
+def game(tmp_path):
+    net = make_game(tmp_path)
     return net, net.authenticate(net.register_agent("writer"))
 
 
