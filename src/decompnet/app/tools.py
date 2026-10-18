@@ -35,6 +35,7 @@ GUIDES = {
     "arm": "ARM and Thumb (GBA, DS, 3DS): registers, conditional code, literal pools",
     "agbcc": "matching Game Boy Advance code built with agbcc",
     "gb": "Game Boy and Game Boy Color: SM83, banked cartridges, GBDK-2020/SDCC matching",
+    "asm": "the assembly track (Game Boy): documenting a hand-written routine in RGBDS assembly, the six checks",
     "sms": "Master System and Game Gear: Z80, the Sega mapper, GBDK-2020/SDCC matching",
     "nes": "NES: the 6502, iNES mappers and banks, GBDK-2020/SDCC matching",
     "x86": "x86 and MSVC (PC, Xbox): calling conventions, SEH, matching MSVC output",
@@ -46,7 +47,7 @@ GUIDES = {
 PLATFORM_GUIDES = {
     "n64": ["mips"], "ps": ["mips", "psx"], "ps2": ["mips", "ps2"], "psp": ["mips"],
     "gc": ["ppc", "mwcc", "cpp"], "wii": ["ppc", "mwcc", "cpp"], "nds": ["arm", "mwcc"], "3ds": ["arm", "cpp"],
-    "gba": ["arm", "agbcc"], "gb": ["gb"], "gbc": ["gb"], "sms": ["sms"], "gg": ["sms"], "nes": ["nes"],
+    "gba": ["arm", "agbcc"], "gb": ["gb", "asm"], "gbc": ["gb", "asm"], "sms": ["sms"], "gg": ["sms"], "nes": ["nes"],
     "switch": ["aarch64", "cpp"], "win32": ["x86", "cpp"], "xbox": ["x86", "cpp"],
     "xbox360": ["ppc", "cpp"],
 }
@@ -57,6 +58,29 @@ machine code. Your C is compiled with the game's original compiler, linked at th
 and compared with the ROM: score 0 means byte-identical, and the function is saved as matched.
 Start with project_info, then claim_function -> compile_and_diff (repeat). guide(topic) has know-how.
 Everything runs on the user's computer. The game's code is the user's: never publish it anywhere.
+"""
+
+ASM_PROMPT = """\
+You are a decompilation agent in decomp.wtf, working on {title}, a Game Boy game written in assembly. Other
+agents may be working on other routines of the same game at the same time; the tools keep you from colliding.
+
+Your job: document hand-written routines (no C compiles to them) as RGBDS assembly that rebuilds them byte for
+byte, with names, comments and constants instead of addresses. Use only the decomp tools. Repeat for up to
+{count} routines, then stop:
+
+1. claim_function(track="asm") gives you the next routine: the routine as the split has it, a draft that
+   already rebuilds its bytes, what the map knows about it (its data, the banks its calls reach), the best
+   previous attempt and notes (start from those!).
+2. Write the whole routine and judge it with compile_and_diff(function, source=the routine). The answer lists
+   each check it still fails: name every address (the project's names, or DEF wName EQU $C0A2), hardware by
+   hardware.inc's names, real names for it and its labels, and comment lines before it saying what it does,
+   what it takes and returns. guide("asm") explains each check.
+3. Accepted, it's documented under its label's name. Before moving on, rename_symbol what you worked out about
+   the names it uses, and add_note (no function) for what every agent here should know about this game.
+4. When you're stuck on a routine, release_function with precise notes (what's left, what you suspect) and
+   claim the next. One that turns out not to be a routine: correct_split or flag_for_review.
+
+Be brief in your messages: work, don't narrate.
 """
 
 WORK_PROMPT = """\
@@ -173,7 +197,7 @@ def _project_info(net: RomNetwork, slug: str) -> str:
 
 
 # name -> handler(net, agent, slug, **args); every handler returns text for the model
-def _claim(net: RomNetwork, agent: Agent, slug: str, function: str, strategy: str, count: int = 1) -> str:
+def _claim(net: RomNetwork, agent: Agent, slug: str, function: str, strategy: str, count: int = 1, track: str = "") -> str:
     """A claim; one asked for that's matched, hand-written assembly or someone else's is the next free function
     instead (an agent asking for those has nothing better to do than the next one, and is told why). count > 1: a
     batch of small ones. A helper started with a Focus claims by it, whatever strategy it asks for."""
@@ -184,6 +208,9 @@ def _claim(net: RomNetwork, agent: Agent, slug: str, function: str, strategy: st
     if agent.id in getattr(net, "pinned", {}):
         count = 1  # pinned to one function: no neighbours with it
     strategy = strategy or ("finish" if net.fork_slug(slug) else "easiest")
+    track = track or net.tracks.get(agent.id, "")  # (a helper started on a track claims on it)
+    if track.strip().lower() in ("asm", "assembly"):
+        return net.claim(agent, slug, function or None, strategy, track="asm")
     if not function and int(count or 1) > 1:
         return net.claim_many(agent, slug, int(count), strategy)
     try:
@@ -204,8 +231,8 @@ def _compile(net: RomNetwork, agent: Agent, slug: str, function: str, source: st
 
 HANDLERS: dict[str, Callable[..., str]] = {
     "project_info": lambda net, agent, slug: project_info(net, slug),
-    "claim_function": lambda net, agent, slug, function="", strategy="", count=1:
-        _claim(net, agent, slug, function, strategy, count),
+    "claim_function": lambda net, agent, slug, function="", strategy="", count=1, track="":
+        _claim(net, agent, slug, function, strategy, count, track),
     "get_function": lambda net, agent, slug, function, start_line=0: (
         net.forks.get_function(agent, slug, function) if net.fork_slug(slug)
         else net.get_function(function, slug, agent, int(start_line or 0))),
@@ -296,7 +323,7 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "project_info")
 
     @mcp.tool(meta=ALWAYS_LOAD)
-    async def claim_function(ctx: Context, function: str = "", strategy: str = "", count: int = 1) -> str:
+    async def claim_function(ctx: Context, function: str = "", strategy: str = "", count: int = 1, track: str = "") -> str:
         """Claim the next function to decompile (or a specific one by name or address).
 
         Returns its assembly, the best previous attempt and notes from earlier agents, plus (ROM projects)
@@ -309,8 +336,10 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
                 instructions; ROM projects' default), closest (nearly matched already), hardest, random
             count: up to 6: small functions come as a batch (neighbours in one file) to write together and
                 judge in one compile_and_diff; a big one comes alone
+            track: asm (Game Boy): a hand-written routine to document in RGBDS assembly instead of matching in C
+                (guide topic `asm`)
         """
-        return await run(ctx, "claim_function", function=function, strategy=strategy, count=count)
+        return await run(ctx, "claim_function", function=function, strategy=strategy, count=count, track=track)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def get_function(ctx: Context, function: str, start_line: int = 0) -> str:

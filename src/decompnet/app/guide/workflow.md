@@ -21,7 +21,8 @@ Goal: C that the game's own compiler turns into exactly the bytes in the ROM. No
    writes it and the set-aside rules missed it: `flag_for_review` with why, in a sentence. It goes to a person
    and out of every agent's way. A few an hour at most: a function that's only hard gets released (6). On the
    Game Boy, when you know what the bytes really are (data, a function start, a table, a routine's operands),
-   `correct_split` says so for the next split (guide `gb`).
+   `correct_split` says so for the next split (guide `gb`). Routines set aside as hand-written there are documented
+   in assembly instead of matched in C: `claim_function(track="asm")` (guide `asm`).
 
 ## Triage first
 Read the score line before the rows: target and yours, in instructions. A count that's far off means the

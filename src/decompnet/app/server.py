@@ -1019,6 +1019,17 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             if not left:
                 return fail(ValueError(f"Nothing to start on: {agents.FOCUSES[focus][1]}. Pick another focus."))
             options["focus"] = focus
+        if given.get("track") == "asm":  # the assembly track: hand-written Game Boy routines, documented
+            try:
+                proj = net.project_row(slug)
+            except NetworkError as e:
+                return fail(e)
+            if (proj["arch"] or "") != "sm83" or net.fork_slug(slug):
+                return fail(ValueError("the assembly track is for Game Boy projects"))
+            if not agents.Manager._asm_left(net, proj):
+                return fail(ValueError("Nothing to start on: every hand-written routine is documented or being worked on."))
+            options["track"] = "asm"
+            options.pop("focus", None)
         options.setdefault("per_session", settings.data.get("per_session", agents.PER_SESSION))
         count = max(1, min(int(data.get("count", 1)), 8))
         if given.get("pin"):  # one helper, on one function, until it matches (the function drawer's "Work on this")

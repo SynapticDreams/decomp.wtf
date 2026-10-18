@@ -43,7 +43,7 @@ _DEFINE = re.compile(rf"^\s*(?:def\s+({_IDENT})\s+equ\b|({_IDENT})\s+equ\b)\s*(.
 _BANNED = re.compile(
     r"^(?:include|incbin|section|macro|endm|rept|endr|for|shift|if|elif|else|endc|print|println|warn|fail|assert|"
     r"static_assert|export|purge|pushs|pops|pushc|popc|pusho|popo|opt|load|endl|union|nextu|endu|charmap|newcharmap|"
-    r"setcharmap|rsreset|rsset|rb|rw|rl|ds|redef|align|break|endsection|fragment|newcharmap)\b", re.I)
+    r"setcharmap|rsreset|rsset|rb|rw|ds|redef|align|break|endsection|fragment|newcharmap)\b", re.I)  # (not rl: an instruction)
 # automatic names: the split's, mgbdis's, or anything that only spells an address
 AUTO = re.compile(r"^\.?(?:(?:Call|Func|Jump|jr|func|sub|loc|label|lbl|L|unk|unknown)_?[0-9A-Fa-f_]*|.*_[0-9A-Fa-f]{4})$")
 
@@ -273,7 +273,11 @@ def _clean(log: str, offset: int) -> str:
         line = re.sub(r"\S*/(\w+\.(?:inc|asm|o))", r"\1", line)
         if line.strip():
             out.append(line.strip())
-    return "\n".join(out[-8:]) or "the assembler refused it"
+    text = "\n".join(out[-8:]) or "the assembler refused it"
+    if (m := re.search(r"Undefined symbol `([^`]+)`", text)):
+        text += (f"\n({m.group(1)} isn't a name the project has: use one it has (the brief's draft does), or name the "
+                 f"address yourself with DEF {m.group(1)} EQU $XXXX)")
+    return text
 
 
 # ---------------------------------------------------------------- the checks
@@ -503,3 +507,99 @@ def available() -> bool:
     from . import gb_mgbdis
 
     return gb_mgbdis.tools() is not None
+
+
+# ---------------------------------------------------------------- a draft to start from
+
+def _signed(n: int) -> int:
+    return n - 0x100 if n >= 0x80 else n
+
+
+def draft(r: Routine) -> str:
+    """The routine as RGBDS assembly that rebuilds its bytes, with what the project knows filled in: its functions'
+    and symbols' names, hardware.inc's for the hardware, `db` over the data the map has in it, and a local label at
+    each branch target inside it. Automatic names and no comment yet: what's left for the agent to write."""
+    names: dict[int, str] = {}
+    for name, value in sorted(r.symbols.items()):
+        names.setdefault(value, name)
+    flats = {flat: name for flat, name in r.functions.items()}
+    regs, cart = gb_hw.registers(), gb_hw.mapper_registers(r.mapper)
+    data = sorted((lo - r.flat, lo - r.flat + n) for lo, n, _k in r.data)
+
+    def in_data(off: int):
+        return next(((lo, hi) for lo, hi in data if lo <= off < hi), None)
+
+    # the instructions (and data) at their offsets, and where branches inside go
+    pieces, off, inner = [], 0, set()
+    while off < len(r.code):
+        span = in_data(off)
+        if span:
+            end = min(span[1], len(r.code))
+            pieces.append((off, "db " + ", ".join(f"${b:02x}" for b in r.code[off:end]), end - off, None, None))
+            off = end
+            continue
+        text, ln = sm83.decode(r.code[off:off + 3], r.cpu + off)
+        kind, target = sm83.flow(text)
+        if target is not None and r.cpu <= target < r.cpu + len(r.code) and kind in ("jump", "cjump", "call"):
+            inner.add(target - r.cpu)
+        pieces.append((off, text, ln, kind, target))
+        off += ln
+    starts = {p[0] for p in pieces}
+
+    def code_name(target: int, off: int) -> str:
+        if r.cpu <= target < r.cpu + len(r.code) and target - r.cpu in starts:
+            return f".l_{target:04x}"
+        if target < BANK:
+            flat = target
+        elif r.bank:
+            flat = r.bank * BANK + target - BANK
+        else:
+            flat = r.edges.get(off)
+        return flats.get(flat) or f"${target:04x}"
+
+    def address(value: int, role: str) -> str:
+        if role != "write" and (0xFF00 <= value <= 0xFFFF) and value in regs:
+            return regs[value]
+        if role == "write" and value in cart:
+            return cart[value]
+        for base, name in ((0x9C00, "TILEMAP1"), (0x9800, "TILEMAP0"), (0x8000, "_VRAM"), (0xFE00, "_OAMRAM"),
+                           (0xFF00, "_IO")):  # video memory, OAM and unnamed I/O: an area plus an offset
+            if base <= value < {0x9C00: 0xA000, 0x9800: 0x9C00, 0x8000: 0x9800, 0xFE00: 0xFEA0, 0xFF00: 0xFF80}[base]:
+                return name if value == base else f"{name} + ${value - base:02x}"
+        if value >= 0x8000 and value in names:
+            return names[value]
+        return f"${value:04x}"
+
+    lines = []
+    for off, text, ln, kind, target in pieces:
+        if off in inner:
+            lines.append(f".l_{r.cpu + off:04x}:")
+        if kind is None:
+            lines.append("    " + text)
+            continue
+        out = text
+        if (m := re.match(r"^(jp|jr|call)( (?:n?[zc]), | )\$([0-9a-f]{4})$", text)):
+            out = f"{m.group(1)}{m.group(2)}{code_name(int(m.group(3), 16), off)}"
+        elif (operand := _operands(text, ln)) is not None:
+            role, value, _p = operand
+            if role == "hmem":
+                out = re.sub(r"\(\$ff00\+\$[0-9a-f]{2}\)", f"[{address(value, role)}]", text)
+                if not out.startswith("ldh"):
+                    out = "ldh" + out[2:]
+            elif role in ("read", "write"):
+                out = re.sub(r"\(\$[0-9a-f]{4}\)", f"[{address(value, role)}]", text)
+            elif role == "imm16":
+                out = re.sub(r"\$[0-9a-f]{4}$", address(value, role) if value >= 0x100 else f"${value:04x}", text)
+            elif role == "code":
+                out = re.sub(r"\$[0-9a-f]{4}$", code_name(value, off), text)
+        out = out.replace("($ff00+c)", "[c]").replace("(hl+)", "[hl+]").replace("(hl-)", "[hl-]")
+        out = re.sub(r"\((hl|bc|de)\)", r"[\1]", out)
+        if out.startswith("ld [c], a") or out.startswith("ld a, [c]"):
+            out = "ldh" + out[2:]
+        if (m := re.match(r"^(ld hl, sp\+|add sp, )\$([0-9a-f]{2})$", out)):
+            n = _signed(int(m.group(2), 16))
+            out = (f"ld hl, sp {'+' if n >= 0 else '-'} {abs(n)}" if out.startswith("ld") else f"add sp, {n}")
+        if out.startswith("stop"):
+            out = "stop"
+        lines.append("    " + out)
+    return f"; (say what it does)\n{r.name}:\n" + "\n".join(lines) + "\n"

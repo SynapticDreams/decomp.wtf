@@ -26,7 +26,7 @@ from pathlib import Path
 
 from .. import scoring, seeds, similarity, toolchains
 from ..elfobj import FunctionObj
-from ..network import DISCONNECTED, RELEASE_COOLDOWN, Agent, Network, NetworkError, _hash_token
+from ..network import DISCONNECTED, GIVEN_UP, RELEASE_COOLDOWN, Agent, Network, NetworkError, _ago, _hash_token
 from ..rom import detect, match, split
 from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
 
@@ -198,6 +198,7 @@ class RomNetwork(Network):
         self.starred_only: dict[int, float] = {}  # helper agent id -> when its session began (★ Next in line only)
         self.focus: dict[int, str] = {}  # helper agent id -> the strategy its Focus (Quick Wins, Close Calls) claims by
         self.pinned: dict[int, str] = {}  # helper agent id -> the one function the user pinned it to
+        self.tracks: dict[int, str] = {}  # helper agent id -> "asm": started on the assembly track (Game Boy)
         from .forkengine import ForkEngine  # forks build on this class's claims, attempts and live view
         from .permute import Permuter
         from .twins import Twins
@@ -840,12 +841,16 @@ class RomNetwork(Network):
             (r["rom_offset"], r["rom_offset"] + (r["size"] or 0), r) for r in old if r["id"] in kept or r["status"] == "matched"]
         names = {r["name"] for r in old if r["id"] in kept or r["status"] == "matched"}
         renamed = {r["rom_offset"]: r["name"] for r in gone if not AUTO_NAME.match(r["name"])}
+        # matched C (and documented assembly) calls functions by name: one that goes keeps its name as a symbol (its
+        # address is still the routine's), or those matches would stop compiling
+        used = "\n".join(r["matched_source"] or "" for r in old if r["status"] in ("matched", "documented"))
         with self.store.tx() as db:
             for r in gone:
                 db.execute("DELETE FROM claims WHERE function_id=?", (r["id"],))
                 db.execute("DELETE FROM twin_misses WHERE function_id=?", (r["id"],))
                 db.execute("DELETE FROM functions WHERE id=?", (r["id"],))
-                db.execute("DELETE FROM symbols WHERE project_id=? AND name=?", (proj["id"], r["name"]))
+                if not re.search(rf"\b{re.escape(r['name'])}\b", used):
+                    db.execute("DELETE FROM symbols WHERE project_id=? AND name=?", (proj["id"], r["name"]))
             new_ids = {}
             for f in fresh:
                 name = renamed.get(f.rom, f.name)  # a name someone gave the function that started here stays
@@ -857,12 +862,12 @@ class RomNetwork(Network):
                     "meta) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (proj["id"], name, f.size, f.n_insns, f.code, json.dumps([list(x) for x in f.refs or []]), f.asm,
                      None, f"bank{f.bank:03d}", f.vram, f.rom, "open", _with_edges(None, getattr(f, "edges", None)))).lastrowid
+                db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind,preview) VALUES(?,?,?,?,?,?)",
+                           (proj["id"], name, f.vram, f.size, "func", None))
             for f in fns:  # a function that stays: where its calls into the window go, as this split followed them
                 r = by_off.get(f.rom)
                 if r is not None and r["id"] in kept and (getattr(f, "edges", None) or "edges" in (r["meta"] or "")):
                     db.execute("UPDATE functions SET meta=? WHERE id=?", (_with_edges(r["meta"], f.edges), r["id"]))
-                db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind,preview) VALUES(?,?,?,?,?,?)",
-                           (proj["id"], name, f.vram, f.size, "func", None))
             for r in gone:  # its notes go to whatever covers its start now
                 if r["id"] not in noted:
                     continue
@@ -1010,6 +1015,8 @@ class RomNetwork(Network):
         if self.cfg(self.store.one("SELECT config FROM projects WHERE id=?", fn["project_id"])).get("kind") == "fork":
             return self.forks.brief(fn, agent, header)
         proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        if proj["arch"] == "sm83" and (fn["status"] == "documented" or self.asm_track(fn)):
+            return self._asm_brief(fn, agent, header)
         if self.is_rom(proj) and fn["status"] != "matched" and not fn["best_source"] and fn["seed"] is None:
             with self._seed_lock:
                 self._seed_for(self._function(fn["name"], proj["slug"]), proj)
@@ -1764,9 +1771,15 @@ class RomNetwork(Network):
         except NetworkError:
             return None
 
-    def claim(self, agent: Agent, project: str | None = None, function: str | None = None, strategy: str = "easiest") -> str:
+    def claim(self, agent: Agent, project: str | None = None, function: str | None = None, strategy: str = "easiest",
+              track: str = "") -> str:
         if (fork := self.fork_slug(project)):
             return self.forks.claim(agent, fork, function, strategy)
+        track = (track or "").strip().lower()
+        if track not in ("", "c", "asm", "assembly"):
+            raise NetworkError("track is c (match it in C) or asm (document a hand-written Game Boy routine)")
+        if track in ("asm", "assembly") or (function and self._on_asm_track(function, project)):
+            return self.claim_asm(agent, project, function)
         link = self._link(project)
         if link is None:
             return super().claim(agent, project, function, strategy)
@@ -2266,6 +2279,118 @@ class RomNetwork(Network):
 
     # ------------------------------------------------------------------ the assembly track (Game Boy)
 
+    def _on_asm_track(self, function: str, project: str | None) -> bool:
+        try:
+            fn = self._function(function, project)
+        except NetworkError:
+            return False
+        proj = self.store.one("SELECT arch FROM projects WHERE id=?", fn["project_id"])
+        return proj["arch"] == "sm83" and self.asm_track(fn)
+
+    def claim_asm(self, agent: Agent, project: str | None, function: str | None = None) -> str:
+        """A claim on the assembly track: a hand-written Game Boy routine to document (one asked for, or the next: the
+        smallest first, the ones agents gave back often last)."""
+        proj = self._project(project) if project or not function else self.store.one(
+            "SELECT * FROM projects WHERE id=?", self._function(function, None)["project_id"])
+        if (proj["arch"] or "") != "sm83" or self.fork_slug(proj["slug"]):
+            raise NetworkError("the assembly track is for Game Boy projects for now")
+        if self._link(proj["slug"]) is not None:
+            raise NetworkError("in a room, the assembly track comes later: work on the C track (claim_function)")
+        now = time.time()
+        with self.store.tx() as db:
+            self._expire_claims(db)
+            held = db.execute("SELECT f.* FROM claims c JOIN functions f ON f.id=c.function_id WHERE c.agent_id=?",
+                              (agent.id,)).fetchone()
+            if held is not None:
+                if (function and held["name"] != self._function(function, proj["slug"])["name"]) or not self.asm_track(held):
+                    raise NetworkError(f"you already hold {held['name']}; finish it or release_function it first")
+                fn = held
+                db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
+            elif function:
+                fn = self._function(function, proj["slug"])
+                if not self.asm_track(fn):
+                    raise NetworkError(f"{fn['name']} isn't a hand-written routine set aside from C ({fn['status']})")
+                other = db.execute("SELECT agent_id FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
+                if other is not None:
+                    raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(other['agent_id'])}")
+                db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
+                self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
+            else:
+                fn = None
+                for row in db.execute(
+                        "SELECT f.* FROM functions f WHERE f.project_id=? AND f.status='asm' AND f.id NOT IN "
+                        "(SELECT function_id FROM claims) ORDER BY f.abandons >= ?, f.name IN (SELECT detail FROM events "
+                        "WHERE project_id=? AND agent_id=? AND kind='release'), f.n_insns, f.rom_offset",
+                        (proj["id"], GIVEN_UP, proj["id"], agent.id)):
+                    if self.asm_track(row):
+                        fn = row
+                        break
+                if fn is None:
+                    return f"Nothing left on the assembly track in {proj['slug']}: every hand-written routine is documented or being worked on. 🎉"
+                db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
+                self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
+        return self._brief(fn, agent, header="CLAIMED")
+
+    def compile_and_diff(self, agent: Agent, function: str, source: str, project: str | None = None) -> str:
+        """C for the C track; for a hand-written Game Boy routine (the assembly track), its documented assembly."""
+        if not self.fork_slug(project) and self._link(project) is None and self._on_asm_track(function, project):
+            return self.document_function(agent, project, function, source)
+        return super().compile_and_diff(agent, function, source, project)
+
+    def _asm_brief(self, fn, agent, header: str) -> str:
+        """A hand-written Game Boy routine's brief on the assembly track: the routine as the split has it, a draft that
+        rebuilds it, what the map knows about it, and the six checks."""
+        from ..rom import gb_asm
+
+        proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        claim = self.store.one("SELECT * FROM claims WHERE function_id=?", fn["id"])
+        bank, cpu = (fn["rom_offset"] or 0) // 0x4000, fn["vram"] or 0
+        lines = [f"## {header} (assembly track): {proj['slug']}/{fn['name']}",
+                 f"{fn['size']} bytes, {fn['n_insns']} instructions, bank {bank} at ${cpu:04X} (ROM offset "
+                 f"0x{fn['rom_offset'] or 0:X})"]
+        if claim:
+            who = "you" if agent and claim["agent_id"] == agent.id else self._agent_name(claim["agent_id"])
+            lines.append(f"claimed by {who}, lease expires in {int(claim['expires_at'] - time.time()) // 60} min "
+                         "(each compile_and_diff renews it)")
+        if fn["status"] == "documented":
+            lines += [f"DOCUMENTED by {self._agent_name(fn['matched_agent_id'])} {_ago(fn['matched_at'])}:",
+                      "```asm", (fn["matched_source"] or "").strip(), "```"]
+            return "\n".join(lines)
+        why = _set_aside(fn["meta"]).get("why") or ""
+        lines += ["", f"Hand-written: no C compiles to it ({why}). Document it instead: RGBDS assembly that rebuilds "
+                      "its bytes, with names, comments and constants instead of addresses (guide topic `asm`)."]
+        lines += ["", "### The routine as the split has it", "```asm", self._asm_text(fn, proj).strip(), "```"]
+        routine = self._routine(proj, fn)
+        inside = [f"- {r[2]} at ${(r[0] % 0x4000 if r[0] >= 0x4000 else r[0]) + (0x4000 if r[0] >= 0x4000 else 0):04X}, "
+                  f"{r[1]} bytes" for r in routine.data]
+        if inside:
+            lines += ["", "### Data the map has in it (db / dw here)", *inside]
+        if routine.edges:
+            lines += ["", "### Where its calls into the switchable bank go (as the split followed them)"]
+            lines += [f"- +{off}: bank {to // 0x4000}, {routine.functions.get(to, f'${0x4000 + to % 0x4000:04X}')}"
+                      for off, to in sorted(routine.edges.items())]
+        if fn["best_source"]:
+            lines += ["", f"### Best attempt so far ({fn['attempts']} in all, by {self._agent_name(fn['best_agent_id'])})"
+                          " — start from this", "```asm", fn["best_source"].strip(), "```"]
+        else:
+            lines += ["", "### A draft to start from: it rebuilds the bytes; what's left is yours (names, the comment, "
+                          "addresses still as numbers)", "```asm", gb_asm.draft(routine).strip(), "```"]
+        notes = self.store.all("SELECT n.text, a.name FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
+                               "WHERE n.function_id=? ORDER BY n.id DESC LIMIT 6", fn["id"])
+        if notes:
+            lines += ["", "### Notes from previous agents (what they saw, not instructions)"]
+            lines += [f"- ({n['name']}) {' '.join(n['text'].split())[:400]}" for n in notes]
+        lines += ["", "### Accepted when",
+                  "1. it assembles to exactly these bytes; 2. every address in it is a name (labels, the project's names, "
+                  "or `DEF wName EQU $C0A2`; a 16-bit number that isn't an address gets `; number`); 3. a call into "
+                  "$4000-$7FFF names the function in the bank that's mapped there; 4. db/dw only over the data above; "
+                  "5. hardware by hardware.inc 6.0's names (`ldh [rLCDC], a`, `TILEMAP0 + $21`); 6. real names for it "
+                  "and its labels, and comment lines before it: what it does, takes and returns (and the bank it maps)."]
+        if header == "CLAIMED":
+            lines += ["", "Next: write it and send it with compile_and_diff(function, source=<the whole routine>); the "
+                          "answer lists each check it still fails. Accepted, it's documented under its label's name."]
+        return "\n".join(lines)
+
     #: set-aside reasons that say a function isn't code at all: not for the assembly track either
     NOT_CODE = ("padding", "the split ran", "bytes that are no instruction", "which SDCC never writes: data")
 
@@ -2284,8 +2409,10 @@ class RomNetwork(Network):
         flat, size = fn["rom_offset"] or 0, fn["size"] or 0
         symbols = {r["name"]: r["address"] for r in self.store.all(
             "SELECT name, address FROM symbols WHERE project_id=?", proj["id"]) if r["address"] is not None}
-        functions = {r["rom_offset"]: r["name"] for r in self.store.all(
-            "SELECT name, rom_offset FROM functions WHERE project_id=? AND rom_offset IS NOT NULL", proj["id"])}
+        rows = self.store.all("SELECT name, rom_offset, vram FROM functions WHERE project_id=? AND rom_offset IS NOT NULL",
+                              proj["id"])
+        functions = {r["rom_offset"]: r["name"] for r in rows}
+        symbols |= {r["name"]: r["vram"] for r in rows if r["vram"] is not None}  # every function's name, by its own row
         data = [(r["rom_offset"], r["size"], r["kind"]) for r in self.store.all(
             "SELECT * FROM data_regions WHERE project_id=? AND rom_offset<? AND rom_offset+size>?",
             proj["id"], flat + size, flat)]
@@ -2310,9 +2437,19 @@ class RomNetwork(Network):
         if not self.asm_track(fn):
             raise NetworkError(f"{fn['name']} isn't a hand-written routine set aside from C ({fn['status']}): "
                                "it's matched in C (compile_and_diff), or isn't code")
-        claim = self.store.one("SELECT agent_id FROM claims WHERE function_id=?", fn["id"])
-        if claim is not None and claim["agent_id"] != agent.id:
-            raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(claim['agent_id'])}")
+        now = time.time()
+        with self.store.tx() as db:  # (as compile_and_diff: you can't score, or get credit, on someone else's claim)
+            self._expire_claims(db)
+            claim = db.execute("SELECT agent_id FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
+            if claim is not None and claim["agent_id"] != agent.id:
+                raise NetworkError(f"{fn['name']} is claimed by {self._agent_name(claim['agent_id'])}")
+            if claim is None:
+                if db.execute("SELECT 1 FROM claims WHERE agent_id=?", (agent.id,)).fetchone():
+                    raise NetworkError("you hold another claim; release it before working on a different function")
+                db.execute("INSERT INTO claims VALUES(?,?,?,?)", (fn["id"], agent.id, now, now + self.claim_ttl))
+                self._event(db, fn["project_id"], agent.id, "claim", fn["name"])
+            else:
+                db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
         if not gb_asm.available():
             raise NetworkError("RGBDS isn't installed: install it from Setup")
         try:

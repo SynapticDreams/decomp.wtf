@@ -1757,7 +1757,7 @@ function renderSessions(sessions) {
     const quiet = live && s.last_output ? Math.floor((Date.now() / 1000 - s.last_output) / 60) : 0;  // the watchdog ends it at 15
     const facts = [s.model ? esc(s.model) : "default model", s.runs ? `session ${s.runs}` : "", quiet >= 3 ? `<b class="warn-text">silent ${quiet} min</b>` : "", b && b.matched ? `<b class="ok">${b.matched} matched</b>` : "", b ? plural(b.compiles, "compile") : "",
       s.usd ? money(s.usd) : s.tokens ? `${(s.tokens / 1000).toFixed(0)}k tokens` : "", s.started_at ? `since ${clock(s.started_at).slice(0, 5)}` : ""].filter(Boolean);
-    return `<div class="session"><div class="session-top"><span class="dot ${dot}"></span><b>${esc(s.label)}</b>${s.only_starred ? `<span class="tag">only ★</span>` : ""}${s.pin ? `<span class="tag" title="${s.lean ? `the lean loop: ${esc(LEAN_NAME[s.lean] || s.lean)}` : "pinned to one function"}">on ${esc(s.pin)}${s.lean ? " · lean" : ""}</span>` : s.lean ? `<span class="tag" title="the lean loop: ${esc(LEAN_NAME[s.lean] || s.lean)}, function after function">lean</span>` : ""}${s.focus ? `<span class="tag">${esc((FOCUS.find((f) => f.id === s.focus) || {}).name || s.focus)}</span>` : ""}
+    return `<div class="session"><div class="session-top"><span class="dot ${dot}"></span><b>${esc(s.label)}</b>${s.only_starred ? `<span class="tag">only ★</span>` : ""}${s.pin ? `<span class="tag" title="${s.lean ? `the lean loop: ${esc(LEAN_NAME[s.lean] || s.lean)}` : "pinned to one function"}">on ${esc(s.pin)}${s.lean ? " · lean" : ""}</span>` : s.lean ? `<span class="tag" title="the lean loop: ${esc(LEAN_NAME[s.lean] || s.lean)}, function after function">lean</span>` : ""}${s.focus ? `<span class="tag">${esc((FOCUS.find((f) => f.id === s.focus) || {}).name || s.focus)}</span>` : ""}${s.track === "asm" ? `<span class="tag" title="documenting hand-written routines in assembly">assembly</span>` : ""}
         <span class="state ${s.state === "error" ? "err" : ""}">${esc(STATE_TEXT[s.state] || s.state)}</span>
         <button class="ghost" data-stop="${esc(s.id)}" data-remove="${live ? "" : "1"}" type="button">${live ? "Stop" : "Remove"}</button></div>
       <span class="facts-line">${facts.join(" · ")}</span>
@@ -1820,8 +1820,15 @@ function leanSelect(a) {
     <option value="" ${LZ.lean ? "" : "selected"}>Agent loop: tools, a fresh session every few functions</option>
     <option value="several" ${LZ.lean === "several" ? "selected" : ""}>Lean: short prompts, 3 versions per call</option></select></label>`;
 }
+/* On a Game Boy project, helpers can also document hand-written routines in assembly (the assembly track) */
+const ASM_FOCUS = { id: "asm", name: "Document assembly", note: "hand-written routines, in RGBDS" };
+function focusChoices() {
+  return ["gb", "gbc"].includes(S.ov?.platform) && S.ov?.kind !== "fork" ? [...FOCUS, ASM_FOCUS] : FOCUS;
+}
 function focusSelect() {
-  return `<label class="field"><span>Focus</span><select data-f="focus">${FOCUS.map((f) => `<option value="${f.id}" ${f.id === (LZ.focus || "default") ? "selected" : ""}>${esc(f.name)}${f.note ? ` — ${esc(f.note)}` : ""}</option>`).join("")}</select></label>`;
+  const choices = focusChoices();
+  if (!choices.some((f) => f.id === LZ.focus)) LZ.focus = "default";
+  return `<label class="field"><span>Focus</span><select data-f="focus">${choices.map((f) => `<option value="${f.id}" ${f.id === (LZ.focus || "default") ? "selected" : ""}>${esc(f.name)}${f.note ? ` — ${esc(f.note)}` : ""}</option>`).join("")}</select></label>`;
 }
 const LZ = { kind: null, model: "", effort: "", count: 1, per: null };
 function launcherInit() {
@@ -1877,7 +1884,8 @@ async function startAgents(a, model, count, btn, extra = {}) {
     if (a.id === "codex" && LZ.effort) options.effort = LZ.effort;
     if (LZ.per) options.per_session = LZ.per;
     if (LZ.starred && (S.ov?.priority || []).length) options.only_starred = true;
-    if (LZ.focus && LZ.focus !== "default") options.focus = LZ.focus;
+    if (LZ.focus === "asm") options.track = "asm";
+    else if (LZ.focus && LZ.focus !== "default") options.focus = LZ.focus;
     if (LZ.lean && LEAN_KINDS.includes(a.id)) Object.assign(options, { lean: LZ.lean, variants: 3 });
     await api("/api/agents/start", { method: "POST", body: { kind: a.id, slug: S.slug, count, options } });
     S.st.settings.launcher = { kind: a.id, model: model || "", count, lean: LZ.lean || "", ...(a.id === "codex" && LZ.effort ? { effort: LZ.effort } : {}) };
