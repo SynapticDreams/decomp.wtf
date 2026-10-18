@@ -90,8 +90,9 @@ BANKED_ARCHS = ("sm83", "z80", "mos6502")
 # What a banked platform's import needs, by CPU: the C toolchain, and for the Game Boy the two tools that split a ROM.
 # All free and pinned; the import installs whichever is missing.
 BANKED_TOOLS = {"sm83": ("gbdk-2020", "rgbds", "mgbdis"), "z80": ("gbdk-2020", "wla-dx"), "mos6502": ("gbdk-2020", "cc65")}
-# The assembly track's consoles: hand-written routines documented in RGBDS (Game Boy) or WLA-DX (Master System, Game Gear)
-ASM_ARCHS = ("sm83", "z80")
+# The assembly track's consoles: hand-written routines documented in RGBDS (Game Boy), WLA-DX (Master System, Game
+# Gear) or ca65 (NES)
+ASM_ARCHS = ("sm83", "z80", "mos6502")
 # the names mgbdis gives the Game Boy split's functions (and its vectors): a symbol file's names replace them
 _GENERATED = re.compile(r"^(?:Call|Func|Jump|jr)_[0-9a-f]{3}_[0-9a-f]{4}$|^RST_[0-9a-f]{2}$|Interrupt$|^Boot$")
 
@@ -2344,10 +2345,11 @@ class RomNetwork(Network):
 
     @staticmethod
     def _asm_judge(proj):
-        """The assembly track's judge for a project's CPU: rom/gb_asm.py (RGBDS) or rom/sms_asm.py (WLA-DX)."""
-        from ..rom import gb_asm, sms_asm
+        """The assembly track's judge for a project's CPU: rom/gb_asm.py (RGBDS), rom/sms_asm.py (WLA-DX) or
+        rom/nes_asm.py (ca65)."""
+        from ..rom import gb_asm, nes_asm, sms_asm
 
-        return sms_asm if proj["arch"] == "z80" else gb_asm
+        return {"z80": sms_asm, "mos6502": nes_asm}.get(proj["arch"], gb_asm)
 
     def claim_asm(self, agent: Agent, project: str | None, function: str | None = None) -> str:
         """A claim on the assembly track: a hand-written Game Boy routine to document (one asked for, or the next: the
@@ -2355,7 +2357,7 @@ class RomNetwork(Network):
         proj = self._project(project) if project or not function else self.store.one(
             "SELECT * FROM projects WHERE id=?", self._function(function, None)["project_id"])
         if (proj["arch"] or "") not in ASM_ARCHS or self.fork_slug(proj["slug"]):
-            raise NetworkError("the assembly track is for Game Boy, Master System and Game Gear projects for now")
+            raise NetworkError("the assembly track is for Game Boy, Master System, Game Gear and NES projects for now")
         if (link := self._link(proj["slug"])) is not None:  # a room: its host hands the routine out (and judges it)
             asked = self._function(function, proj["slug"])["name"] if function else None
             name = link.claim(agent, asked, "easiest", track="asm")
@@ -2424,7 +2426,8 @@ class RomNetwork(Network):
         """A hand-written routine's brief on the assembly track: the routine as the split has it, a draft that rebuilds
         it, what the map knows about it, and the six checks."""
         proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
-        judge, sms = self._asm_judge(proj), proj["arch"] == "z80"
+        judge, sms, nes = self._asm_judge(proj), proj["arch"] == "z80", proj["arch"] == "mos6502"
+        assembler = "WLA-DX" if sms else "ca65" if nes else "RGBDS"
         claim = self.store.one("SELECT * FROM claims WHERE function_id=?", fn["id"])
         bank, cpu = (fn["rom_offset"] or 0) // 0x4000, fn["vram"] or 0
         lines = [f"## {header} (assembly track): {proj['slug']}/{fn['name']}",
@@ -2439,14 +2442,14 @@ class RomNetwork(Network):
                       "```asm", (fn["matched_source"] or "").strip(), "```"]
             return "\n".join(lines)
         why = _set_aside(fn["meta"]).get("why") or ""
-        lines += ["", f"Hand-written: no C compiles to it ({why}). Document it instead: {'WLA-DX' if sms else 'RGBDS'} "
-                      "assembly that rebuilds its bytes, with names, comments and constants instead of addresses (guide "
-                      "topic `asm`)."]
+        lines += ["", f"Hand-written: no C compiles to it ({why}). Document it instead: {assembler} assembly that "
+                      "rebuilds its bytes, with names, comments and constants instead of addresses (guide topic `asm`)."]
         lines += ["", "### The routine as the split has it", "```asm", self._asm_text(fn, proj).strip(), "```"]
         routine = self._routine(proj, fn)
         inside = [f"- {r[2]} at ${routine.cpu + max(0, r[0] - routine.flat):04X}, {r[1]} bytes" for r in routine.data]
         if inside:
-            lines += ["", f"### Data the map has in it ({'.db / .dw' if sms else 'db / dw'} here)", *inside]
+            lines += ["", f"### Data the map has in it ({'.db / .dw' if sms else '.byte / .word' if nes else 'db / dw'} "
+                          "here)", *inside]
         if getattr(routine, "edges", None):
             lines += ["", "### Where its calls into the switchable bank go (as the split followed them)"]
             lines += [f"- +{off}: bank {to // 0x4000}, {routine.functions.get(to, f'${0x4000 + to % 0x4000:04X}')}"
@@ -2469,6 +2472,12 @@ class RomNetwork(Network):
             "4. .db/.dw only over the data above; 5. hardware by its names (`out (PortVDPControl), a`, "
             "`ld (MapperSlot2), a`: guide `asm`); 6. real names for it and its child labels, and comment lines before "
             "it: what it does, takes and returns (and the bank it maps)." if sms else
+            "1. it assembles to exactly these bytes (ca65: `lda a:zName` where the ROM has the 3-byte form of a "
+            "zero-page address, `bne @loop`, `.byte`); 2. every address in it is a name (labels, the project's names, "
+            "or `wName = $0300`); 3. a call into a switched window names the function in the bank that's mapped "
+            "there; 4. .byte/.word only over the data above; 5. hardware by the nesdev names (`sta PPUCTRL`, "
+            "`sta MMC3_BANK_SELECT`: guide `asm`); 6. real names for it and its local labels, and comment lines "
+            "before it: what it does, takes and returns (and what it maps)." if nes else
             "1. it assembles to exactly these bytes; 2. every address in it is a name (labels, the project's names, "
             "or `DEF wName EQU $C0A2`; a 16-bit number that isn't an address gets `; number`); 3. a call into "
             "$4000-$7FFF names the function in the bank that's mapped there; 4. db/dw only over the data above; "
@@ -2508,6 +2517,16 @@ class RomNetwork(Network):
             return sms_asm.Routine(fn["name"], flat // 0x4000, fn["vram"] or 0, bytes(fn["target"] or b""), symbols,
                                    functions, {r["rom_offset"]: r["vram"] for r in rows if r["vram"] is not None}, data,
                                    max(1, -(-int(self.cfg(proj)["rom"].get("size") or 0) // 0x4000)))
+        if proj["arch"] == "mos6502":  # (offsets are the file's; banks count from the PRG's start)
+            from ..rom import nes_asm
+
+            rom = self.cfg(proj)["rom"]
+            prg, unit = int(rom.get("prg_offset") or 16), int(rom.get("bank_size") or 0x4000)
+            return nes_asm.Routine(fn["name"], (flat - prg) // unit, fn["vram"] or 0, bytes(fn["target"] or b""),
+                                   symbols, functions,
+                                   {r["rom_offset"]: r["vram"] for r in rows if r["vram"] is not None},
+                                   {r["rom_offset"]: (r["rom_offset"] - prg) // unit for r in rows}, data, flat=flat,
+                                   window=unit, mapper=int(rom.get("mapper") or 0))
         edges = {int(k): v for k, v in json.loads(fn["meta"] or "{}").get("edges", {}).items()}
         return gb_asm.Routine(fn["name"], flat // 0x4000, fn["vram"] or 0, bytes(fn["target"] or b""), symbols,
                               functions, data, edges, gb_hw.mapper_of(self.cfg(proj)["rom"].get("mbc") or ""))
@@ -2521,7 +2540,7 @@ class RomNetwork(Network):
         fn = self._function(function, project)
         proj = self._project(project) if project else self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
         if (self.cfg(proj).get("arch") or "").lower() not in ASM_ARCHS:
-            raise NetworkError("documented assembly is for Game Boy, Master System and Game Gear projects for now")
+            raise NetworkError("documented assembly is for Game Boy, Master System, Game Gear and NES projects for now")
         judge = self._asm_judge(proj)  # (RGBDS or WLA-DX)
         if fn["status"] == "documented":
             raise NetworkError(f"{fn['name']} is documented already")
@@ -2542,7 +2561,8 @@ class RomNetwork(Network):
             else:
                 db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
         if not judge.available():
-            raise NetworkError(f"{'WLA-DX' if proj['arch'] == 'z80' else 'RGBDS'} isn't installed: install it from Setup")
+            raise NetworkError(f"{ {'z80': 'WLA-DX', 'mos6502': 'cc65'}.get(proj['arch'], 'RGBDS') } isn't installed: "
+                               "install it from Setup")
         try:
             verdict = judge.judge(self._routine(proj, fn), text)
         except judge.AsmError as e:

@@ -396,12 +396,52 @@ def sm83_routine(code: bytes, base: int = 0) -> int | None:
     return None
 
 
+_M6502_FLAG_READ = re.compile(r"^(?:bcc|bcs|beq|bne|bmi|bpl|bvc|bvs|adc|sbc|rol|ror)\b")
+_M6502_SETS_FLAGS = re.compile(r"^(?:lda|ldx|ldy|adc|sbc|and|ora|eor|cmp|cpx|cpy|inc|dec|inx|iny|dex|dey|asl|lsr|rol|"
+                               r"ror|bit|tax|tay|txa|tya|tsx|pla|plp|sec|clc|clv)\b")
+_M6502_BLOCK_END = re.compile(r"^(?:jmp|jsr|rts|rti|brk|bcc|bcs|beq|bne|bmi|bpl|bvc|bvs)\b")
+
+
+def _m6502_hand_written(insns: list) -> str | None:
+    """What neither SDCC nor cc65 writes on the 6502: a flag read before anything sets it, a pull before any push
+    (the return address, or a caller's value), Y read before it's set (no argument comes in Y), decimal mode, the
+    stack pointer set."""
+    flags = False
+    for _addr, text, _ln in insns:
+        if _M6502_FLAG_READ.match(text) and not flags:
+            return f"reads a flag before setting it ({text}): C passes nothing in the flags"
+        if _M6502_SETS_FLAGS.match(text):
+            flags = True
+        if _M6502_BLOCK_END.match(text):
+            break
+    for _addr, text, _ln in insns:
+        if text in ("pha", "php") or _M6502_BLOCK_END.match(text):
+            break
+        if text in ("pla", "plp"):
+            return f"{text} before any push: it takes its return address (or a value its caller left), hand-written"
+    for _addr, text, _ln in insns:  # Y read before it's set, in the first block
+        op, _, rest = text.partition(" ")
+        if op in ("ldy", "tay") or _M6502_BLOCK_END.match(text):
+            break
+        if op in ("tya", "sty", "cpy", "iny", "dey") or rest.endswith(",y") or rest.endswith("),y"):
+            return f"reads y before setting it ({text}): neither C compiler passes an argument in y"
+    for addr, text, _ln in insns:
+        if text == "sed":
+            return f"sed at ${addr:04x}: decimal mode, which the NES's CPU doesn't have and no compiler uses"
+        if text == "txs":
+            return "sets the stack pointer (txs): start-up code, hand-written"
+    return None
+
+
 def mos6502_reason(code: bytes, base: int = 0, capped: bool = False) -> str | None:
     """Why this NES function (6502 code, from the entry at `base`) isn't code a C compiler made, or None.
     `capped`: the split gave it its longest size, not having found the next function."""
     from .rom import mos6502
 
-    return _piece_reason(code, base, capped, mos6502)
+    why = _piece_reason(code, base, capped, mos6502)
+    if why or not code:
+        return why
+    return _m6502_hand_written(list(mos6502.disassemble(code, base)))
 
 
 def z80_reason(code: bytes, base: int = 0, capped: bool = False) -> str | None:

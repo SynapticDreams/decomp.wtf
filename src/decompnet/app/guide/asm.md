@@ -1,8 +1,8 @@
 # The assembly track: documenting a hand-written routine
 
-Most Game Boy, Master System and Game Gear games were written in assembly, so for most of a game there is no C to
-match. (The Game Boy's assembler is RGBDS; the Master System's and Game Gear's is WLA-DX: see the end of this guide
-for what differs there.) A routine the app set
+Most Game Boy, Master System, Game Gear and NES games were written in assembly, so for most of a game there is no C
+to match. (The Game Boy's assembler is RGBDS; the Master System's and Game Gear's is WLA-DX, the NES's ca65: see the
+end of this guide for what differs there.) A routine the app set
 aside as hand-written (status *assembly*, a reason such as "reads hl before setting it") is decompiled by
 **documenting** it: RGBDS assembly that rebuilds its bytes exactly, with names, comments and constants where the ROM
 has addresses. It's kept as the project's source for that routine and goes into the exported disassembly.
@@ -76,3 +76,23 @@ The same six checks, in WLA-DX, the assembler these consoles' disassemblies are 
   `; number: the name table`, or `.DEFINE` a name for it.
 - Refused: what reads files or changes how the rest assembles (`.INCLUDE`, `.INCBIN`, `.MACRO`, `.BANK`, `.ORG`,
   `.SECTION`...).
+
+## NES (ca65)
+
+The same six checks, in ca65, the assembler NES disassemblies are written for:
+
+- 6502 syntax: `lda wTimer`, `sta PPUCTRL`, `lda (zPtr),y`, `jmp (wVector)`, `bne @loop` (`@name:` labels are local
+  to the routine's label; ca65's unnamed `:` labels work too). Data is `.byte` and `.word`.
+- ca65 writes an address below $100 in zero page (2 bytes). Where the ROM has the 3-byte form of a zero-page address,
+  write `a:` before it: `lda a:zTimer`. The judge says so when that's what differs.
+- Name an address with `wTimer = $0300` (a number). The project's names are defined for you; a call or jump to
+  another routine is by its name.
+- Banks: a call or jump into the window the routine runs from reaches its own bank; into a switched window, the bank
+  mapped there. Where several banks have code there and nobody knows which, it can't pass yet.
+- Hardware by the nesdev wiki's names: `PPUCTRL`, `PPUMASK`, `PPUSTATUS`, `OAMADDR`, `OAMDATA`, `PPUSCROLL`,
+  `PPUADDR`, `PPUDATA`, `OAMDMA`, the APU's `SQ1_VOL` ... `SND_CHN`, `JOY1`, `JOY2` (`APU_FRAME` when written); MMC1's
+  `MMC1_CONTROL`, `MMC1_CHR0`, `MMC1_CHR1`, `MMC1_PRG` and MMC3's `MMC3_BANK_SELECT` ... `MMC3_IRQ_ENABLE` (a register
+  written anywhere in its range is its name plus an offset). A mapper written anywhere (UxROM, CNROM) has no register
+  names: what the game writes to there is a table of its own, named as its data is.
+- `brk` is written as the opcode alone, its byte after it with `.byte`.
+- Refused: what reads files or changes how the rest assembles (`.include`, `.incbin`, `.macro`, `.segment`, `.org`...).
