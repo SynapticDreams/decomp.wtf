@@ -24,7 +24,7 @@ import hashlib
 import re
 from pathlib import Path
 
-from . import gb, z80
+from . import gb, sms_trace, z80
 from .n64 import RomError
 
 BANK_SIZE = 0x4000
@@ -181,6 +181,10 @@ def banks(data: bytes) -> list[bytes]:
 
 # ---------------------------------------------------------------- function discovery
 
+_LD_PAIR = re.compile(r"^ld (hl|de|bc), \$([0-9a-f]{4})$")
+_PAIR_WRITES = (("hl", sms_trace._WRITES_HL), ("de", sms_trace._WRITES_DE), ("bc", sms_trace._WRITES_BC))
+
+
 def _walk(data: bytes, start: int, cpu: int, hard: int, starts: set[int]):
     """Walk the function that begins at flat offset `start`, running at CPU address `cpu`: yield (flat, text,
     length) per instruction.
@@ -189,18 +193,35 @@ def _walk(data: bytes, start: int, cpu: int, hard: int, starts: set[int]):
     in the middle, the `ret` before an `else` branch's target or a loop's back-edge does not end it. An unconditional
     jump is part of the function only when something before it already branches past it (the `else` of an
     if/else); otherwise nothing after it can be reached from here and it leaves the function: a tail call, or the
-    reset vector's `jp init`. It never runs past `hard`, `MAX_FUNCTION`, the end of its bank or of the ROM."""
+    reset vector's `jp init`. A computed call (`ld de,.next / push de / jp (hl)`) comes back to the address it
+    pushed, so the function goes on there. It never runs past `hard`, `MAX_FUNCTION`, the end of its bank or of the
+    ROM."""
     size = len(data)
     bank = bank_of(start)
     limit = start
     off = start
     end = min(hard, start + MAX_FUNCTION, size, (bank + 1) * BANK_SIZE)
+    loaded: dict[str, int] = {}  # register pairs loaded with a constant, and what was pushed of them
+    pushed = None
     while off < end:
         here = cpu + off - start
         text, ln = z80.decode(data[off:off + 4], here)
         yield off, text, ln
         nxt = off + max(1, ln)
         kind, target = z80.flow(text)
+        if (m := _LD_PAIR.match(text)):
+            loaded[m.group(1)] = int(m.group(2), 16)
+        elif text.startswith("push "):
+            pushed = loaded.get(text[5:])
+        elif text in ("jp (hl)", "jp (ix)", "jp (iy)") and pushed is not None:
+            back = target_flat(pushed, bank, size, here)
+            if back is not None and off < back < end and back not in starts:
+                limit = max(limit, back)
+            pushed = None
+        else:
+            for pair, writes in _PAIR_WRITES:
+                if writes.match(text):
+                    loaded.pop(pair, None)
         if kind in ("ret", "jump") and nxt > limit:
             return
         if target is not None and kind in ("jump", "cjump"):
@@ -347,11 +368,12 @@ def refs_of(code: bytes, cpu: int, bank: int, size: int) -> list[tuple[int, int,
 
 
 def functions(data: bytes, log=lambda *_: None, labels: dict | None = None,
-              report: dict | None = None) -> list[gb.GbFunction]:
+              report: dict | None = None, seeds: dict | None = None) -> list[gb.GbFunction]:
     """Every discovered function, disassembled at the address it runs at. (The record type is shared with the Game
-    Boy lane.) `labels` ({(bank, address): name}, from a symbol file) name what they label; `report` gets
-    {"bank_base": {bank: CPU address}} for the banks whose code was found running somewhere."""
-    found, bases = candidates(data, labels=labels)
+    Boy lane.) `labels` ({(bank, address): name}, from a symbol file) name what they label, and with `seeds` (the
+    same, with the file's automatic names too) say where code starts; `report` gets {"bank_base": {bank: CPU
+    address}} for the banks whose code was found running somewhere."""
+    found, bases = candidates(data, labels=seeds if seeds is not None else labels)
     if not found:
         raise RomError("no code found in this ROM: every candidate address pointed outside it")
     size = len(data)
@@ -395,9 +417,11 @@ def split(path: Path, workdir: Path, log=lambda *_: None, report: dict | None = 
     info = read_info(data, Path(path).name)
     log(f"{info['platform'].upper()}: {info['title']} ({info['cartridge']}"
         f"{', header found' if info['header'] else ', no header'})")
-    labels = None
+    labels = seeds = None
     sym = Path(path).with_suffix(".sym")
     if sym.is_file():
-        labels = sms_trace.read_sym(sym.read_text(encoding="utf-8", errors="replace"))
-        log(f"{len(labels)} labels from {sym.name}")
-    return functions(data, log=log, labels=labels, report=report)
+        text = sym.read_text(encoding="utf-8", errors="replace")
+        labels, seeds = sms_trace.read_sym(text), sms_trace.read_sym(text, seeds=True)
+        log(f"{len(labels)} labels from {sym.name}" + (f", and {len(seeds) - len(labels)} places it says code starts"
+                                                         if len(seeds) > len(labels) else ""))
+    return functions(data, log=log, labels=labels, report=report, seeds=seeds)

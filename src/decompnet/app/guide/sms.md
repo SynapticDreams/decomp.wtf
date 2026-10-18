@@ -15,9 +15,13 @@ encoding. Both consoles use the same mapper and the same compiler, so everything
   into its own bank read as the ROM has them. Most games keep bank 1 at 0x4000 and page the rest into 0x8000.
   Names spell the bank and the address the code runs at: `func_<bank>_<address>`.
 - Functions are found from the reset vector, the RST handlers and the NMI by following calls, tail jumps, bank
-  switchers and the tables dispatchers read (`ld hl,table / jp dispatch`), plus a sweep for `call`s in the banks
-  that hold code and code that starts right where a function ends. Code reached only through pointers kept in RAM
-  may still be missing, and data inside a function's range is not told apart from code.
+  switchers and the tables dispatchers read (`ld hl,table / jp dispatch`, or a function's own
+  `ld hl,table / add hl,de / ... / jp (hl)`, as many entries as a `cp n / jr nc` before it allows), plus a sweep for
+  `call`s in the banks that hold code and code that starts right where a function ends. The following also keeps
+  slot 0 paged by 0xFFFD, a bank kept in RAM or saved on the stack and mapped again, and a computed call
+  (`ld de,.next / push de / jp (hl)`), which comes back to `.next`. A symbol file next to the ROM names functions,
+  and its automatic `_LABEL_..._` names say where code starts. Code reached only through pointers kept in RAM may
+  still be missing, and data inside a function's range is not told apart from code.
 
 ## The matching lane
 
