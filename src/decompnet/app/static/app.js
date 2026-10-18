@@ -2954,7 +2954,25 @@ function showCorrections(r) {
   const f = r.symbol_file;
   $("symStatus").textContent = f ? `${f.from}: ${plural(f.names, "name")}${f.blocks ? `, ${plural(f.blocks, "block")}` : ""}` : "";
   $("symRemove").hidden = !f;
+  const c = r.coverage;
+  $("covStatus").textContent = !c ? "" : c.error ? `${c.from}: ${c.error}` : `${c.from}: ${bytes(c.code)} ran as code, ${bytes(c.read)} read as data, ${c.entries.toLocaleString()} function ${c.entries === 1 ? "entry" : "entries"}`;
+  $("covRemove").hidden = !c;
 }
+
+$("covFile").onchange = async () => {
+  const file = $("covFile").files[0];
+  $("covFile").value = "";
+  if (!file) return;
+  $("covStatus").textContent = `reading ${file.name}…`;
+  try {
+    await api(`/api/coverage?slug=${encodeURIComponent(S.slug)}&name=${encodeURIComponent(file.name)}`, { method: "POST", raw: file });
+    toast("Coverage imported. Split the game again to use it.");
+    loadCorrections();
+  } catch (e) { $("covStatus").textContent = ""; toast(esc(e.message), "err"); }
+};
+$("covRemove").onclick = async () => {
+  try { showCorrections(await api("/api/coverage/remove", { method: "POST", body: { slug: S.slug } })); } catch (e) { toast(esc(e.message), "err"); }
+};
 
 $("symFile").onchange = async () => {
   const file = $("symFile").files[0];
@@ -2964,7 +2982,7 @@ $("symFile").onchange = async () => {
   try {
     const r = await api("/api/symbols/import", { method: "POST", body: { slug: S.slug, name: file.name, text: await file.text() } });
     toast(esc(`${plural(r.kept, "line")} kept${r.dropped ? `, ${r.dropped.toLocaleString()} left out` : ""}; ${plural(r.renamed, "function")} named. Split the game again to use its blocks.`));
-    showCorrections({ corrections: (await api(`/api/corrections?slug=${S.slug}`)).corrections, symbol_file: r.symbol_file });
+    loadCorrections();
   } catch (e) { $("symStatus").textContent = ""; toast(esc(e.message), "err"); }
 };
 $("symRemove").onclick = async () => {

@@ -511,6 +511,22 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     async def api_state(request: Request) -> Response:
         return guard(request) or JSONResponse(await call(state))
 
+    @mcp.custom_route("/api/coverage", methods=["POST"])
+    async def api_coverage(request: Request) -> Response:
+        """Coverage the user recorded with an emulator (a code/data log or an execution trace), uploaded as is."""
+        if (bad := guard(request, write=True)):
+            return bad
+        q = request.query_params
+        raw = b""
+        async for chunk in request.stream():
+            raw += chunk
+            if len(raw) > 64 << 20:
+                return fail(ValueError("that file is over 64 MB: a code/data log is the size of the game"))
+        try:
+            return JSONResponse(await call(lambda: net.import_coverage(q.get("slug", ""), raw, q.get("name", ""))))
+        except (NetworkError, ValueError, OSError) as e:
+            return fail(e)
+
     @mcp.custom_route("/api/import", methods=["POST"])
     async def api_import(request: Request) -> Response:
         """A game the user owns: the demo, an upload streamed to disk (discs are gigabytes), or a local path."""
@@ -745,6 +761,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/symbols/import": (lambda s, r, d: net.import_symbols(s, str(d.get("text", "")), str(d.get("name", ""))),
                                 ["POST"]),
         "/api/symbols/remove": (lambda s, r, d: net.remove_symbol_file(s), ["POST"]),
+        "/api/coverage/remove": (lambda s, r, d: net.remove_coverage(s), ["POST"]),
         "/api/delete": (p_delete, ["POST"]), "/api/agents/manual": (p_manual, ["POST"]),
         "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]),

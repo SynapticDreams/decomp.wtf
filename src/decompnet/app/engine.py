@@ -2059,7 +2059,7 @@ class RomNetwork(Network):
                 "count": r["count"], "unit": self.CORRECTION_KINDS.get(r["kind"], ("", ""))[1],
                 "says": self.CORRECTION_KINDS.get(r["kind"], ("", ""))[0], "reason": r["reason"], "by": r["agent"],
                 "at": r["created_at"], "undone": r["undone_at"] is not None} for r in rows]
-        return {"corrections": out, "symbol_file": self.symbol_file(slug)}
+        return {"corrections": out, "symbol_file": self.symbol_file(slug), "coverage": self.coverage_file(slug)}
 
     def undo_correction(self, slug: str, cid: int) -> dict:
         proj = self._project(slug)
@@ -2085,6 +2085,11 @@ class RomNetwork(Network):
                 hints["inline"][flat] = r["count"]
             elif r["kind"] == "noreturn":
                 hints["noreturn"].add(flat)
+        try:
+            if (cov := self._coverage(proj)) is not None:
+                hints["coverage"] = cov
+        except ValueError:
+            pass  # (a file that can't be read any more: Settings says so)
         return hints
 
     _SYM_LINE = re.compile(r"^([0-9A-Fa-f]{1,3}):([0-9A-Fa-f]{4})\s+([A-Za-z_][A-Za-z0-9_@#$]*(?:\.[A-Za-z0-9_@#$]+)?|"
@@ -2157,6 +2162,87 @@ class RomNetwork(Network):
         path = self._sym_path(self._project(slug))
         path.unlink(missing_ok=True)
         self._update_cfg(slug, lambda cfg: cfg.pop("symbol_file", None))
+        return self.corrections(slug)
+
+    def _coverage_path(self, proj) -> Path | None:
+        """The project's coverage from an emulator (a code/data log or an execution trace), when it has one."""
+        rom = Path(proj["root"]) / self.cfg(proj)["rom"]["file"]
+        for suffix in (".cdl", ".trace"):
+            if rom.with_suffix(suffix).is_file():
+                return rom.with_suffix(suffix)
+        return None
+
+    def _coverage(self, proj):
+        """The project's coverage, read against its copy of the game (rom/coverage.py), or None."""
+        from ..rom import coverage, gb_trace, sm83
+
+        path = self._coverage_path(proj)
+        if path is None:
+            return None
+        rom = (Path(proj["root"]) / self.cfg(proj)["rom"]["file"]).read_bytes()
+        if path.suffix == ".cdl":
+            return coverage.read_cdl(path.read_bytes(), rom)
+        tracer = gb_trace.Tracer(rom)
+
+        def decode(flat):
+            text, ln = tracer.decode(flat)
+            kind, target = sm83.flow(text)
+            return text, ln, kind, target
+
+        def flat_of(bank, cpu):
+            return cpu if cpu < 0x4000 else bank * 0x4000 + cpu - 0x4000 if cpu < 0x8000 and bank else None
+
+        return coverage.read_trace(path.read_text(encoding="utf-8", errors="replace"), rom, flat_of, decode)
+
+    def coverage_file(self, slug: str) -> dict | None:
+        proj = self._project(slug)
+        path = self._coverage_path(proj)
+        if path is None:
+            return None
+        try:
+            info = self._coverage(proj).summary()
+        except Exception as e:  # noqa: BLE001 (a file that can't be read is said, not raised, in Settings)
+            return {"from": path.name, "error": str(e)}
+        return info | {"from": self.cfg(proj).get("coverage", {}).get("from", path.name)}
+
+    def import_coverage(self, slug: str, raw: bytes, name: str = "") -> dict:
+        """Coverage the user recorded with an emulator while playing their copy of the game: a Mesen2 code/data log
+        (.cdl) or an execution trace (`bank:address` lines). Checked against the project's copy (a log for another
+        version is refused), kept next to it, and used when the game is split again (Game Boy for now)."""
+        from ..rom import coverage
+
+        proj = self._project(slug)
+        if (self.cfg(proj).get("arch") or "").lower() != "sm83" or self.fork_slug(slug):
+            raise NetworkError("coverage from an emulator is for Game Boy projects for now")
+        if slug in self.links:
+            raise NetworkError("a room member's copy follows its host: the host imports it")
+        rom_path = Path(proj["root"]) / self.cfg(proj)["rom"]["file"]
+        rom = rom_path.read_bytes()
+        cdl = raw[:5] == b"CDLv2" or len(raw) == len(rom)
+        target = rom_path.with_suffix(".cdl" if cdl else ".trace")
+        old = self._coverage_path(proj)
+        backup = old.read_bytes() if old is not None else None
+        try:
+            if old is not None:
+                old.unlink()
+            target.write_bytes(raw)
+            info = self._coverage(proj).summary()
+        except coverage.CoverageError as e:
+            target.unlink(missing_ok=True)
+            if old is not None and backup is not None:
+                old.write_bytes(backup)
+            raise NetworkError(str(e)) from None
+        self._update_cfg(slug, lambda cfg: cfg.update(coverage={"from": Path(name).name or target.name, "at": time.time()}))
+        with self.store.tx() as db:
+            self._event(db, proj["id"], None, "import", f"coverage: {info['code']} bytes ran as code, {info['read']} read "
+                        f"as data, {info['entries']} function entries")
+        return info | {"from": Path(name).name or target.name}
+
+    def remove_coverage(self, slug: str) -> dict:
+        proj = self._project(slug)
+        if (path := self._coverage_path(proj)) is not None:
+            path.unlink()
+        self._update_cfg(slug, lambda cfg: cfg.pop("coverage", None))
         return self.corrections(slug)
 
     def give_to_agents(self, project: str | None, function: str) -> dict:

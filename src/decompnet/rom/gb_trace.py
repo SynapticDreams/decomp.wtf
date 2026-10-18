@@ -241,13 +241,16 @@ class Tracer:
         """`paged`: whether the game maps banks at all (a first pass learns it: `mbc_writes`). Code entered from
         somewhere nothing was followed from (an interrupt handler) can't know what the window holds when it does;
         when it doesn't, the window keeps bank 1. `hints`: what a person or an agent established (`entries`
-        {flat: cpu}, `noreturn` {flat}, `data` [(flat, size)], `tables` [(flat, words)], `inline` {routine: bytes})."""
+        {flat: cpu}, `noreturn` {flat}, `data` [(flat, size)], `tables` [(flat, words)], `inline` {routine: bytes},
+        `coverage`: what an emulator saw the game run and read, rom/coverage.py)."""
         self.data, self.size = data, len(data)
         self.kind = mapper(data)
         self.mask = bank_mask(self.size)
         self.unknown = None if paged else 1
         self.hints = hints or {}
-        self.no_code = sorted((f, f + n) for f, n in self.hints.get("data", []))
+        cov = self.hints.get("coverage")
+        self.no_code = sorted([(f, f + n) for f, n in self.hints.get("data", [])]
+                              + ([(f, f + n) for f, n in cov.runs("read")] if cov is not None else []))
         self.found = Found()
         self.known: set[int] = set()
         self.prev_starts: set[int] = set()
@@ -822,6 +825,10 @@ def seeds(data: bytes, hints: dict | None = None) -> dict[int, tuple[int, str]]:
     for flat in (hints or {}).get("entries", {}):
         if 0 <= flat < len(data):
             out.setdefault(flat, (cpu_of(flat), "hint"))
+    cov = (hints or {}).get("coverage")
+    for flat in sorted(cov.entries) if cov is not None else ():  # where calls entered while the game ran
+        if 0 <= flat < len(data):
+            out.setdefault(flat, (cpu_of(flat), "ran"))
     return out
 
 
@@ -839,6 +846,12 @@ def follow(data: bytes, hints: dict | None = None, rounds: int = 3) -> Found:
             break
         start = {**{flat: (cpu_of(flat), "evidence") for flat in more}, **start}
         found = Tracer(data, paged=paged, hints=hints).follow(start)
+    cov = (hints or {}).get("coverage")
+    if cov is not None:  # code that ran but wasn't followed (reached through a pointer): where each run of it starts
+        ran = {flat: (cpu_of(flat), "ran") for flat in range(len(data)) if cov.code[flat]
+               and (flat == 0 or not cov.code[flat - 1]) and flat not in found.code}
+        if ran:
+            found = Tracer(data, paged=paged, hints=hints).follow({**ran, **start})
     return found
 
 
@@ -876,6 +889,17 @@ def _sorted(data: bytes, found: Found, hints: dict | None = None):
     for flat, (n, why) in found.inline.items():
         out.append((flat, n, "inline", why))
         claimed[flat:flat + n] = b"\x02" * min(n, size - flat)
+    cov = (hints or {}).get("coverage")
+    if cov is not None:  # what ran is code (never data); what was only read while the game ran is data
+        for flat, n in cov.runs("code", 1):
+            for k in range(flat, flat + n):
+                if not claimed[k]:
+                    claimed[k] = 1
+        for flat, n in cov.runs("read"):
+            n = next((k - flat for k in range(flat, flat + n) if claimed[k]), n)
+            if n > 0:
+                out.append((flat, n, "read", "read as data while the game ran (coverage)"))
+                claimed[flat:flat + n] = b"\x02" * n
     for flat, n in found.tables.items():
         out.append((flat, 2 * n, "table", f"a table of {n} handler address{'es' if n != 1 else ''}"))
         claimed[flat:flat + 2 * n] = b"\x02" * min(2 * n, size - flat)
