@@ -3086,6 +3086,7 @@ function fillCompilerSettings() {
   showCompilerProbe(c.probe);
   $("psyqPanel").hidden = S.ov.platform !== "psx";
   showPsyqLibraries(c.libraries);
+  $("psxDebugPanel").hidden = S.ov.platform !== "psx";
   $("smallDataPanel").hidden = S.ov.platform !== "psx";
   showSmallData(c.small_data);
   $("setUnitReset").hidden = !unit;
@@ -3414,3 +3415,20 @@ loadNav();
 route();
 setTimeout(() => checkUpdate(false, true), 4000);
 setInterval(() => checkUpdate(false, true), 10 * 60 * 1000);
+
+async function importPsxDebug(apply) {
+  const files = Array.from($("psxDebugFiles").files);
+  if (!files.length || files.length > 64 || files.reduce((n, f) => n + f.size, 0) > 64 * 1024 * 1024) { toast("Choose 1–64 debug files, up to 64 MiB total.", "err"); return; }
+  $("psxDebugPreview").disabled = true; $("psxDebugApply").disabled = true;
+  try {
+    const encoded = await Promise.all(files.map((f) => new Promise((resolve, reject) => {
+      const r = new FileReader(); r.onload = () => resolve({ name: f.name, data: r.result.split(",")[1] }); r.onerror = reject; r.readAsDataURL(f);
+    })));
+    const { job } = await api("/api/debug/psx", { method: "POST", body: { slug: S.slug, files: encoded, apply, unit: $("setCompilerUnit").value || null } });
+    const result = await followJob(job, $("psxDebugResult"));
+    $("psxDebugResult").textContent = JSON.stringify(result, null, 2);
+    if (apply) poll(false);
+  } catch (e) { toast(esc(e.message), "err"); } finally { $("psxDebugPreview").disabled = false; $("psxDebugApply").disabled = false; }
+}
+$("psxDebugPreview").onclick = () => importPsxDebug(false);
+$("psxDebugApply").onclick = () => importPsxDebug(true);

@@ -677,6 +677,21 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         return {"job": jobs.start("PSY-Q libraries", lambda log: net.identify_psyq_libraries(
             slug, data.get("files"), bool(data.get("apply")), log, str(data["unit"]) if data.get("unit") else None))}
 
+    def p_psx_debug(slug, request, data):
+        import base64
+
+        files = data.get("files", [])
+        if not isinstance(files, list) or len(files) > 64 or any(not isinstance(f, dict) or not isinstance(f.get("data"), str) for f in files):
+            raise NetworkError("provide at most 64 base64 debug files")
+        if sum(len(f["data"]) for f in files) > 90 << 20:
+            raise NetworkError("debug upload exceeds 64 MiB")
+        try:
+            decoded = [(str(f.get("name", "")), base64.b64decode(f["data"], validate=True)) for f in files]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise NetworkError("invalid base64 debug upload") from exc
+        return {"job": jobs.start("PS1 debug information", lambda log: net.import_psx_debug(
+            slug, decoded, bool(data.get("apply")), str(data["unit"]) if data.get("unit") else None))}
+
     def p_export(slug, request, data):
         def work(log):
             res = net.export_rom(slug, log=log)
@@ -773,6 +788,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/compiler/probe": (p_compiler_probe, ["POST"]),
         "/api/compiler/small-data": (lambda s, r, d: net.small_data_evidence(s), ["POST"]),
         "/api/libraries/psyq": (p_psyq, ["POST"]),
+        "/api/debug/psx": (p_psx_debug, ["POST"]),
         "/api/resplit": (p_resplit, ["POST"]),
         "/api/give_back": (lambda s, r, d: net.give_to_agents(s, str(d.get("function", ""))), ["POST"]),
         "/api/corrections": (lambda s, r, d: net.corrections(s), ["GET"]),

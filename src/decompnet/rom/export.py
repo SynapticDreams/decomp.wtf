@@ -64,7 +64,7 @@ def _symbol_lines(net, proj) -> list[str]:
     for vram, r in sorted(funcs.items()):
         lines.append(f"{r['name']} = 0x{vram:08X}; // type:func")
     for s in sorted(syms.by_name.values(), key=lambda s: s.address):
-        if s.address in funcs or AUTO_NAME.match(s.name):
+        if s.kind == "alias" or s.address in funcs or AUTO_NAME.match(s.name):
             continue
         lines.append(f"{s.name} = 0x{s.address:08X};")
     return lines
