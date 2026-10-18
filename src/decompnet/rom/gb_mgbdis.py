@@ -296,6 +296,7 @@ def split(rom_path: Path, workdir: Path, log=lambda *_: None, hints: dict | None
         raise RomError("this isn't a Game Boy or Game Boy Color ROM")
     sym, found, regs = mapped(data, hints, log)
     reached = {(flat // gb.BANK_SIZE, gb.cpu_address(flat)) for flat in found.starts}
+    edges = found.edges
     own = rom_path.with_suffix(".sym")
     if own.is_file():  # a symbol file next to the ROM: after the map, so its names and blocks win
         sym += own.read_text(encoding="utf-8", errors="replace")
@@ -308,7 +309,7 @@ def split(rom_path: Path, workdir: Path, log=lambda *_: None, hints: dict | None
         out, symbols, faithful, rebuilt = _disassemble(rom, tmp, log)
         if not faithful:  # the map broke the rebuild (it shouldn't): the plain disassembly, as before
             log("the disassembly with the map didn't rebuild the ROM byte for byte: splitting without it")
-            regs, reached = [], set()
+            regs, reached, edges = [], set(), {}
             shutil.rmtree(out, ignore_errors=True)
             rom.with_suffix(".sym").unlink()
             if own.is_file():
@@ -366,7 +367,9 @@ def split(rom_path: Path, workdir: Path, log=lambda *_: None, hints: dict | None
                 fns.append(gb.GbFunction(name=name, vram=addr, rom=flat, bank=bank, code=code,
                                          n_insns=sum(1 for _ in sm83.disassemble(code, addr)),
                                          asm=asm_blocks.get(name, ""),
-                                         refs=gb.refs_of(code, addr, bank, len(data))))
+                                         refs=gb.refs_of(code, addr, bank, len(data)),
+                                         edges={site - flat: to for site, to in edges.items()
+                                                if flat <= site < flat + len(code)}))
         meta = {"faithful": faithful, "labels": len(symbols), "functions": len(fns),
                 "rebuilt_bytes": len(rebuilt), "original_bytes": len(data), "regions": regs, "mapped": bool(regs)}
         return fns, meta

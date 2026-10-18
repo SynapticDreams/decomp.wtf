@@ -184,6 +184,7 @@ class GbFunction:
     refs: list = field(default_factory=list)   # (offset, kind, address): 10 = call, as the GBA lane uses
     asm_only: bool = False
     bank: int = 0      # the 16 KiB bank the function lives in
+    edges: dict = field(default_factory=dict)  # offset -> ROM offset: where a call or jump into the window went
 
     @property
     def size(self) -> int:
