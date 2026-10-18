@@ -67,6 +67,8 @@ def run(net, proj, unit: str | None = None, expanded: bool = False, log=print) -
         for fn in functions:
             if len(samples) >= limit or time.monotonic() >= deadline:
                 break
+            if json.loads(fn["meta"] or "{}").get("kind") == "library":
+                continue
             if handwritten.mips_reason(fn["target"], False, "psx"):
                 continue
             header = net._context(proj["id"], fn["unit"])["header"]
