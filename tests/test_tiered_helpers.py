@@ -101,7 +101,12 @@ def test_the_command_line_carries_the_picked_model_and_effort(tmp_path, monkeypa
     assert cmd[cmd.index("--model") + 1] == OPUS and cmd[cmd.index("--effort") + 1] == "high"
     plain = agents.Session("claude-2", "claude", "c", "demo", "claude-2", {"model": "sonnet"})
     cmd, _, _ = m._command(plain, "tok", tmp_path / "w")
-    assert cmd[cmd.index("--model") + 1] == "sonnet" and "--effort" not in cmd  # not tiered: as before
+    assert cmd[cmd.index("--model") + 1] == "sonnet" and "--effort" not in cmd  # none chosen: Claude Code's own
+    chosen = agents.Session("claude-3", "claude", "c", "demo", "claude-3", {"model": "opus", "effort": "xhigh"})
+    cmd, _, _ = m._command(chosen, "tok", tmp_path / "w")  # Work on this picks one (and steps it up when stuck)
+    assert cmd[cmd.index("--model") + 1] == "opus" and cmd[cmd.index("--effort") + 1] == "xhigh"
+    odd = agents.Session("claude-4", "claude", "c", "demo", "claude-4", {"model": "opus", "effort": "turbo"})
+    assert "--effort" not in m._command(odd, "tok", tmp_path / "w")[0]  # only what --effort takes
 
 
 def test_starting_a_tiered_helper(tmp_path, monkeypatch):

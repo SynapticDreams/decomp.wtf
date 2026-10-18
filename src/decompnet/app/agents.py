@@ -310,11 +310,12 @@ def _codex_models(path: str) -> list[dict]:
 
 
 def models(kind: str, path: str | None) -> list[dict]:
-    """Models to offer for this agent: [{"id", "name", "note"}]. Claude Code's aliases; opencode's and Antigravity's
-    own lists (what the user's sign-in offers); Codex's catalog, with each model's efforts."""
+    """Models to offer for this agent: [{"id", "name", "note"}]. Claude Code's aliases, with the efforts its --effort
+    takes (a tiered helper's tier picks its own); opencode's and Antigravity's own lists (what the user's sign-in
+    offers); Codex's catalog, with each model's efforts."""
     if kind == "claude":
-        return [{"id": TIERED, "name": "Tiered", "note": "Haiku, Sonnet or Opus per function"}] + \
-            [{"id": i, "name": n, "note": note} for i, n, note in CLAUDE_MODELS]
+        return [{"id": TIERED, "name": "Tiered", "note": "Haiku, Sonnet or Opus per function", "efforts": []}] + \
+            [{"id": i, "name": n, "note": note, "efforts": list(EFFORTS)} for i, n, note in CLAUDE_MODELS]
     if kind not in ("opencode", "antigravity", "codex") or not path:
         return []
     cached = _models.get(kind)
@@ -1041,15 +1042,17 @@ class Manager:
             return None
 
     def _pin_effort(self, s: Session) -> None:
-        """Steering for an agent's own loop: a step up in effort (low, medium, high) every two runs without a gain,
-        back to the user's choice after one (Claude Code and Codex; a tiered helper's tier does this already)."""
+        """Steering for an agent's own loop: a step up in effort (low, medium, high) from the user's choice every two
+        runs without a gain, back to that choice after one; never below it (Claude Code and Codex; a tiered helper's
+        tier does this already)."""
         if s.kind not in ("claude", "codex") or s.tiered:
             return
-        base = s.options.get("base_effort") or ""
-        if s.pin_stall < 2:
-            s.options["effort"] = base
+        chosen = s.options.get("base_effort") or ""
+        base = chosen or _config_effort(s.kind) or ""
+        if s.pin_stall < 2 or (base and base not in EFFORT_LADDER):  # xhigh, max: never a step down
+            s.options["effort"] = chosen
             return
-        at = EFFORT_LADDER.index(base) if base in EFFORT_LADDER else 1
+        at = EFFORT_LADDER.index(base) if base else 1
         step = EFFORT_LADDER[min(len(EFFORT_LADDER) - 1, at + s.pin_stall // 2)]
         if step != (s.options.get("effort") or ""):
             s.push("info", f"no closer in {s.pin_stall} runs: {step} effort for the next")
@@ -1161,8 +1164,9 @@ class Manager:
                    "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch"]
             if model:
                 cmd += ["--model", model]
-            if s.tiered and s.routed_effort in EFFORTS:
-                cmd += ["--effort", s.routed_effort]
+            effort = s.routed_effort if s.tiered else str(s.options.get("effort") or "")
+            if effort in EFFORTS:  # else Claude Code's own default for the model
+                cmd += ["--effort", effort]
         elif s.kind == "codex":
             env["DECOMP_TOKEN"] = token
             # The worker's own server, under a name of its own: `-c` settings merge into the user's config, and

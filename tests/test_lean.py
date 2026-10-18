@@ -294,6 +294,61 @@ def test_an_agents_own_loop_steps_up_its_effort_when_stuck_and_stops(tmp_path):
     assert manager._pin_check(s, "f") == "f matched 🎉"
 
 
+
+def test_a_stuck_helpers_effort_never_drops_below_the_users(tmp_path, monkeypatch):
+    from decompnet.app import agents
+
+    manager = Manager(RomNetwork(tmp_path / "d.db", tmp_path), tmp_path, "http://127.0.0.1:1/mcp")
+
+    def steps(kind, base, config=None):
+        monkeypatch.setattr(agents, "_codex_config", lambda: config or {})
+        s = Session(id="s", kind=kind, label="s", slug="x", agent_name="s", options={"pin": "f", "base_effort": base})
+        out = []
+        for stall in (0, 2, 4):
+            s.pin_stall = stall
+            manager._pin_effort(s)
+            out.append(s.options["effort"])
+        return out
+
+    assert steps("codex", "xhigh") == ["xhigh"] * 3  # above the ladder already: stays
+    assert steps("claude", "max") == ["max"] * 3
+    assert steps("codex", "", {"model_reasoning_effort": "xhigh"}) == [""] * 3  # Codex's own setting, xhigh: stays
+    assert steps("codex", "", {"model_reasoning_effort": "low"}) == ["", "medium", "high"]  # up from the user's own
+    assert steps("claude", "") == ["", "high", "high"]  # unknown: from medium
+
+
+def test_work_on_this_starts_on_the_model_and_effort_picked_and_remembers_them(tmp_path, monkeypatch):
+    from starlette.testclient import TestClient
+
+    from decompnet.app import agents
+    from decompnet.app.server import build
+
+    from .test_tiered_helpers import _net
+
+    net, home = _net(tmp_path)
+    fid = _fn(net, 1, "f")["id"]
+    with net.store.tx() as db:  # code a compiler writes (li v0, 1; jr ra): zeros get set aside when a helper starts
+        db.execute("UPDATE functions SET target=?, size=12, n_insns=3 WHERE id=?", (bytes.fromhex("010002240800e00300000000"), fid))
+    mcp, manager, security = build(net, home / ".decomp", 6498, "k")
+    monkeypatch.setattr(agents.Manager, "_run", lambda self, s: None)  # no CLI here: the start path is the test
+    c = TestClient(mcp.streamable_http_app(transport_security=security, host="127.0.0.1"), base_url="http://127.0.0.1:6498")
+    c.cookies.set("decomp_live", "k")
+    h = {"X-Decomp": "1"}
+    r = c.post("/api/agents/start", json={"kind": "codex", "slug": "demo", "options": {
+        "pin": "f", "model": "gpt-a", "effort": "xhigh", "lean": "several", "stall": 10}}, headers=h)
+    assert r.status_code == 200, r.text
+    s = manager.sessions[r.json()["started"][0]]
+    assert (s.options["pin"], s.options["model"], s.options["effort"], s.options["lean"]) == ("f", "gpt-a", "xhigh", "several")
+    r = c.post("/api/agents/start", json={"kind": "claude", "slug": "demo", "options": {"pin": "f", "model": "opus",
+                                                                                        "effort": "high"}}, headers=h)
+    assert r.status_code == 200, r.text
+    settings = c.get("/api/state").json()["settings"]
+    assert settings["pin_helper"]["who"] == "k:claude"
+    assert settings["pin_helper"]["setups"] == {"codex": {"model": "gpt-a", "effort": "xhigh"},
+                                                "claude": {"model": "opus", "effort": "high"}}  # each its own
+    assert (settings.get("launcher") or {}).get("model") != "gpt-a"  # the launcher's choice is its own
+    assert settings["recent_models"]["codex"] == ["gpt-a"]  # a typed name comes back as a suggestion
+
 def test_the_permuter_polishes_a_pinned_function_without_taking_it(tmp_path, monkeypatch):
     net = RomNetwork(tmp_path / "d.db", tmp_path)
     slug = _project(net)
