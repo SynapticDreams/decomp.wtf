@@ -683,3 +683,10 @@ a.ghost, a.primary { text-decoration: none; }
 .nowrap { white-space: nowrap; }
 #setups { overflow-x: auto; padding-bottom: 12px; }
 .sw.aside { opacity: .35; }
+
+/* Settings: corrections agents made to the split, and the symbol file */
+.fn-table.corrections th { position: static; cursor: default; }
+.fn-table.corrections td { white-space: normal; vertical-align: top; }
+.fn-table.corrections tr.undone td:not(:last-child) { opacity: .5; text-decoration: line-through; }
+.file-btn { display: inline-flex; align-items: center; cursor: pointer; }
+h3.sub { font-size: 13px; font-weight: 600; margin: 18px 0 6px; color: var(--ink); }

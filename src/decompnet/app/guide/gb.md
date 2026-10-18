@@ -64,6 +64,20 @@ starts), `split_function(function, at=<CPU address where the second starts>)` cu
 on into the next function or jumps into it, or the one before runs on into it, and nothing else calls the second
 half), `merge_function(function)` joins them. Each piece is checked again for what's set aside.
 
+When the split took data for code, missed a function, or decoded the bytes after a call as instructions, say so with
+`correct_split(kind, at, reason, count)`, with how you know (what reads it, what calls it, what it holds):
+
+- `data`: `count` bytes at `at` aren't code (a table, graphics, text). `read_data` shows them first.
+- `code`: a function starts at `at` (reached through a pointer the split can't follow).
+- `table`: `count` handler addresses at `at` (a jump table nothing found).
+- `operands`: the routine at `at` reads `count` bytes after each call to it and returns past them (`pop hl / ld
+  a,(hl+) / ... / push hl / ret`, or a far call followed by its bank and address).
+- `noreturn`: the routine at `at` never returns (a main loop, a reset).
+
+`at` is a function's name, `NN:AAAA` (bank and address, hex) or an address in `function`'s bank. A correction doesn't
+change anything at once: the next time a person splits the game again it does, and they can undo it first. Ten an
+hour at most: they aren't a way round a hard function.
+
 What SDCC does write in such a game, and how (each matched on a real cartridge):
 
 - A bank switch around a call: `u8 b = (u8)(u16)&bank_0x11;` with `__at(0x0011) u8 bank_0x11;` gives `ld a, $11`,

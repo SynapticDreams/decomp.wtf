@@ -2927,7 +2927,49 @@ async function renderProjectSettings() {
   const banked = ["gb", "gbc", "sms", "gg", "nes"].includes(ov.platform) && !fork && ov.room?.role !== "guest";
   if ($("resplitPanel").hidden === banked) { $("resplitApply").hidden = true; $("resplitResult").innerHTML = ""; $("resplitLog").hidden = true; }
   $("resplitPanel").hidden = !banked;
+  const corrects = ["gb", "gbc"].includes(ov.platform) && !fork && ov.room?.role !== "guest";
+  $("correctionsPanel").hidden = !corrects;
+  if (corrects) loadCorrections();
 }
+
+/* Corrections agents made to the split (Game Boy), each with its reason, undoable; and the user's own symbol file. */
+async function loadCorrections() {
+  const slug = S.slug;
+  let r;
+  try { r = await api(`/api/corrections?slug=${slug}`); } catch { return; }
+  if (slug !== S.slug) return;
+  showCorrections(r);
+}
+
+function showCorrections(r) {
+  const rows = r.corrections || [];
+  const when = (t) => ago(new Date(t * 1000).toISOString());
+  $("correctionsList").innerHTML = rows.length ? `<table class="fn-table corrections"><thead><tr><th>Where</th><th>What</th><th>How they know</th><th>By</th><th></th></tr></thead><tbody>${rows.map((c) => `<tr class="${c.undone ? "undone" : ""}"><td class="mono">${esc(c.where)}</td><td>${esc(c.says)}${c.count ? ` (${c.count.toLocaleString()} ${esc(c.unit)})` : ""}</td><td>${esc(c.reason || "")}</td><td class="muted small">${esc(c.by || "")}<br>${esc(when(c.at))}</td><td>${c.undone ? `<span class="muted small">undone</span>` : `<button class="ghost small-btn" data-undo="${c.id}" type="button">Undo</button>`}</td></tr>`).join("")}</tbody></table>`
+    : `<p class="muted small">None yet. Agents add them with <code>correct_split</code> when they find bytes that aren't code, a function start, a table, or a routine that reads bytes after its call.</p>`;
+  $("correctionsList").querySelectorAll("[data-undo]").forEach((b) => { b.onclick = async () => {
+    b.disabled = true;
+    try { showCorrections(await api("/api/corrections/undo", { method: "POST", body: { slug: S.slug, id: Number(b.dataset.undo) } })); }
+    catch (e) { b.disabled = false; toast(esc(e.message), "err"); }
+  }; });
+  const f = r.symbol_file;
+  $("symStatus").textContent = f ? `${f.from}: ${plural(f.names, "name")}${f.blocks ? `, ${plural(f.blocks, "block")}` : ""}` : "";
+  $("symRemove").hidden = !f;
+}
+
+$("symFile").onchange = async () => {
+  const file = $("symFile").files[0];
+  $("symFile").value = "";
+  if (!file) return;
+  $("symStatus").textContent = `reading ${file.name}…`;
+  try {
+    const r = await api("/api/symbols/import", { method: "POST", body: { slug: S.slug, name: file.name, text: await file.text() } });
+    toast(esc(`${plural(r.kept, "line")} kept${r.dropped ? `, ${r.dropped.toLocaleString()} left out` : ""}; ${plural(r.renamed, "function")} named. Split the game again to use its blocks.`));
+    showCorrections({ corrections: (await api(`/api/corrections?slug=${S.slug}`)).corrections, symbol_file: r.symbol_file });
+  } catch (e) { $("symStatus").textContent = ""; toast(esc(e.message), "err"); }
+};
+$("symRemove").onclick = async () => {
+  try { showCorrections(await api("/api/symbols/remove", { method: "POST", body: { slug: S.slug } })); } catch (e) { toast(esc(e.message), "err"); }
+};
 
 /* What splitting again would change (or did): a preview first, then the same with "apply". */
 async function resplit(apply) {
@@ -2937,7 +2979,7 @@ async function resplit(apply) {
   try {
     const { job } = await api("/api/resplit", { method: "POST", body: { slug: S.slug, apply } });
     const r = await followJob(job, $("resplitLog"));
-    $("resplitResult").innerHTML = `<div class="notice ${apply ? "room" : ""}"><span>${apply ? "<b>Split again.</b> " : ""}${plural(r.before, "function")} → ${plural(r.after, "function")}: ${r.kept.toLocaleString()} unchanged keep their work, ${r.added.toLocaleString()} new, ${r.removed.toLocaleString()} ${apply ? "gone" : "would go"}; all ${r.matched_kept.toLocaleString()} matched kept${r.notes_moved ? `, notes of ${plural(r.notes_moved, "function")} ${apply ? "moved" : "would move"}` : ""}.${r.data_after || r.data_before ? ` Functions cover ${bytes(r.bytes_before)} → ${bytes(r.bytes_after)}; ${bytes(r.data_after)} ${apply ? "is" : "would be"} shown as data (tables, padding, bytes the code never reaches), not handed out as functions${r.data_before ? ` (${bytes(r.data_before)} before)` : ""}.` : ""}</span></div>`;
+    $("resplitResult").innerHTML = `<div class="notice ${apply ? "room" : ""}"><span>${apply ? "<b>Split again.</b> " : ""}${plural(r.before, "function")} → ${plural(r.after, "function")}: ${r.kept.toLocaleString()} unchanged keep their work, ${r.added.toLocaleString()} new, ${r.removed.toLocaleString()} ${apply ? "gone" : "would go"}; all ${r.matched_kept.toLocaleString()} matched kept${r.notes_moved ? `, notes of ${plural(r.notes_moved, "function")} ${apply ? "moved" : "would move"}` : ""}.${r.data_after || r.data_before ? ` Functions cover ${bytes(r.bytes_before)} → ${bytes(r.bytes_after)}; ${bytes(r.data_after)} ${apply ? "is" : "would be"} shown as data (tables, padding, bytes the code never reaches), not handed out as functions${r.data_before ? ` (${bytes(r.data_before)} before)` : ""}.` : ""}${r.corrections ? ` With ${plural(r.corrections, "correction")} from below.` : ""}</span></div>`;
     $("resplitApply").hidden = apply;
     if (apply) { S.ov = await api(`/api/project?slug=${S.slug}`); renderProjectSettings(); poll(false); }
   } catch (e) { toast(esc(e.message), "err"); } finally { btn.disabled = false; }
