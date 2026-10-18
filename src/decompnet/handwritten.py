@@ -12,10 +12,9 @@ the save area in r11 (Mario Party 6's minigame modules each link their own copie
 Not a sign: instructions only assembly has (mtmsr, mtspr of a GQR...). C functions get them too, inlined from the
 SDK's headers (OSInitFastCast's asm block, in HuSysInit), and an agent matches those by calling the same helpers.
 
-MIPS (N64, PlayStation, PlayStation 2), see mips_reason: coprocessor 0 (the system: mfc0, mtc0, rfe, eret) or, on
-the PlayStations, coprocessor 2 (the PS1's GTE, the PS2's VU0: ctc2, mtc2, lwc2, cop2 commands), which C compilers
-never emit (PSY-Q's libgte is written in assembly; C that drives the GTE does it with inline asm, which decomp.wtf
-doesn't take); code that ends without a return or a jump and so runs on into the next function (an extra entry
+MIPS (N64, PlayStation, PlayStation 2), see mips_reason: coprocessor 0 (the system: mfc0, mtc0, rfe, eret) and
+PS2 coprocessor 2 remain set aside. PS1 profiles with trusted GTE helpers can emit COP2 from C macro calls;
+recognized library routines remain separate. Other signs are code that ends without a return or jump and runs on into the next function (an extra entry
 point into hand-written code: the splitter cut it off); or a first block that reads a temporary register (at, v0,
 v1, t0-t9) or k0/k1 before setting it (compiled code gets its arguments in a0-a3).
 
@@ -201,6 +200,10 @@ def _mips_uses(w: int) -> tuple[set[int], set[int]] | None:
         return ({rs}, {rt})
     if op == 15:  # lui
         return (set(), {rt})
+    if op in (0x32, 0x3A, 0x36, 0x3E):  # coprocessor 2 memory transfers read a GPR base, not a GPR value
+        return ({rs}, set())
+    if op == 0x12:
+        return ((set(), {rt}) if rs in (0, 2) else ({rt}, set()) if rs in (4, 6) else (set(), set()))
     if op in _MIPS_LOAD:
         return ({rs}, {rt})
     if op in _MIPS_STORE:
@@ -218,7 +221,7 @@ def _mips_uses(w: int) -> tuple[set[int], set[int]] | None:
     return None
 
 
-def mips_reason(code: bytes, big_endian: bool, platform: str = "") -> str | None:
+def mips_reason(code: bytes, big_endian: bool, platform: str = "", allow_gte: bool = False) -> str | None:
     """Why this MIPS function (its code, from the entry) can't come from a compiler, or None."""
     order = "big" if big_endian else "little"
     words = [int.from_bytes(code[at:at + 4], order) for at in range(0, len(code) - 3, 4)]
@@ -229,6 +232,14 @@ def mips_reason(code: bytes, big_endian: bool, platform: str = "") -> str | None
         if op == 0x10:
             return "uses coprocessor 0 (the system's: mfc0, mtc0, rfe, eret): no C compiler emits it"
         if platform in ("psx", "ps", "ps2") and (op == 0x12 or op in (0x32, 0x3A, 0x36, 0x3E)):
+            if platform in ("psx", "ps") and allow_gte:
+                from .psx_gte import COMMANDS
+
+                rs = (w >> 21) & 31
+                if op in (0x32, 0x3A) or (op == 0x12 and (
+                        (rs in (0, 2, 4, 6) and not (w & 0x7FF)) or (rs >= 16 and (w & 63) in COMMANDS))):
+                    continue
+                return "uses a COP2 encoding the trusted GTE helpers cannot emit"
             unit = "the GTE (coprocessor 2)" if platform != "ps2" else "VU0 (coprocessor 2)"
             return (f"uses {unit}: no C compiler emits it (PSY-Q's libgte is written in assembly; C does it with "
                     "inline asm)" if platform != "ps2" else f"uses {unit}: C reaches it only through inline asm")

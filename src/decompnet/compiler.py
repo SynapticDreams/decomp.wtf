@@ -69,8 +69,8 @@ def uses_naked(source: str) -> bool:
     return NAKED.search(_COMMENTS_AND_STRINGS.sub(" ", source or "")) is not None
 
 
-def check_source(source: str) -> None:
-    if len(source.encode()) > MAX_SOURCE_BYTES:
+def check_source(source: str, *, check_size: bool = True) -> None:
+    if check_size and len(source.encode()) > MAX_SOURCE_BYTES:
         raise SourceRejected(f"source too large (max {MAX_SOURCE_BYTES} bytes)")
     check_includes(source)
     # Remove register pins before masking comments/strings (the pin's own string is the register
@@ -92,6 +92,7 @@ class CompilerConfig:
     include_dirs: tuple[str, ...] = ()  # absolute paths of extra (static) header dirs
     runtime32: str | None = None  # 32-bit x86 C runtime for old i386 compiler binaries (see toolchains)
     wsl: bool = False  # a Linux toolchain on Windows: runs inside WSL 2, `cmd` holds WSL paths (see wsl.py)
+    psx_gte: bool = False  # the compiler supplies the immutable GTE intrinsics header
 
 
 @dataclass
@@ -167,6 +168,13 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
     if not trusted:
         try:
             check_source(source)
+            if cfg.psx_gte:
+                from .psx_gte import check_overrides
+
+                check_source(re.sub(r"\\\r?\n", "", context_header), check_size=False)
+                check_source(re.sub(r"\\\r?\n", "", source))
+                check_overrides(context_header)
+                check_overrides(source)
         except SourceRejected as e:
             return CompileResult(False, None, f"rejected: {e}")
 
@@ -176,9 +184,14 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
         inc.mkdir()
         for d in cfg.include_dirs:
             shutil.copytree(d, inc, dirs_exist_ok=True)
+        if cfg.psx_gte:
+            from .psx_gte import header_path
+
+            shutil.copyfile(header_path(), inc / "psx_gte.h")
         # LF on every platform: to the old GCCs a backslash before CRLF doesn't continue a line ("stray '\' in program")
         (inc / "context.h").write_text(context_header, encoding="utf-8", newline="\n")
-        (work / "func.c").write_text('#include "context.h"\n#line 1 "func.c"\n' + source + "\n", encoding="utf-8",
+        prefix = '#include "psx_gte.h"\n' if cfg.psx_gte else ""
+        (work / "func.c").write_text(prefix + '#include "context.h"\n#line 1 "func.c"\n' + source + "\n", encoding="utf-8",
                                      newline="\n")
 
         root = _root(cfg, work)
