@@ -60,7 +60,8 @@ Typical patterns: `jtbl_` jump tables in .rodata for dense switches; overlays lo
   before changing it. K&R spelling is a bounded experiment: in the simple short-parameter example
   tested across all nine compilers, both spellings emitted the **same** conversion. It is not a general
   way to remove parameter extension. A wider parameter changes the declaration's meaning and needs
-  caller/type evidence.
+  caller/type evidence. Both permuters can try one type-preserving K&R spelling when a fresh compile
+  shows extra entry-argument narrowing; ordinary compilation and linked verification still decide.
 - Constant division can use a multiply-high sequence (`mult`/`multu`, `mfhi`, shifts and correction).
   Write the C division first; signed rounding and negative inputs make ad hoc shift rewrites unsafe.
 - Structure assignment can become inline loads/stores or a copy loop. It is not guaranteed to call

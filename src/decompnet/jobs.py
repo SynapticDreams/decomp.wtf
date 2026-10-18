@@ -16,7 +16,6 @@ import random
 from pathlib import Path
 
 from . import scoring
-from .elfobj import extract_function
 from .network import Agent, Network, NetworkError
 from .project import compiler_settings
 
@@ -35,6 +34,7 @@ def next_job(net: Network, agent: Agent) -> dict | None:
         return None
     fn = random.choice(rows[:4])  # spread workers over the closest few
     cfg = compiler_settings(json.loads(fn["config"]), fn["unit"])
+    target = net._target_obj(fn, net._project(fn["slug"]))
     includes, total = {}, 0
     for d in cfg.get("include_dirs", []):
         base = (Path(fn["root"]) / d).resolve()
@@ -50,8 +50,8 @@ def next_job(net: Network, agent: Agent) -> dict | None:
         "context": net._context(fn["project_id"], fn["unit"])["header"],
         "include_files": includes,
         "source": fn["best_source"], "best_score": fn["best_score"], "max_score": fn["n_insns"] * 100,
-        "target": {"arch": fn["arch"], "big_endian": bool(fn["big_endian"]),
-                   "code": base64.b64encode(fn["target"]).decode(), "relocs": json.loads(fn["relocs"])},
+        "target": {"arch": target.arch, "big_endian": target.big_endian,
+                   "code": base64.b64encode(target.code).decode(), "relocs": [r.to_json() for r in target.relocs]},
     }
 
 
@@ -68,11 +68,13 @@ def submit(net: Network, agent: Agent, project: str, function: str, source: str)
     proj = net.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
     ctx = net._context(proj["id"], fn["unit"])
     res = net._compile_function(proj, fn, ctx["header"], source)
-    cand = extract_function(res.obj, fn["name"]) if res.ok else None
+    cand, verdict, _ = net._evaluate(fn, proj, res.obj) if res.ok else (None, None, [])
     if cand is None:
         net._record(fn, agent, None, source, ctx["version"], via="permuter")
         return {"accepted": False, "reason": "did not compile on the coordinator"}
     d = scoring.diff(net._target_obj(fn, proj), cand)
+    if verdict is not None:
+        d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
     before = fn["best_score"]
     net._record(fn, agent, d.score, source, ctx["version"], matched=d.bytes_match, via="permuter")
     if d.bytes_match:

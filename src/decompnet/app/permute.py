@@ -18,7 +18,9 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from .. import scoring
+from .. import narrow_params, scoring
+from ..elfobj import extract_function
+from ..project import compiler_settings
 from ..network import NetworkError
 from ..permuter import mutate
 
@@ -152,9 +154,20 @@ class Permuter:
         best_src = cur_src = fn["best_source"]
         best = cur = fn["best_score"]
         deadline = time.monotonic() + seconds
+        pending = []
+        if not fork and not stop.is_set() and time.monotonic() < deadline:
+            cfg = self.net.cfg(proj)
+            if cfg.get("platform") == "psx" and narrow_params.knr_variant(best_src, fn["name"]):
+                profile = compiler_settings(cfg, fn["unit"])
+                if profile.get("toolchain", "").endswith(("-psx", "-cdk")):
+                    ctx = self.net._context(proj["id"], fn["unit"])
+                    baseline = self.net._compile_function(proj, fn, ctx["header"], best_src)
+                    obj = extract_function(baseline.obj, fn["name"]) if baseline.ok else None
+                    if obj:
+                        pending = narrow_params.targeted(best_src, fn["name"], profile["toolchain"], fn["target"] or b"", obj.code)
         empty = 0
         while time.monotonic() < deadline and best > 0 and not stop.is_set():
-            cand = mutate(cur_src if rng.random() < 0.85 else best_src, rng)
+            cand = pending.pop(0) if pending else mutate(cur_src if rng.random() < 0.85 else best_src, rng)
             if cand is None:
                 empty += 1
                 if empty > 200:  # nothing in it to rewrite
