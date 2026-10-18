@@ -48,6 +48,10 @@ CREATE INDEX IF NOT EXISTS idx_symbols_addr ON symbols(project_id, address);
 CREATE TABLE IF NOT EXISTS data_regions(
   project_id INTEGER NOT NULL, rom_offset INTEGER NOT NULL, size INTEGER NOT NULL, kind TEXT NOT NULL, why TEXT,
   PRIMARY KEY(project_id, rom_offset));
+-- banked lanes: what agents (or a person) established about the split, used when the game is split again
+CREATE TABLE IF NOT EXISTS corrections(
+  id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, kind TEXT NOT NULL, rom_offset INTEGER NOT NULL,
+  cpu INTEGER, count INTEGER NOT NULL DEFAULT 0, reason TEXT, agent_id INTEGER, created_at REAL, undone_at REAL);
 CREATE TABLE IF NOT EXISTS twin_misses(
   function_id INTEGER NOT NULL, source_hash TEXT NOT NULL, project_id INTEGER, at REAL, why TEXT,
   PRIMARY KEY(function_id, source_hash));

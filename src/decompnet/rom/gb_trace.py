@@ -241,7 +241,7 @@ class Tracer:
         """`paged`: whether the game maps banks at all (a first pass learns it: `mbc_writes`). Code entered from
         somewhere nothing was followed from (an interrupt handler) can't know what the window holds when it does;
         when it doesn't, the window keeps bank 1. `hints`: what a person or an agent established (`entries`
-        {flat: cpu}, `noreturn` {flat}, `data` [(flat, size)])."""
+        {flat: cpu}, `noreturn` {flat}, `data` [(flat, size)], `tables` [(flat, words)], `inline` {routine: bytes})."""
         self.data, self.size = data, len(data)
         self.kind = mapper(data)
         self.mask = bank_mask(self.size)
@@ -774,6 +774,15 @@ class Tracer:
         address. Every word up to the first that isn't a plausible function in the bank the code had mapped; the words
         are data."""
         f, out = self.found, {}
+        for tflat, n in self.hints.get("tables", []):  # what a person or an agent established: no guessing its end
+            for k in range(n):
+                at = tflat + 2 * k
+                if at + 1 >= self.size:
+                    break
+                word = self.data[at] | self.data[at + 1] << 8
+                if (cflat := self.resolve(word, tflat, None)) is not None and self.can_start(cflat):
+                    out.setdefault(cflat, (word, "table"))
+            f.tables[tflat] = max(n, f.tables.get(tflat, 0))
         tables = [(fr, table, bank, False) for fr, table, bank, callee in f.with_hl if callee in f.dispatchers]
         for from_flat, table, bank, inline in tables + f.indexed:
             if table < 0x0100:

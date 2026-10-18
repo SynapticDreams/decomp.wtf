@@ -219,6 +219,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "split_function": lambda net, agent, slug, function, at, new_name="":
         net.split_function(agent, slug, function, at, new_name),
     "merge_function": lambda net, agent, slug, function: net.merge_function(agent, slug, function),
+    "correct_split": lambda net, agent, slug, kind, at, reason="", count=0, function="", notes="":
+        net.correct_split(agent, slug, kind, at, reason or notes, count, function),
     "flag_for_review": lambda net, agent, slug, function, reason="", notes="":
         net.flag_for_review(agent, slug, function, reason or notes),
     "read_data": lambda net, agent, slug, what, length=64, unit="": (net.forks.read_data(agent, slug, what, length)
@@ -239,7 +241,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
         net.forks.split_file(agent, _fork(net, slug, "split_file"), path, at, new_name, data),
 }
 
-ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "merge_function"}
+ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "merge_function", "correct_split"}
 FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file"}
 
 
@@ -363,6 +365,15 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         code, joined or cut routines wrongly, or the code is something no C writes that the set-aside rules
         missed. Say why in a sentence. For a function that's just hard, use release_function with notes."""
         return await run(ctx, "flag_for_review", function=function, reason=reason)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def correct_split(ctx: Context, kind: str, at: str, reason: str, count: int = 0, function: str = "") -> str:
+        """Game Boy: tell the split what it got wrong about the game's code and data, with how you know (a sentence).
+        kind: data (count bytes at `at` aren't code), code (a function starts at `at`), table (count handler addresses
+        at `at`), operands (the routine at `at` reads count bytes after each call to it), noreturn (it never returns).
+        `at`: a function's name, NN:AAAA (bank and address, hex), or an address in `function`'s bank. Used when the
+        game is split again; a person sees each and can undo it."""
+        return await run(ctx, "correct_split", kind=kind, at=at, reason=reason, count=count, function=function)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def merge_function(ctx: Context, function: str) -> str:

@@ -86,6 +86,10 @@ BANKED_ARCHS = ("sm83", "z80", "mos6502")
 # What a banked platform's import needs, by CPU: the C toolchain, and for the Game Boy the two tools that split a ROM.
 # All free and pinned; the import installs whichever is missing.
 BANKED_TOOLS = {"sm83": ("gbdk-2020", "rgbds", "mgbdis"), "z80": ("gbdk-2020",), "mos6502": ("gbdk-2020",)}
+# the names mgbdis gives the Game Boy split's functions (and its vectors): a symbol file's names replace them
+_GENERATED = re.compile(r"^(?:Call|Func|Jump|jr)_[0-9a-f]{3}_[0-9a-f]{4}$|^RST_[0-9a-f]{2}$|Interrupt$|^Boot$")
+
+
 def _set_aside(meta: str | None) -> dict:
     """Why a function is set aside, for the page: a rule's reason, or an agent's for a person (`review`)."""
     m = json.loads(meta or "{}")
@@ -783,7 +787,11 @@ class RomNetwork(Network):
             raise NetworkError(f"the project's copy of the game ({cfg['rom']['file']}) isn't in its folder any more")
         lane = sms if arch == "z80" else nes if arch == "mos6502" else gb
         report: dict = {}
-        fns = lane.split(rom_path, root, log=log, report=report)
+        hints = self._hints(proj) if arch == "sm83" else None
+        if hints is not None:
+            fns = lane.split(rom_path, root, log=log, report=report, hints=hints)
+        else:
+            fns = lane.split(rom_path, root, log=log, report=report)
         old = self.store.all("SELECT * FROM functions WHERE project_id=?", proj["id"])
         by_off = {r["rom_offset"]: r for r in old if r["rom_offset"] is not None}
         kept, fresh = set(), []
@@ -808,7 +816,9 @@ class RomNetwork(Network):
                "data_after": sum(r[1] for r in regions),
                "bytes_before": sum(r["size"] or 0 for r in old),
                "bytes_after": sum((r["size"] or 0) for r in old if r["id"] in kept or r["status"] == "matched")
-               + sum(f.size for f in fresh)}
+               + sum(f.size for f in fresh),
+               "corrections": self.store.one("SELECT COUNT(*) AS n FROM corrections WHERE project_id=? AND undone_at IS "
+                                             "NULL", proj["id"])["n"]}
         if not apply:
             return out
         spans = [(f.rom, f.rom + len(f.code), f) for f in fresh] + [
@@ -1951,6 +1961,203 @@ class RomNetwork(Network):
             self._event(db, fn["project_id"], agent.id, "review", fn["name"])
         return (f"✅ {fn['name']} is set aside for a person to look at, with your reason. Claim the next one "
                 "(claim_function).")
+
+    #: corrections to the split an agent may make an hour (each with a reason), so it isn't a way round hard functions
+    CORRECTIONS_PER_HOUR = 10
+    #: what each kind of correction says, and what its `count` is (0: none)
+    CORRECTION_KINDS = {
+        "data": ("isn't code", "bytes"), "code": ("is where a function starts", ""),
+        "table": ("is a table of handler addresses", "entries"),
+        "operands": ("is a routine that reads bytes after its call", "bytes after each call"),
+        "noreturn": ("is a routine that never returns", ""),
+    }
+
+    def _banked_at(self, proj, at: str, function: str | None = None) -> tuple[int, int]:
+        """(ROM offset, CPU address) of a place in a Game Boy game: a function's name, `NN:AAAA` (its bank and
+        address), or an address in the bank of `function` (or in bank 0, or one only one function has)."""
+        text = str(at or "").strip()
+        row = self.store.one("SELECT rom_offset, vram FROM functions WHERE project_id=? AND name=?", proj["id"], text)
+        if row is not None and row["rom_offset"] is not None:
+            return row["rom_offset"], row["vram"]
+        if (m := re.fullmatch(r"(?:0x|\$)?([0-9A-Fa-f]{1,3}):(?:0x|\$)?([0-9A-Fa-f]{1,4})", text)):
+            bank, cpu = int(m.group(1), 16), int(m.group(2), 16)
+        elif (m := re.fullmatch(r"(?:0x|\$)?([0-9A-Fa-f]{1,4})", text)):
+            cpu = int(m.group(1), 16)
+            bank = 0 if cpu < 0x4000 else None
+            if bank is None and function:
+                fn = self._function(function, proj["slug"])
+                bank = (fn["rom_offset"] or 0) // 0x4000 if fn["rom_offset"] is not None else None
+            if bank is None:
+                rows = self.store.all("SELECT rom_offset FROM functions WHERE project_id=? AND vram<=? AND vram+size>?",
+                                      proj["id"], cpu, cpu)
+                banks = {r["rom_offset"] // 0x4000 for r in rows if r["rom_offset"] is not None}
+                if len(banks) != 1:
+                    raise NetworkError(f"banks share ${cpu:04X}: say which, as NN:{cpu:04X} (NN the bank, in hex)")
+                bank = banks.pop()
+        else:
+            raise NetworkError(f"`{at}` is not a function, NN:AAAA (a bank and an address) or an address")
+        if cpu >= 0x8000 or (cpu < 0x4000 and bank not in (0, None)) or (cpu >= 0x4000 and bank == 0):
+            raise NetworkError(f"{bank:02X}:{cpu:04X} isn't in the ROM: bank 0 is at $0000-$3FFF, every other bank at "
+                               "$4000-$7FFF")
+        flat = cpu if cpu < 0x4000 else bank * 0x4000 + cpu - 0x4000
+        if flat >= int(self.cfg(proj)["rom"].get("size") or 0):
+            raise NetworkError(f"{bank:02X}:{cpu:04X} is past the end of the ROM")
+        return flat, cpu
+
+    def correct_split(self, agent: Agent, project: str | None, kind: str, at: str, reason: str, count: int = 0,
+                      function: str = "") -> str:
+        """An agent says what the split got wrong about the game's code and data (Game Boy): bytes that aren't code, a
+        function start, a table of handler addresses, a routine that reads bytes after its call, one that never
+        returns. Kept with its reason for a person to see (and undo), and used when the game is split again."""
+        if self._link(project) is not None:
+            raise NetworkError("in a room, leave a note (add_note): the room's host splits the game")
+        proj = self._project(project)
+        if (self.cfg(proj).get("arch") or "").lower() != "sm83" or self.fork_slug(proj["slug"]):
+            raise NetworkError("corrections to the split are for Game Boy projects for now: leave a note (add_note)")
+        kind = str(kind or "").strip().lower()
+        if kind not in self.CORRECTION_KINDS:
+            raise NetworkError(f"kind is one of {', '.join(self.CORRECTION_KINDS)}")
+        reason = " ".join(str(reason or "").split())
+        if len(reason) < 20:
+            raise NetworkError("say how you know, in a sentence: what reads or calls it, what it holds")
+        count = int(count or 0)
+        limits = {"data": (1, 0x4000), "table": (1, 128), "operands": (1, 8)}
+        if kind in limits and not limits[kind][0] <= count <= limits[kind][1]:
+            raise NetworkError(f"count: the {self.CORRECTION_KINDS[kind][1]}, {limits[kind][0]} to {limits[kind][1]}")
+        flat, cpu = self._banked_at(proj, at, function or None)
+        if kind == "data":
+            if flat // 0x4000 != (flat + count - 1) // 0x4000:
+                raise NetworkError("data stays in its bank: mark each bank's part on its own")
+            held = self.store.one("SELECT name FROM functions WHERE project_id=? AND status='matched' AND rom_offset<? "
+                                  "AND rom_offset+size>?", proj["id"], flat + count, flat)
+            if held is not None:
+                raise NetworkError(f"{held['name']} is matched there: its bytes are code")
+        recent = self.store.one("SELECT COUNT(*) AS n FROM events WHERE agent_id=? AND kind='correction' AND created_at>?",
+                                agent.id, time.time() - 3600)["n"]
+        if recent >= self.CORRECTIONS_PER_HOUR:
+            raise NetworkError(f"you made {recent} corrections in the last hour: leave a note (add_note) for the rest")
+        where = f"{flat // 0x4000:02X}:{cpu:04X}"
+        what = f"{where} {self.CORRECTION_KINDS[kind][0]}" + (f" ({count} {self.CORRECTION_KINDS[kind][1]})" if count else "")
+        owner = self.store.one("SELECT id FROM functions WHERE project_id=? AND rom_offset<=? AND rom_offset+size>?",
+                               proj["id"], flat, flat)
+        now = time.time()
+        with self.store.tx() as db:
+            db.execute("INSERT INTO corrections(project_id,kind,rom_offset,cpu,count,reason,agent_id,created_at) "
+                       "VALUES(?,?,?,?,?,?,?,?)", (proj["id"], kind, flat, cpu, count, reason[:1000], agent.id, now))
+            db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
+                       (proj["id"], owner["id"] if owner else None, agent.id, f"correction: {what}: {reason}", now))
+            self._event(db, proj["id"], agent.id, "correction", what)
+        return (f"✅ noted: {what}. It's used when the game is split again (a person does that from Settings, and can "
+                "undo it). Until then, work on as it is, or release the function with a note.")
+
+    def corrections(self, slug: str) -> dict:
+        """The corrections to a banked project's split, newest first, and its symbol file (for Settings)."""
+        proj = self._project(slug)
+        rows = self.store.all("SELECT c.*, a.name AS agent FROM corrections c LEFT JOIN agents a ON a.id=c.agent_id "
+                              "WHERE c.project_id=? ORDER BY c.id DESC LIMIT 500", proj["id"])
+        out = [{"id": r["id"], "kind": r["kind"], "where": f"{r['rom_offset'] // 0x4000:02X}:{r['cpu'] or 0:04X}",
+                "count": r["count"], "unit": self.CORRECTION_KINDS.get(r["kind"], ("", ""))[1],
+                "says": self.CORRECTION_KINDS.get(r["kind"], ("", ""))[0], "reason": r["reason"], "by": r["agent"],
+                "at": r["created_at"], "undone": r["undone_at"] is not None} for r in rows]
+        return {"corrections": out, "symbol_file": self.symbol_file(slug)}
+
+    def undo_correction(self, slug: str, cid: int) -> dict:
+        proj = self._project(slug)
+        with self.store.tx() as db:
+            if not db.execute("UPDATE corrections SET undone_at=? WHERE id=? AND project_id=? AND undone_at IS NULL",
+                              (time.time(), int(cid), proj["id"])).rowcount:
+                raise NetworkError("no such correction, or it's undone already")
+        return self.corrections(slug)
+
+    def _hints(self, proj) -> dict:
+        """The project's corrections, as the split takes them (rom/gb_trace.Tracer)."""
+        hints: dict = {"entries": {}, "data": [], "tables": [], "inline": {}, "noreturn": set()}
+        for r in self.store.all("SELECT * FROM corrections WHERE project_id=? AND undone_at IS NULL ORDER BY id",
+                                proj["id"]):
+            flat = r["rom_offset"]
+            if r["kind"] == "data":
+                hints["data"].append((flat, r["count"]))
+            elif r["kind"] == "code":
+                hints["entries"][flat] = r["cpu"]
+            elif r["kind"] == "table":
+                hints["tables"].append((flat, r["count"]))
+            elif r["kind"] == "operands":
+                hints["inline"][flat] = r["count"]
+            elif r["kind"] == "noreturn":
+                hints["noreturn"].add(flat)
+        return hints
+
+    _SYM_LINE = re.compile(r"^([0-9A-Fa-f]{1,3}):([0-9A-Fa-f]{4})\s+([A-Za-z_][A-Za-z0-9_@#$]*(?:\.[A-Za-z0-9_@#$]+)?|"
+                           r"\.(?:code|data|text|byt|asc|padding):[0-9A-Fa-f]{1,5}(?::[0-9A-Za-z,]{1,40})?)\s*$")
+
+    def _sym_path(self, proj) -> Path:
+        cfg = self.cfg(proj)
+        return (Path(proj["root"]) / cfg["rom"]["file"]).with_suffix(".sym")
+
+    def symbol_file(self, slug: str) -> dict | None:
+        path = self._sym_path(self._project(slug))
+        if not path.is_file():
+            return None
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        cfg = self.cfg(self._project(slug))
+        return {"names": sum(1 for x in lines if x.strip() and not x.split()[-1].startswith(".") and not x.startswith(";")),
+                "blocks": sum(1 for x in lines if x.strip() and x.split()[-1].startswith(".")),
+                "from": cfg.get("symbol_file", {}).get("from", path.name)}
+
+    def import_symbols(self, slug: str, text: str, name: str = "") -> dict:
+        """A symbol file the user chose (RGBDS / mgbdis `bank:address Name` lines, with `.data:length` style blocks),
+        for this project only: kept next to its copy of the game, so splitting again uses its names and blocks, and
+        functions with automatic names at its labels are named after them. Only well-formed lines are kept (comments,
+        headers and anything else, a refusal test string included, never reach an agent); nothing is shared."""
+        proj = self._project(slug)
+        if (self.cfg(proj).get("arch") or "").lower() != "sm83" or self.fork_slug(slug):
+            raise NetworkError("importing a symbol file is for Game Boy projects for now")
+        if slug in self.links:
+            raise NetworkError("a room member's copy follows its host: the host imports it")
+        if len(text or "") > 8 << 20:
+            raise NetworkError("that file is over 8 MB: a symbol file is much smaller")
+        kept, dropped = [], 0
+        for line in str(text or "").splitlines():
+            line = line.split(";", 1)[0].strip()
+            if not line:
+                continue
+            if (m := self._SYM_LINE.match(line)) and len(m.group(3)) <= 64:
+                kept.append(f"{int(m.group(1), 16):02x}:{m.group(2).lower()} {m.group(3)}")
+            else:
+                dropped += 1
+        if not kept:
+            raise NetworkError("no `bank:address Name` lines in that file: is it an RGBDS, BGB or mgbdis symbol file?")
+        path = self._sym_path(proj)
+        path.write_text("; imported into decomp.wtf for this project only\n" + "\n".join(kept) + "\n", encoding="utf-8")
+        self._update_cfg(slug, lambda cfg: cfg.update(symbol_file={"from": Path(name).name or path.name,
+                                                                     "at": time.time()}))
+        renamed = 0
+        you, _ = self.local_agent("you")
+        names = {}
+        for line in kept:
+            loc, label = line.split()
+            if not label.startswith(".") and "." not in label:
+                bank, cpu = (int(x, 16) for x in loc.split(":"))
+                names[(bank, cpu)] = label
+        taken = {r["name"] for r in self.store.all("SELECT name FROM functions WHERE project_id=?", proj["id"])}
+        for r in self.store.all("SELECT name, rom_offset, vram FROM functions WHERE project_id=?", proj["id"]):
+            label = names.get(((r["rom_offset"] or 0) // 0x4000, r["vram"] or 0))
+            if label and label not in taken and (AUTO_NAME.match(r["name"]) or _GENERATED.search(r["name"])):
+                try:
+                    if self.rename_symbol(you, slug, r["name"], label, "from the imported symbol file").startswith("✅"):
+                        taken.add(label)
+                        renamed += 1
+                except NetworkError:
+                    pass
+        with self.store.tx() as db:
+            self._event(db, proj["id"], you.id, "import", f"symbol file: {len(kept)} lines kept, {dropped} left out")
+        return {"kept": len(kept), "dropped": dropped, "renamed": renamed, "symbol_file": self.symbol_file(slug)}
+
+    def remove_symbol_file(self, slug: str) -> dict:
+        path = self._sym_path(self._project(slug))
+        path.unlink(missing_ok=True)
+        self._update_cfg(slug, lambda cfg: cfg.pop("symbol_file", None))
+        return self.corrections(slug)
 
     def give_to_agents(self, project: str | None, function: str) -> dict:
         """A person gives a set-aside function back to agents: a set-aside rule was wrong about it, or a review found
