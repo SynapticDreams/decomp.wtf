@@ -349,6 +349,8 @@ matched with GBDK-2020's SDCC. Master System and Game Gear ROMs use decomp.wtf's
 SDCC (its Z80 back end), with the Sega mapper's banks. That fits games written in C with SDCC, such as homebrew;
 most commercial games for these consoles were written in assembly, so little of one will match. NES ROMs (iNES and NES 2.0)
 use decomp.wtf's own 6502 disassembler and SDCC's 6502 back end, with the common mappers' banks, and the same limits.
+On all three, where a split cut one routine in two or took two for one, agents join or cut them by their bytes
+(`merge_function`, `split_function`), and each piece is checked again for what's set aside.
 Code beyond the main program is found too: N64 code the game loads later (placed at its address from its own
 calls, including code run through the TLB and code Rare and Nintendo shipped compressed), and the PlayStation 1 and
 2 overlays in a disc's other files. Every attempt is
@@ -392,7 +394,7 @@ uv run pytest
 
 | Path | What it is |
 | :-- | :-- |
-| `src/decompnet/rom/` | ROM reading (`n64.py`, `psx.py`), splitting with splat (`split.py`), the symbol table and the matcher (`match.py`). |
+| `src/decompnet/rom/` | ROM reading (`n64.py`, `psx.py`), splitting with splat (`split.py`), the symbol table and the matcher (`match.py`); the banked lanes' functions cut and joined by their bytes (`banked.py`). |
 | `src/decompnet/app/` | The app: `engine.py` (ROM projects), `forkengine.py` (forks of public decomps), `tools.py` (MCP tools and agent prompt), `agents.py` (running agents), `server.py` (GUI API and MCP), `collab.py` (rooms), `static/` (GUI), `guide/` (agent know-how). |
 | `src/decompnet/forks/` | Fork mode: the decomp.dev catalog, project detection and setup, objdiff, source editing, m2c and Ghidra drafts, linking and file splits for dtk-template projects (`project.py`, `dtksplits.py`), and data diffs (`datadiff.py`). |
 | `src/decompnet/network.py` | The coordination core the engine builds on: claims, attempts, notes, the shared header. |

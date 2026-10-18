@@ -41,6 +41,11 @@ instruction, `brk` (what zero bytes decode to), padding, and a stretch the split
 those, say so in a note and release it. `__naked` is refused: it leaves out the function's return, so it can only
 reproduce such a piece, and a match has to be a whole function from C.
 
+The split's boundaries can be wrong both ways. When a function you're given is two routines (one ends, the next
+starts), `split_function(function, at=<CPU address where the second starts>)` cuts it. When it's half of one (it runs
+on into the next function or jumps into it, or the one before runs on into it, and nothing else calls the second
+half), `merge_function(function)` joins them. Each piece is checked again for what's set aside.
+
 ## What SDCC does on the 6502
 
 - **Arguments:** the first byte argument is in A and the second in X; a 16-bit first argument is A (low) and X (high).

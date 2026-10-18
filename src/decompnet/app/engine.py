@@ -1124,6 +1124,8 @@ class RomNetwork(Network):
             raise NetworkError("mapped function boundaries belong to the profile; v1 preserves existing targets")
         if fn["status"] == "matched":
             raise NetworkError(f"{fn['name']} is matched; it can't be split")
+        if (arch := (self.cfg(proj).get("arch") or "").lower()) in BANKED_ARCHS:
+            return self._split_banked(agent, proj, arch, fn, str(at), new_name)
         m = _ADDRESS.match(str(at).strip())
         if not m:
             raise NetworkError("`at` must be an address like 0x80001234")
@@ -1159,6 +1161,211 @@ class RomNetwork(Network):
         self._xrefs.pop(proj["id"], None)
         return (f"✅ split: {fn['name']} is now {len(head.lines)} instructions; {new_name} at 0x{addr:08X} has "
                 f"{len(tail.lines)}. Continue with {fn['name']} (get_function shows its new assembly).")
+
+    # -- the banked lanes (Game Boy, Master System, NES): functions cut and joined by their bytes
+
+    def _lane(self, proj, arch: str | None = None):
+        from ..rom import banked
+
+        cfg = self.cfg(proj)
+        return banked.Lane(arch or (cfg.get("arch") or "").lower(), cfg.get("rom") or {})
+
+    def _banked_status(self, arch: str, code: bytes, cpu: int, meta: dict) -> tuple[str, str]:
+        """(status, meta JSON) for a banked function's (new) bytes: set aside when the set-aside rules say no C writes
+        them (twins.PIECES, as the pass that runs when agents start would), else open."""
+        from .twins import PIECES
+
+        reason, longest = PIECES[arch]
+        why = reason(code, cpu, capped=len(code) >= longest)
+        meta = {k: v for k, v in meta.items() if k != "asm_code"}
+        if why:
+            meta["asm_code"] = why
+        return ("asm" if why else "open"), json.dumps(meta)
+
+    def _banked_cut(self, db, proj, lane, fn, off: int, new_name: str) -> tuple[str, str]:
+        """Cut a banked function's bytes in two at byte `off` (an instruction's start), inside `db`'s transaction: the
+        head keeps the row (its best source stays, as a start; its score is for other bytes), the tail is a new
+        function. Each is judged again by the set-aside rules. Returns their statuses."""
+        code, cpu, flat = bytes(fn["target"]), fn["vram"] or 0, fn["rom_offset"] or 0
+        head, tail = code[:off], code[off:]
+        hs, hmeta = self._banked_status(lane.arch, head, cpu, json.loads(fn["meta"] or "{}"))
+        ts, tmeta = self._banked_status(lane.arch, tail, cpu + off, {"split_from": fn["name"]})
+        db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
+                   "status=?, meta=? WHERE id=?", (len(head), len(lane.insns(head, cpu)), head,
+                                                   json.dumps(lane.refs(head, cpu, flat)), lane.listing(head, cpu),
+                                                   hs, hmeta, fn["id"]))
+        db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,status,"
+                   "meta) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   (proj["id"], new_name, len(tail), len(lane.insns(tail, cpu + off)), tail,
+                    json.dumps(lane.refs(tail, cpu + off, flat + off)), lane.listing(tail, cpu + off), None, fn["unit"],
+                    cpu + off, flat + off, ts, tmeta))
+        db.execute("UPDATE symbols SET size=? WHERE project_id=? AND name=?", (len(head), proj["id"], fn["name"]))
+        db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
+                   (proj["id"], new_name, cpu + off, len(tail), "func"))
+        if hs == "asm":  # nobody works on what no C writes
+            db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))
+        return hs, ts
+
+    def _banked_join(self, db, proj, lane, fn, nxt) -> str:
+        """Join `nxt` (the function right after `fn` in the ROM) onto `fn`, inside `db`'s transaction: `fn` keeps the
+        row, `nxt`'s notes move to it, and `nxt` is gone (its attempts stay in the history). Returns `fn`'s status."""
+        cpu, flat = fn["vram"] or 0, fn["rom_offset"] or 0
+        code = bytes(fn["target"]) + bytes(nxt["target"])
+        status, meta = self._banked_status(lane.arch, code, cpu, json.loads(fn["meta"] or "{}"))
+        db.execute("UPDATE functions SET size=?, n_insns=?, target=?, relocs=?, asm=?, seed=NULL, best_score=NULL, "
+                   "status=?, meta=? WHERE id=?", (len(code), len(lane.insns(code, cpu)), code,
+                                                   json.dumps(lane.refs(code, cpu, flat)), lane.listing(code, cpu),
+                                                   status, meta, fn["id"]))
+        db.execute("UPDATE notes SET function_id=? WHERE function_id=?", (fn["id"], nxt["id"]))
+        db.execute("DELETE FROM claims WHERE function_id=?", (nxt["id"],))
+        db.execute("DELETE FROM twin_misses WHERE function_id=?", (nxt["id"],))
+        db.execute("DELETE FROM functions WHERE id=?", (nxt["id"],))
+        db.execute("DELETE FROM symbols WHERE project_id=? AND name=?", (proj["id"], nxt["name"]))
+        db.execute("UPDATE symbols SET size=? WHERE project_id=? AND name=?", (len(code), proj["id"], fn["name"]))
+        if status == "asm":
+            db.execute("DELETE FROM claims WHERE function_id=?", (fn["id"],))
+        return status
+
+    def _layout_changed(self, project_id: int) -> None:
+        for cache in (self._xrefs, self._ops, self._syms):
+            cache.pop(project_id, None)
+        with self.twins._lock:
+            self.twins._prints.pop(project_id, None)
+
+    def _free_name(self, project_id: int, name: str) -> bool:
+        return bool(IDENT.match(name)) and self.store.one(
+            "SELECT 1 FROM functions WHERE project_id=? AND name=? UNION ALL SELECT 1 FROM symbols WHERE project_id=? "
+            "AND name=?", project_id, name, project_id, name) is None
+
+    def _split_banked(self, agent: Agent, proj, arch: str, fn, at: str, new_name: str) -> str:
+        m = re.match(r"^(?:0x|\$)?([0-9A-Fa-f]{1,8})$", at.strip())
+        if not m:
+            raise NetworkError("`at` must be the CPU address where the second function starts, like 0x4abc")
+        addr = int(m.group(1), 16)
+        lane = self._lane(proj, arch)
+        code, cpu = bytes(fn["target"]), fn["vram"] or 0
+        off = addr - cpu
+        if not 0 < off < len(code):
+            raise NetworkError(f"0x{addr:04x} isn't inside {fn['name']} (0x{cpu:04x}, {len(code)} bytes)")
+        if addr not in {a for a, _t, _n in lane.insns(code, cpu)}:
+            raise NetworkError(f"0x{addr:04x} is in the middle of an instruction: cut where one starts (get_function "
+                               "shows each instruction's address)")
+        new_name = (new_name or lane.name((fn["rom_offset"] or 0) + off)).strip()
+        if not self._free_name(proj["id"], new_name):
+            raise NetworkError(f"`{new_name}` is not a free C identifier")
+        with self.store.tx() as db:
+            hs, ts = self._banked_cut(db, proj, lane, fn, off, new_name)
+            self._event(db, proj["id"], agent.id, "split", f"{fn['name']} / {new_name}")
+        self._layout_changed(proj["id"])
+        aside = [n for n, s in ((fn["name"], hs), (new_name, ts)) if s == "asm"]
+        return (f"✅ split: {fn['name']} is now {off} bytes; {new_name} at 0x{addr:04x} has {len(code) - off}."
+                + (f" Set aside: {', '.join(aside)} (no C writes code like that, as the set-aside rules see it)."
+                   if aside else "")
+                + (f" Continue with {fn['name']} (get_function shows its new assembly)." if hs == "open" else ""))
+
+    def merge_function(self, agent: Agent, project: str | None, function: str) -> str:
+        """Join `function` with its neighbour in the ROM when the split cut one routine in two: it runs on into the
+        next function (or jumps into it), or the one before runs on (or jumps) into it, which is how the second half
+        an agent is given looks. Only on the banked lanes (Game Boy, Master System, NES) for now, and never when
+        something else calls or jumps to the second half: then it's a function of its own."""
+        self._rom_only(project, "merge_function")
+        link = self._link(project)
+        if link is not None:
+            name = self._function(function, project)["name"]
+            text = link.call("/collab/merge", agent, function=name)
+            if text.startswith("✅"):
+                link.sync()
+            return text
+        fn = self._function(function, project)
+        proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        arch = (self.cfg(proj).get("arch") or "").lower()
+        if arch not in BANKED_ARCHS:
+            raise NetworkError("merge_function is for Game Boy, Master System and NES projects for now")
+        lane = self._lane(proj, arch)
+        flat = fn["rom_offset"] or 0
+
+        def into(a, b) -> bool:  # does `a`'s code carry on into `b` (the function right after it)?
+            code, cpu = bytes(a["target"]), a["vram"] or 0
+            return lane.falls_through(code, cpu) or lane.branches_into(code, cpu, b["vram"], b["vram"] + (b["size"] or 0))
+
+        nxt = self.store.one("SELECT * FROM functions WHERE project_id=? AND rom_offset=?", proj["id"], flat + (fn["size"] or 0))
+        prev = self.store.one("SELECT * FROM functions WHERE project_id=? AND rom_offset<? AND rom_offset+size=?",
+                              proj["id"], flat, flat)
+        nxt = nxt if nxt is not None and lane.bank(nxt["rom_offset"]) == lane.bank(flat) else None
+        prev = prev if prev is not None and lane.bank(prev["rom_offset"]) == lane.bank(flat) else None
+        if nxt is None and prev is None:
+            raise NetworkError(f"no function sits right next to {fn['name']} in its bank: nothing to join")
+        pair = (fn, nxt) if nxt is not None and into(fn, nxt) else (prev, fn) if prev is not None and into(prev, fn) else None
+        if pair is None:
+            raise NetworkError(f"{fn['name']} and the functions next to it are separate: each ends before the next "
+                               "starts, and none jumps into another. They're functions of their own")
+        first, second = pair
+        for r in pair:
+            if r["status"] == "matched":
+                raise NetworkError(f"{r['name']} is matched; it can't be joined")
+            held = self.store.one("SELECT a.name FROM claims c JOIN agents a ON a.id=c.agent_id WHERE c.function_id=? "
+                                  "AND c.agent_id<>?", r["id"], agent.id)
+            if held is not None:
+                raise NetworkError(f"{r['name']} is being worked on by {held['name']}")
+        callers = []
+        for r in self.store.all("SELECT name, rom_offset, relocs FROM functions WHERE project_id=? AND id NOT IN (?, ?) "
+                                "AND relocs LIKE ?", proj["id"], first["id"], second["id"], f"%{second['vram']}]%"):
+            for ref in json.loads(r["relocs"] or "[]"):
+                if ref[2] == second["vram"] and lane.flat_of(ref[2], (r["rom_offset"] or 0) + ref[0]) == second["rom_offset"]:
+                    callers.append(r["name"])
+                    break
+        if callers:
+            raise NetworkError(f"{second['name']} is called or jumped to from {', '.join(callers[:3])}"
+                               f"{' and more' if len(callers) > 3 else ''}: it's a function of its own")
+        with self.store.tx() as db:
+            status = self._banked_join(db, proj, lane, first, second)
+            self._event(db, proj["id"], agent.id, "merge", f"{second['name']} into {first['name']}")
+        self._layout_changed(proj["id"])
+        size = (first["size"] or 0) + (second["size"] or 0)
+        return (f"✅ merged: {second['name']} is part of {first['name']} now ({size} bytes)."
+                + (" Set aside: no C writes code like that, as the set-aside rules see it (it may run on into the next "
+                   "function too: merge_function again)." if status == "asm" else
+                   f" Continue with {first['name']}: claim_function(\"{first['name']}\") (get_function shows its "
+                   "assembly)."))
+
+    def _mirror_banked_layout(self, proj, functions: list[dict]) -> None:
+        """A room member's copy of a banked game follows the host's joins and cuts, by ROM offset (CPU addresses are
+        shared by banks). Matched functions are never changed."""
+        host = {int(f["rom_offset"]): f for f in functions if f.get("rom_offset") is not None}
+        if not host:
+            return
+        lane = self._lane(proj)
+        pid = proj["id"]
+
+        def local() -> dict:
+            return {r["rom_offset"]: r for r in self.store.all("SELECT * FROM functions WHERE project_id=?", pid)}
+
+        here = local()
+        for off, f in sorted(host.items()):  # joins: one of the host's covers several of ours
+            row = here.get(off)
+            while row is not None and row["status"] != "matched" and (row["size"] or 0) < int(f["size"] or 0):
+                nxt = here.get(off + (row["size"] or 0))
+                if nxt is None or nxt["rom_offset"] in host or nxt["status"] == "matched":
+                    break
+                with self.store.tx() as db:
+                    self._banked_join(db, proj, lane, row, nxt)
+                here = local()
+                row = here.get(off)
+        for off, f in sorted(host.items()):  # cuts: one of the host's starts inside one of ours
+            if off in here:
+                continue
+            owner = next((r for r in here.values() if r["rom_offset"] is not None
+                          and r["rom_offset"] < off < r["rom_offset"] + (r["size"] or 0)), None)
+            if owner is None or owner["status"] == "matched":
+                continue
+            cut = off - owner["rom_offset"]
+            if owner["vram"] + cut not in {a for a, _t, _n in lane.insns(bytes(owner["target"]), owner["vram"] or 0)}:
+                continue
+            name = f["name"] if self._free_name(pid, f["name"]) else lane.name(off)
+            with self.store.tx() as db:
+                self._banked_cut(db, proj, lane, owner, cut, name)
+            here = local()
+        self._layout_changed(pid)
 
     def _split_gba(self, agent: Agent, proj, fn, addr: int, new_name: str, syms: SymbolTable) -> str:
         """Cut a GBA function's bytes and assembly in two at `addr` (Thumb: a halfword boundary)."""

@@ -1619,6 +1619,8 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
                           s(old=st("current name", True), new=st("new name", True), message=st("why"))),
         "split_function": ("Split a merged function at an address.",
                            s(function=st("function", True), at=st("address like 0x80001234", True), new_name=st("name"))),
+        "merge_function": ("Join a function with its neighbour when the split cut one routine in two.",
+                           s(function=st("function", True))),
         "read_data": ("Hex dump of the original's data at an address or symbol.", s(what=st("address or symbol", True),
                                                                                     length=it("bytes, up to 512"))),
         "list_functions": ("List functions by status.", s(status=st("open | matched | all"), limit=it("max rows"))),

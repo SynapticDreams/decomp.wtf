@@ -568,6 +568,10 @@ def host_app(net, rooms: dict[str, Room], tunnel: bool = False) -> Starlette:
         return {"text": net.split_function(agent, room.slug, str(d.get("function", "")), str(d.get("at", "")),
                                            str(d.get("new_name", "")))}
 
+    def merge(room, member, d):
+        agent = room.agent_for(member, d.get("agent"))
+        return {"text": net.merge_function(agent, room.slug, str(d.get("function", "")))}
+
     def note(room, member, d):
         agent = room.agent_for(member, d.get("agent"))
         return {"text": net.add_note(agent, room.slug, str(d.get("text", "")), d.get("function") or None)}
@@ -630,6 +634,7 @@ def host_app(net, rooms: dict[str, Room], tunnel: bool = False) -> Starlette:
         Route("/collab/context", endpoint(context), methods=["POST"]),
         Route("/collab/rename", endpoint(rename), methods=["POST"]),
         Route("/collab/split", endpoint(split), methods=["POST"]),
+        Route("/collab/merge", endpoint(merge), methods=["POST"]),
         Route("/collab/note", endpoint(note), methods=["POST"]),
         Route("/collab/leave", endpoint(leave), methods=["POST"]),
         Route("/collab/edit", endpoint(edit), methods=["POST"]),
