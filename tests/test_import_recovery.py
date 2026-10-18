@@ -159,10 +159,10 @@ def test_importing_a_game_boy_rom_installs_the_toolchain_and_the_splitter(tmp_pa
     assert calls == ["gbdk-2020", "rgbds", "mgbdis"]
 
 
-def test_importing_a_master_system_rom_installs_only_the_toolchain(tmp_path, tools, monkeypatch):
+def test_importing_a_master_system_rom_installs_the_toolchain_and_its_assembler(tmp_path, tools, monkeypatch):
     calls = _fake_installer(monkeypatch)
     _import(RomNetwork(tmp_path / "d.db", tmp_path), SMS, "game.sms")
-    assert calls == ["gbdk-2020"]
+    assert calls == ["gbdk-2020", "wla-dx"]  # (WLA-DX: documented routines and the export)
 
 
 def test_a_tool_that_cannot_be_installed_does_not_stop_the_import(tmp_path, tools, monkeypatch):
