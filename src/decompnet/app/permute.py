@@ -35,6 +35,8 @@ class State:
     variants: int = 0
     improved: int = 0
     matched: int = 0
+    failed: int = 0  # rewrites that didn't compile (or define the function): many means a lane the rewrites don't suit
+    last_error: str = ""  # the last one's first line
     current: str = ""
     started_at: float = field(default_factory=time.time)
     stop: threading.Event = field(default_factory=threading.Event)
@@ -44,7 +46,6 @@ class Permuter:
     def __init__(self, net):
         self.net = net
         self.jobs: dict[str, State] = {}
-        self._turns: dict[int, int] = {}  # function id -> turns spent on it
 
     def status(self, slug: str) -> dict | None:
         st = self.jobs.get(slug)
@@ -66,11 +67,22 @@ class Permuter:
             st.stop.set()
 
     def candidates(self, proj, limit: int = 20) -> list:
-        return [r for r in self.net.store.all(
+        """The project's near misses, closest first, that the permuter hasn't spent its turns on at their best score
+        (filtered before the limit: spent ones mustn't hide the rest)."""
+        return self.net.store.all(
             "SELECT * FROM functions WHERE project_id=? AND status='open' AND best_source IS NOT NULL "
             "AND best_score > 0 AND best_score <= n_insns * 100 * ? AND n_insns <= 400 "
+            "AND (permuter_best IS NULL OR best_score < permuter_best OR permuter_turns < ?) "
             "AND id NOT IN (SELECT function_id FROM claims) ORDER BY CAST(best_score AS REAL) / (n_insns * 100) LIMIT ?",
-            proj["id"], NEAR, limit * 4) if self._turns.get(r["id"], 0) < MAX_TURNS][:limit]
+            proj["id"], NEAR, MAX_TURNS, limit)
+
+    def _spend_turn(self, fn) -> int:
+        """Count a turn on `fn`, at its best score now (a better best since starts the count over). The count."""
+        with self.net.store.tx() as db:
+            db.execute("UPDATE functions SET permuter_turns = CASE WHEN permuter_best IS NULL OR best_score < "
+                       "permuter_best THEN 1 ELSE permuter_turns + 1 END, permuter_best = best_score WHERE id=?",
+                       (fn["id"],))
+            return db.execute("SELECT permuter_turns FROM functions WHERE id=?", (fn["id"],)).fetchone()[0]
 
     def _loop(self, slug: str, st: State) -> None:
         agent, _ = self.net.local_agent("permuter")
@@ -92,9 +104,9 @@ class Permuter:
                 for fn in todo:
                     if st.stop.is_set():
                         break
-                    self._turns[fn["id"]] = self._turns.get(fn["id"], 0) + 1
+                    turn = self._spend_turn(fn)
                     try:
-                        self._permute(agent, proj, fn, st)
+                        self._permute(agent, proj, fn, st, turn)
                     except Exception as e:  # one odd function must not stop the rest
                         log.info("permuter: %s: %s", fn["name"], e)
         finally:
@@ -114,12 +126,12 @@ class Permuter:
         with self.net.store.tx() as db:
             db.execute("DELETE FROM claims WHERE function_id=? AND agent_id=?", (fn["id"], agent.id))
 
-    def _permute(self, agent, proj, fn, st: State) -> None:
+    def _permute(self, agent, proj, fn, st: State, turn: int = 1) -> None:
         if not self._hold(agent, fn):
             return
         st.current, st.tried = fn["name"], st.tried + 1
         try:
-            self._climb(agent, proj, fn, st, SECONDS, random.Random(f"{fn['id']}-{self._turns.get(fn['id'])}"), st.stop)
+            self._climb(agent, proj, fn, st, SECONDS, random.Random(f"{fn['id']}-{turn}"), st.stop)
         finally:
             self._let_go(agent, fn)
 
@@ -150,7 +162,7 @@ class Permuter:
                 continue
             empty = 0
             st.variants += 1
-            score = self._score(agent, proj, fn, cand, best, fork)
+            score = self._score(agent, proj, fn, cand, best, fork, st)
             if score is None:
                 continue
             if score < best:
@@ -164,17 +176,25 @@ class Permuter:
                 cur, cur_src = score, cand
         return best
 
-    def _score(self, agent, proj, fn, source: str, best: int, fork: str | None) -> int | None:
-        """A variant's score; recorded (as the function's best attempt, or its match) only when it beats `best`."""
+    def _score(self, agent, proj, fn, source: str, best: int, fork: str | None, st: State | None = None) -> int | None:
+        """A variant's score; recorded (as the function's best attempt, or its match) only when it beats `best`.
+        A variant that doesn't compile is counted in `st` with its error: the permuter's rewrites are C a compiler
+        may not take (SDCC's dialect), and that should show, not pass in silence."""
         if fork:
             res = self.net.forks.attempt(agent, fork, fn["name"], source, keep=False, quiet=best)
             return res.get("score")
         ctx = self.net._context(proj["id"], fn["unit"])
         result = self.net._compile(proj, ctx["header"], source)
         if not result.ok:
+            if st is not None:
+                st.failed += 1
+                st.last_error = next((ln.strip() for ln in (result.log or "").splitlines() if ln.strip()), "")[:200]
             return None
         cand, verdict, _ = self.net._evaluate(fn, proj, result.obj)
         if cand is None:
+            if st is not None:
+                st.failed += 1
+                st.last_error = f"the build has no {fn['name']}"
             return None
         d = scoring.diff(self.net._target_obj(fn, proj), cand)
         if verdict is not None:
