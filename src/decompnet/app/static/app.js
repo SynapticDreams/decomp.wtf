@@ -10,8 +10,16 @@ const pctOf = (best, insns) => (best == null ? null : Math.max(0, 1 - best / Mat
 /* A project's progress against what can be matched: functions set aside (assembly no compiler makes, data the split
    took for code) count apart, so a game written in assembly isn't stuck near 0% for good. */
 const progress = (p) => {
-  const asm = p.asm || 0, room = Math.max(0, (p.bytes || 0) - (p.asm_bytes || 0));
-  return { pct: room ? (100 * (p.matched_bytes || 0)) / room : 0, total: Math.max(0, (p.functions || 0) - asm), room, asm };
+  // (routines documented in assembly are done, apart from C: they count in neither)
+  const asm = p.asm || 0, doc = p.documented || 0, room = Math.max(0, (p.bytes || 0) - (p.asm_bytes || 0) - (p.documented_bytes || 0));
+  return { pct: room ? (100 * (p.matched_bytes || 0)) / room : 0, total: Math.max(0, (p.functions || 0) - asm - doc), room, asm, doc };
+};
+/* A banked game's map: how much of its ROM the project knows what it is (code, data). */
+const mappedText = (ov) => {
+  const m = ov.mapped;
+  if (!m || !m.rom) return "";
+  const pct = (100 * Math.min(m.rom, m.code + m.data)) / m.rom;
+  return `${pctNum(pct)}% of the ROM mapped`;
 };
 const asideText = (n) => (n ? ` · ${n.toLocaleString()} set aside` : "");
 /* A match percentage that never reads 100% before the function really matches (99.6% stays 99.6%). */
@@ -691,7 +699,7 @@ async function poll(first) {
     const matches = [];
     for (const ev of live.events) {
       S.e = Math.max(S.e, ev.id);
-      if (["match", "split", "merge", "rename", "reopen", "review"].includes(ev.kind)) mapDirty = true;
+      if (["match", "split", "merge", "rename", "reopen", "review", "documented", "reviewed"].includes(ev.kind)) mapDirty = true;
       if (!fresh(ev)) continue;
       if (ev.kind === "match") {
         S.flash.set(ev.detail, performance.now());
@@ -784,7 +792,7 @@ function renderHeader(ov) {
   $("phPct").textContent = pctNum(pct);
   $("phBar").style.width = pct + "%";
   $("phSub").textContent = fork && !ov.ready ? "set up the project to start"
-    : `${ov.matched.toLocaleString()} / ${pr.total.toLocaleString()} functions${asideText(pr.asm)}${linkedText(ov)} · ${plural(ov.attempts || 0, "compile")}${S.today ? ` · ${S.today} matched today` : ""}`;
+    : `${ov.matched.toLocaleString()} / ${pr.total.toLocaleString()} functions${pr.doc ? ` · ${pr.doc.toLocaleString()} documented` : ""}${asideText(pr.asm)}${linkedText(ov)} · ${plural(ov.attempts || 0, "compile")}${S.today ? ` · ${S.today} matched today` : ""}`;
   const w = workingAgents();
   $("phWorking").hidden = !w.n;
   $("phWorkingText").textContent = `${w.n} agent${w.n === 1 ? "" : "s"} working`;
@@ -853,7 +861,9 @@ function renderStats(ov) {
   const pr = progress(ov), pct = pr.pct;
   $("pct").textContent = pctNum(pct);
   $("pctSub").textContent = (pr.room ? `${bytes(ov.matched_bytes)} of ${bytes(pr.room)}` : "") + (pr.asm ? ` (${bytes(ov.asm_bytes)} set aside)` : "")
-    + linkedText(ov) + (S.today ? ` · ${S.today} matched today` : "");
+    + linkedText(ov) + (S.today ? ` · ${S.today} matched today` : "")
+    + (ov.documented ? ` · ${plural(ov.documented, "routine")} documented (${bytes(ov.documented_bytes)})` : "")
+    + (ov.mapped ? ` · ${mappedText(ov)}` : "");
   $("fnCount").textContent = `${ov.matched.toLocaleString()} / ${pr.total.toLocaleString()}`;
   renderAutopilot(ov);
   renderSteering(ov);
@@ -900,8 +910,8 @@ function renderCompilerNotice(ov) {
 }
 
 function fnCounts() {
-  const c = { matched: 0, working: 0, tried: 0, open: 0, asm: 0 };
-  for (const f of S.map) c[fnState(f)]++;
+  const c = { matched: 0, working: 0, tried: 0, open: 0, asm: 0, documented: 0 };
+  for (const f of S.map) { const k = fnState(f); c[k === "review" ? "asm" : k]++; }
   return c;
 }
 
@@ -910,11 +920,13 @@ function renderOverview() {
   if (!S.ov || S.tab !== "overview") return;
   const c = fnCounts(), total = Math.max(1, S.map.length);
   const seg = (k, cls) => (c[k] ? `<i class="${cls}" data-w="${(100 * c[k]) / total}" title="${c[k]} ${k === "open" ? "to do" : k}"></i>` : "");
-  $("fnStack").innerHTML = seg("matched", "s-match") + seg("working", "s-work") + seg("tried", "s-tried") + seg("asm", "s-asm") + seg("open", "s-open");
+  $("fnStack").innerHTML = seg("matched", "s-match") + seg("documented", "s-doc") + seg("working", "s-work") + seg("tried", "s-tried") + seg("asm", "s-asm") + seg("open", "s-open");
   $("legendAsm").hidden = !c.asm;
+  $("legendDoc").hidden = !c.documented;
   setWidths($("fnStack"));
-  const togo = Math.max(0, S.ov.functions - S.ov.matched - c.asm);  // what's set aside isn't to go
-  $("fnSub").textContent = `${togo.toLocaleString()} to go${c.tried ? ` · ${c.tried.toLocaleString()} tried` : ""}${c.working ? ` · ${c.working} in progress` : ""}${c.asm ? ` · ${c.asm.toLocaleString()} set aside (assembly or data)` : ""}`;
+  const togo = Math.max(0, S.ov.functions - S.ov.matched - c.asm - c.documented);  // what's set aside isn't to go
+  const todoc = S.ov.mapped ? S.ov.mapped.to_document : 0;
+  $("fnSub").textContent = `${togo.toLocaleString()} to go${c.tried ? ` · ${c.tried.toLocaleString()} tried` : ""}${c.working ? ` · ${c.working} in progress` : ""}${c.documented ? ` · ${c.documented.toLocaleString()} documented` : ""}${c.asm ? ` · ${c.asm.toLocaleString()} set aside (assembly or data)${todoc ? `, ${todoc.toLocaleString()} of them to document` : ""}` : ""}`;
   const st = S.stats;
   if (st) {
     const ph = st.matches_per_hour, max = Math.max(1, ...ph);
@@ -1560,7 +1572,7 @@ function cssColor(name) {
   return rgb;
 }
 function readColors() {
-  colors = { open: cssColor("--open"), tried: cssColor("--tried"), work: cssColor("--work"), match: cssColor("--match"), hi: cssColor("--match-hi"), ink: cssColor("--ink") };
+  colors = { open: cssColor("--open"), tried: cssColor("--tried"), work: cssColor("--work"), match: cssColor("--match"), hi: cssColor("--match-hi"), ink: cssColor("--ink"), doc: cssColor("--doc") };
 }
 const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
 const rgb = (c, a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
@@ -1587,7 +1599,7 @@ function applyClaims(draw = true) {
   const working = new Map(S.claims.map((c) => [c.name, c.agent]));
   let changed = false;
   for (const f of S.map) {
-    const status = f.status === "matched" || f.status === "asm" ? f.status : working.has(f.name) ? "working" : "open";
+    const status = ["matched", "asm", "documented"].includes(f.status) ? f.status : working.has(f.name) ? "working" : "open";
     if (status !== f.status) { f.status = status; changed = true; }
     f.agent = working.get(f.name) || null;
   }
@@ -1608,6 +1620,7 @@ function applyAttempts(attempts) {
 
 function cellColor(f) {
   if (f.status === "matched") return [colors.match, 1];
+  if (f.status === "documented") return [colors.doc, 1];
   if (f.status === "asm") return f.review ? [colors.work, 0.6] : [colors.tried, 0.35];
   if (f.best != null) return [mix(colors.tried, colors.hi, Math.pow(pctOf(f.best, f.insns) || 0, 3)), 1];
   return [colors.open, 1];
@@ -2057,6 +2070,9 @@ function eventHtml(ev) {
     case "split": return `${who} split ${esc(d)}`;
     case "merge": return `${who} joined ${esc(d)}`;
     case "review": return `${who} set ${esc(d)} aside for a person to review`;
+    case "documented": return `<span class="ok">✓</span> ${who} documented ${fnLink(d)} in assembly`;
+    case "reviewed": return `you looked over ${esc(d)}`;
+    case "correction": return `${who} corrected the split: ${esc(d)}`;
     case "files": return `${who ? who + " " : ""}gave code without a source file one: ${esc(d)}`;
     case "import": return `ROM analysed: ${esc(d)}`;
     case "compiler": return `compiler set to ${esc(d)}`;
@@ -2199,9 +2215,10 @@ function fnBadge(d = S.fnDetail) {
   if (!d) return;
   const working = S.claims.find((c) => c.name === d.name);
   const st = $("fnStatus");
-  st.className = "badge " + (d.status === "matched" ? "matched" : working ? "working" : "");
-  st.textContent = d.status === "matched" ? "matched" : d.status === "asm" ? (d.review ? "needs review" : "set aside") : working ? `${working.agent} working` : d.best != null ? `best ${pctText(pctOf(d.best, d.insns))}` : "not started";
-  st.title = d.status === "asm" ? (d.why || "") : "";
+  st.className = "badge " + (d.status === "matched" ? "matched" : d.status === "documented" ? "documented" : working ? "working" : "");
+  st.textContent = d.status === "matched" ? "matched" : d.status === "documented" ? (d.sample ? "documented · look it over" : "documented")
+    : d.status === "asm" ? (d.review ? "needs review" : d.track ? "to document" : "set aside") : working ? `${working.agent} working` : d.best != null ? `best ${pctText(pctOf(d.best, d.insns))}` : "not started";
+  st.title = d.status === "asm" ? (d.why || "") : d.status === "documented" ? "hand-written: documented in assembly that rebuilds it byte for byte" : "";
 }
 
 function showFnTab(tab) {
@@ -2260,9 +2277,27 @@ async function refreshFn(first) {
         refreshFn(false);
       } catch (e) { toast(esc(e.message), "err"); }
     };
+    // a documented routine picked for review: a person says it's right, or sends it back with what's wrong
+    const guest = (S.ov.room || {}).role === "guest";
+    $("fnLooksRight").hidden = $("fnSendBack").hidden = !(d.status === "documented" && d.sample) || guest;
+    const verdict = async (ok, note = "") => {
+      try {
+        await api("/api/documented/review", { method: "POST", body: { slug: S.slug, function: d.name, ok, note } });
+        toast(ok ? `<code>${esc(d.name)}</code>&nbsp;stays documented.` : `<code>${esc(d.name)}</code>&nbsp;goes back to be documented again.`, ok ? "match" : "");
+        await refreshFn(false);
+        poll(false);
+      } catch (e) { toast(esc(e.message), "err"); }
+    };
+    $("fnLooksRight").onclick = () => verdict(true);
+    $("fnSendBack").onclick = () => {
+      const t = $("noteText").value.trim();
+      if (t.length < 10) { $("noteText").focus(); return toast("Say what's wrong in the note box first (it goes to the next agent), then Send back.", "err"); }
+      $("noteText").value = "";
+      verdict(false, t);
+    };
     $("fnAsm").innerHTML = highlightAsm(d.asm);
-    const kinds = { matched: "Matching C", best: "Best attempt so far", latest: S.ov.kind === "fork" ? "In the source now" : "Latest attempt", draft: "Machine draft (m2c)" };
-    $("fnSrcKind").textContent = kinds[d.source_kind] || "No C yet";
+    const kinds = { matched: "Matching C", documented: "Documented assembly", best: d.track ? "Best attempt so far (assembly)" : "Best attempt so far", latest: S.ov.kind === "fork" ? "In the source now" : "Latest attempt", draft: "Machine draft (m2c)", asm_draft: "Draft that rebuilds it: name it, comment it, then Try" };
+    $("fnSrcKind").textContent = kinds[d.source_kind] || (d.track ? "Not documented yet: write it in RGBDS assembly" : "No C yet");
     if (!S.editDirty || first) setEditor(d.source || "", d);
     $("copySrc").onclick = () => navigator.clipboard.writeText($("fnEdit").value).then(() => toast("Copied."));
     renderFnChart(d);
@@ -2273,7 +2308,7 @@ async function refreshFn(first) {
     $("fnXref").innerHTML = xr.join("");
     $("fnXref").querySelectorAll(".fn").forEach((x) => { x.onclick = () => openFn(x.dataset.fn.split("+")[0]); });
     $("fnNotes").innerHTML = d.notes.length ? `<p class="col-title">Notes from agents</p>` + d.notes.map((n) => `<div class="note"><small>${esc(n.agent)} · ${clock(n.created_at)}</small>${esc(n.text)}</div>`).join("") : "";
-    const tab = S.ftab || (d.status === "matched" || !d.scores.length ? "code" : "diff");
+    const tab = S.ftab || (d.status === "matched" || d.status === "documented" || !d.scores.length ? "code" : "diff");
     showFnTab(tab);
   } catch (e) {
     if (first) toast(esc(e.message), "err");
@@ -2289,7 +2324,7 @@ function setEditor(source, d) {
 }
 function paintEditor() {
   const ta = $("fnEdit");
-  $("fnSrc").innerHTML = highlightC(ta.value) + "\n";
+  $("fnSrc").innerHTML = (S.fnDetail && S.fnDetail.track ? highlightAsm(ta.value) : highlightC(ta.value)) + "\n";
   $("fnSrc").scrollTop = ta.scrollTop; $("fnSrc").scrollLeft = ta.scrollLeft;
 }
 $("fnEdit").addEventListener("input", () => { S.editDirty = true; paintEditor(); });
@@ -2392,6 +2427,12 @@ function insnHtml(text, other, cls) {
 function renderDiff(d) {
   const sum = $("diffSum"), box = $("diff"), probs = $("diffProblems");
   probs.innerHTML = "";
+  if (d.asm) {  // the assembly track: what the judge says of the text (the six checks)
+    const a = d.asm, label = { documented: "Documented assembly", best: "Best attempt", latest: "Latest attempt" }[d.kind] || "Attempt";
+    sum.innerHTML = `<b>${label}</b> · ${a.ok ? `<span class="ok">accepted: byte-identical, every check passed</span>` : `${a.same} of ${a.size} bytes the same${a.same === a.size ? `, ${plural(a.problems.length, "check")} still failing` : ""}`}`;
+    box.innerHTML = a.problems.length ? `<ul class="asm-checks">${a.problems.map((p) => `<li>${esc(p)}</li>`).join("")}</ul>` : "";
+    return;
+  }
   if (!d.rows) {
     sum.innerHTML = d.error ? `<span class="bad">The ${d.kind === "best" ? "best" : "latest"} attempt didn't compile.</span>` : "No attempt yet. The diff appears after the first compile.";
     box.innerHTML = d.error ? `<pre class="code errlog">${esc(d.error)}</pre>` : "";
@@ -2455,23 +2496,27 @@ $("fnNext").onclick = () => stepFn(1);
 /* ------------------------------------------------------------------ function list */
 const L = { q: "", filter: "all", sort: "i", dir: 1, limit: 200, rows: [], hideAsm: true };
 try { L.hideAsm = localStorage.getItem("fnHideAsm") !== "0"; } catch { /* no storage: the default */ }
-const FILTERS = [["all", "All"], ["open", "To do"], ["working", "Working"], ["tried", "Tried"], ["matched", "Matched"], ["review", "Needs review"]];
-// "review": set aside by an agent for a person to look at (flag_for_review), shown even when assembly is hidden
-const fnState = (f) => (f.status === "matched" ? "matched" : f.status === "asm" ? (f.review ? "review" : "asm") : f.status === "working" ? "working" : f.best != null ? "tried" : "open");
-const STATE_RANK = { working: 0, tried: 1, open: 2, review: 3, matched: 4, asm: 5 };
+const FILTERS = [["all", "All"], ["open", "To do"], ["working", "Working"], ["tried", "Tried"], ["matched", "Matched"], ["review", "Needs review"],
+  ["document", "To document"], ["documented", "Documented"], ["lookover", "Look over"]];
+// "review": set aside by an agent for a person to look at (flag_for_review), shown even when assembly is hidden.
+// The assembly track (Game Boy): "document" is a hand-written routine still to document, "lookover" a documented one
+// picked for a person to look over.
+const fnState = (f) => (f.status === "matched" ? "matched" : f.status === "documented" ? "documented" : f.status === "asm" ? (f.review ? "review" : "asm") : f.status === "working" ? "working" : f.best != null ? "tried" : "open");
+const STATE_RANK = { working: 0, tried: 1, open: 2, review: 3, documented: 4, matched: 4, asm: 5 };
+const inFilter = (f, k) => (k === "document" ? fnState(f) === "asm" && f.track : k === "lookover" ? f.status === "documented" && f.sample : fnState(f) === k);
 
 function renderList() {
   if (!S.map.length || S.tab !== "functions") return;
-  const counts = { all: S.map.length, open: 0, working: 0, tried: 0, matched: 0, asm: 0, review: 0 };
-  for (const f of S.map) counts[fnState(f)]++;
+  const counts = { all: S.map.length, open: 0, working: 0, tried: 0, matched: 0, asm: 0, review: 0, documented: 0, document: 0, lookover: 0 };
+  for (const f of S.map) { counts[fnState(f)]++; if (inFilter(f, "document")) counts.document++; if (inFilter(f, "lookover")) counts.lookover++; }
   if (L.hideAsm) counts.all -= counts.asm;
   $("fnHideAsm").checked = L.hideAsm;
   $("fnHideAsmN").textContent = counts.asm ? ` (${counts.asm.toLocaleString()})` : "";
   $("fnHideAsmBox").hidden = !counts.asm;
-  if (L.filter === "review" && !counts.review) L.filter = "all";
-  $("fnFilter").innerHTML = FILTERS.filter(([k]) => k !== "review" || counts.review).map(([k, label]) => `<button type="button" role="radio" aria-checked="${L.filter === k}" class="${L.filter === k ? "on" : ""}" data-filter="${k}">${label}<span>${counts[k].toLocaleString()}</span></button>`).join("");
+  if (["review", "document", "documented", "lookover"].includes(L.filter) && !counts[L.filter]) L.filter = "all";
+  $("fnFilter").innerHTML = FILTERS.filter(([k]) => !["review", "document", "documented", "lookover"].includes(k) || counts[k]).map(([k, label]) => `<button type="button" role="radio" aria-checked="${L.filter === k}" class="${L.filter === k ? "on" : ""}" data-filter="${k}">${label}<span>${counts[k].toLocaleString()}</span></button>`).join("");
   const q = L.q.trim().toLowerCase();
-  let rows = S.map.filter((f) => (L.filter === "all" ? !(L.hideAsm && fnState(f) === "asm") : fnState(f) === L.filter)
+  let rows = S.map.filter((f) => (L.filter === "all" ? !(L.hideAsm && fnState(f) === "asm") : inFilter(f, L.filter))
     && (!q || f.name.toLowerCase().includes(q) || hex8(f.vram).toLowerCase().includes(q) || (f.unit || "").toLowerCase().includes(q)));
   const key = {
     i: (f) => f.i, name: (f) => f.name.toLowerCase(), insns: (f) => f.insns, attempts: (f) => f.attempts || 0,
@@ -2482,12 +2527,12 @@ function renderList() {
   const fork = S.ov && S.ov.kind === "fork";
   $("fnRows").innerHTML = rows.slice(0, L.limit).map((f) => {
     const st = fnState(f), p = pctOf(f.best, f.insns);
-    const best = st === "matched" ? `<span class="ok">100%</span>` : p == null ? `<span class="dim">–</span>` : pctText(p);
-    const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">matched</span>` : st === "review" ? `<span class="st review" title="${esc((f.review_by ? f.review_by + ": " : "") + (f.why || ""))}">needs review</span>` : st === "asm" ? `<span class="st" title="${esc(f.why || "hand-written assembly: no C compiles to it")}">${/padding|data|its end isn't known/.test(f.why || "") ? "not code" : "assembly"}</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
+    const best = st === "matched" || st === "documented" ? `<span class="ok">100%</span>` : p == null ? `<span class="dim">–</span>` : pctText(p);
+    const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">matched</span>` : st === "documented" ? `<span class="st documented" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">documented${f.sample ? " · look over" : ""}</span>` : st === "review" ? `<span class="st review" title="${esc((f.review_by ? f.review_by + ": " : "") + (f.why || ""))}">needs review</span>` : st === "asm" ? `<span class="st" title="${esc(f.why || "hand-written assembly: no C compiles to it")}">${/padding|data|its end isn't known/.test(f.why || "") ? "not code" : f.track ? "to document" : "assembly"}</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
       : st === "tried" ? `<span class="st tried">tried</span>` : `<span class="st">to do</span>`;
     const pinned = (S.ov?.priority || []).includes(f.name);
     // ☆/★ right in the row: pin many functions for the agents without opening each one (not for done or git-project ones)
-    const star = fork || st === "matched" || st === "asm" || st === "review" ? (pinned ? `<span class="star" title="agents take it next">★</span>` : "")
+    const star = fork || st === "matched" || st === "documented" || st === "asm" || st === "review" ? (pinned ? `<span class="star" title="agents take it next">★</span>` : "")
       : `<button type="button" class="star-btn ${pinned ? "on" : ""}" data-star="${esc(f.name)}" title="${pinned ? "Remove from Next in line" : "Agents take it next (★ Next in line)"}">${pinned ? "★" : "☆"}</button>`;
     return `<tr data-fn="${esc(f.name)}" class="${S.fn === f.name ? "sel" : ""}" tabindex="0"><td class="mono dim">${fork ? esc(f.unit || "") : hex8(f.vram)}</td>
       <td class="mono name">${star}${esc(f.name)}</td><td class="r mono">${f.insns.toLocaleString()}</td><td class="r mono">${best}</td>

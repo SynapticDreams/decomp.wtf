@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import random
 import re
 import secrets
 import shutil
@@ -2467,8 +2468,9 @@ class RomNetwork(Network):
             db.execute("UPDATE functions SET best_score=?, best_source=?, best_agent_id=? WHERE id=? AND status='asm' "
                        "AND (best_score IS NULL OR best_score > ?)", (score, text, agent.id, fn["id"], score))
             if verdict.ok:
-                db.execute("UPDATE functions SET status='documented', matched_source=?, matched_agent_id=?, matched_at=? "
-                           "WHERE id=? AND status='asm'", (verdict.text, agent.id, now, fn["id"]))
+                meta = json.loads(fn["meta"] or "{}") | ({"sample": True} if random.random() < self.REVIEW_SAMPLE else {})
+                db.execute("UPDATE functions SET status='documented', matched_source=?, matched_agent_id=?, matched_at=?, "
+                           "meta=? WHERE id=? AND status='asm'", (verdict.text, agent.id, now, json.dumps(meta), fn["id"]))
                 for name, value in verdict.defines.items():
                     db.execute("INSERT OR IGNORE INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)",
                                (proj["id"], name, value, 0, "data" if value >= 0x100 else "const"))
@@ -2488,6 +2490,31 @@ class RomNetwork(Network):
             cache.pop(proj["id"], None)
         return (f"✅ DOCUMENTED: {name} rebuilds byte for byte, with names, and is kept"
                 + (f"; {', '.join(verdict.defines)} named for the project" if verdict.defines else "") + ".")
+
+    #: documented routines picked for a person to look over (decision D2: the checks are mechanical, names aren't)
+    REVIEW_SAMPLE = 0.2
+
+    def review_documented(self, slug: str, function: str, ok: bool, note: str = "") -> dict:
+        """A person's look at a documented routine picked for review: it's right (it stays documented), or it goes back
+        to the assembly track with what's wrong, its text kept as the best attempt to start from."""
+        fn = self._function(function, slug)
+        if fn["status"] != "documented":
+            raise NetworkError(f"{fn['name']} isn't documented ({fn['status']})")
+        meta = {k: v for k, v in json.loads(fn["meta"] or "{}").items() if k != "sample"}
+        note = " ".join(str(note or "").split())
+        with self.store.tx() as db:
+            if ok:
+                db.execute("UPDATE functions SET meta=? WHERE id=?", (json.dumps(meta) if meta else None, fn["id"]))
+                self._event(db, fn["project_id"], None, "reviewed", f"{fn['name']}: looks right")
+            else:
+                if len(note) < 10:
+                    raise NetworkError("say what's wrong, so the next agent knows")
+                db.execute("UPDATE functions SET status='asm', best_source=matched_source, best_score=1, matched_source=NULL, "
+                           "matched_agent_id=NULL, matched_at=NULL, meta=? WHERE id=?", (json.dumps(meta), fn["id"]))
+                db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
+                           (fn["project_id"], fn["id"], None, f"sent back from review: {note}", time.time()))
+                self._event(db, fn["project_id"], None, "reopen", f"{fn['name']}: sent back to document again")
+        return {"name": fn["name"], "status": "documented" if ok else "asm"}
 
     def give_to_agents(self, project: str | None, function: str) -> dict:
         """A person gives a set-aside function back to agents: a set-aside rule was wrong about it, or a review found
@@ -2826,7 +2853,8 @@ class RomNetwork(Network):
         agg = self.store.one(
             "SELECT COUNT(*) AS total, SUM(status='matched') AS matched, SUM(size) AS bytes, "
             "SUM(CASE WHEN status='matched' THEN size ELSE 0 END) AS matched_bytes, SUM(attempts) AS attempts, "
-            "SUM(status='asm') AS asm, SUM(CASE WHEN status='asm' THEN size ELSE 0 END) AS asm_bytes "
+            "SUM(status='asm') AS asm, SUM(CASE WHEN status='asm' THEN size ELSE 0 END) AS asm_bytes, "
+            "SUM(status='documented') AS documented, SUM(CASE WHEN status='documented' THEN size ELSE 0 END) AS documented_bytes "
             "FROM functions WHERE project_id=?", proj["id"])
         tc = toolchains.get(cfg["compiler"]["toolchain"])
         return {
@@ -2842,6 +2870,9 @@ class RomNetwork(Network):
             "matched_bytes": agg["matched_bytes"] or 0, "attempts": agg["attempts"] or 0,
             # set aside: assembly no compiler makes, or what the split took for code (see handwritten.py)
             "asm": agg["asm"] or 0, "asm_bytes": agg["asm_bytes"] or 0,
+            # the assembly track (Game Boy): hand-written routines documented in assembly, apart from C matches
+            "documented": agg["documented"] or 0, "documented_bytes": agg["documented_bytes"] or 0,
+            "mapped": self._mapped(proj, cfg) if (proj["arch"] or "") in BANKED_ARCHS else None,
             "context_version": self._context(proj["id"])["version"],
             "folder": proj["root"],
             "export": cfg.get("export"),
@@ -2849,6 +2880,18 @@ class RomNetwork(Network):
             "mapping": {"version": 1, "regions": list(cfg["mapping"]["regions"])} if cfg.get("mapping") else None,
             "room": self._room_info(proj["slug"]),
         }
+
+    def _mapped(self, proj, cfg: dict) -> dict:
+        """How much of a banked game's ROM the project knows what it is: code (its functions, but for what's set aside
+        as not code), data (tables, padding, operands, bytes the code never reaches), and how many hand-written
+        routines are left to document."""
+        rows = self.store.all("SELECT status, size, meta FROM functions WHERE project_id=?", proj["id"])
+        code = sum(r["size"] or 0 for r in rows if r["status"] != "asm" or self.asm_track(r))
+        data = self.store.one("SELECT COALESCE(SUM(size), 0) AS n FROM data_regions WHERE project_id=?", proj["id"])["n"]
+        size = int((cfg.get("rom") or {}).get("size") or 0)
+        return {"rom": size, "code": code, "data": data,
+                "to_document": sum(1 for r in rows if r["status"] == "asm" and self.asm_track(r))
+                if proj["arch"] == "sm83" else 0}
 
     def _room_info(self, slug: str) -> dict | None:
         if slug in self.links:
@@ -2863,7 +2906,7 @@ class RomNetwork(Network):
         proj = self._project(slug)
         rows = self.store.all(
             "SELECT f.name, f.vram, f.size, f.n_insns, f.status, f.best_score, f.attempts, f.unit, f.matched_at, "
-            "CASE WHEN f.status='asm' THEN f.meta END AS meta, "
+            "CASE WHEN f.status IN ('asm', 'documented') THEN f.meta END AS meta, "
             "a.name AS agent, m.name AS matched_by FROM functions f LEFT JOIN claims c ON c.function_id=f.id "
             "LEFT JOIN agents a ON a.id=c.agent_id LEFT JOIN agents m ON m.id=f.matched_agent_id "
             "WHERE f.project_id=? ORDER BY f.vram, f.unit, f.id", proj["id"])
@@ -2871,11 +2914,15 @@ class RomNetwork(Network):
         # who works on what in the room: by address, or by name in a git project (its functions have no addresses)
         key = (lambda r: r["name"]) if link is not None and link.fork else (lambda r: r["vram"])
         remote = {key(c): "@" + c["agent"] for c in (link.claims if link is not None else [])}
+        sm83 = proj["arch"] == "sm83"
         return [{"name": r["name"], "vram": r["vram"], "size": r["size"], "insns": r["n_insns"], "unit": r["unit"],
-                 "status": r["status"] if r["status"] in ("matched", "asm") else "working" if (r["agent"] or key(r) in remote) else "open",
+                 "status": r["status"] if r["status"] in ("matched", "asm", "documented") else "working" if (r["agent"] or key(r) in remote) else "open",
                  "best": r["best_score"], "attempts": r["attempts"], "agent": r["agent"] or remote.get(key(r)),
                  "matched_at": r["matched_at"], "matched_by": r["matched_by"],
-                 **(_set_aside(r["meta"]) if r["status"] == "asm" else {})} for r in rows]
+                 **(_set_aside(r["meta"]) if r["status"] == "asm" else {}),
+                 **({"track": True} if sm83 and r["status"] == "asm" and self.asm_track(r) else {}),
+                 **({"sample": True} if r["status"] == "documented" and json.loads(r["meta"] or "{}").get("sample") else {})}
+                for r in rows]
 
     def map_signature(self, slug: str) -> str:
         """What the function map shows, summed up: it changes when a function is added, matched, tried or claimed.
@@ -2883,7 +2930,8 @@ class RomNetwork(Network):
         thousands of functions (renames and splits come with events, which refetch anyway)."""
         proj = self._project(slug)
         f = self.store.one("SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS hi, COALESCE(SUM(attempts), 0) AS at, "
-                           "COALESCE(SUM(status='matched'), 0) AS m, COALESCE(SUM(best_score), 0) AS bs, "
+                           "COALESCE(SUM(status='matched') + 1000003 * SUM(status='documented'), 0) AS m, "
+                           "COALESCE(SUM(best_score), 0) AS bs, "
                            "COALESCE(MAX(matched_at), 0) AS ma FROM functions WHERE project_id=?", proj["id"])
         c = self.store.one("SELECT COUNT(*) AS n, COALESCE(SUM(c.function_id * 31 + c.agent_id), 0) AS k FROM claims c "
                            "JOIN functions f ON f.id=c.function_id WHERE f.project_id=?", proj["id"])
@@ -3157,6 +3205,17 @@ class RomNetwork(Network):
         key = (fn["id"], hashlib.sha1(source.encode()).hexdigest(), ctx["version"], proj["config"])
         if key in self._diffs:
             return self._diffs[key] | {"kind": kind}
+        if proj["arch"] == "sm83" and (fn["status"] == "documented" or self.asm_track(fn)):
+            from ..rom import gb_asm  # the assembly track: the judge's verdict on its text, not a C compile
+
+            try:
+                v = gb_asm.judge(self._routine(proj, fn), source)
+                out = {"rows": None, "asm": {"ok": v.ok, "same": v.same, "size": len(fn["target"] or b""),
+                                             "problems": v.problems}, "source": source}
+            except gb_asm.AsmError as e:
+                out = {"rows": None, "error": str(e), "source": source}
+            self._diffs[key] = out
+            return out | {"kind": "documented" if fn["status"] == "documented" else kind}
         result = self._compile(proj, ctx["header"], source)
         if not result.ok:
             out = {"rows": None, "error": result.log.strip()[-3000:] or "it didn't compile", "source": source}
@@ -3190,7 +3249,13 @@ class RomNetwork(Network):
                                "ON a.id=n.agent_id WHERE n.function_id=? ORDER BY n.id DESC LIMIT 10", fn["id"])
         x = self.xrefs(proj, fn["unit"])
         syms = self.symbols(proj["id"], fn["unit"])
-        if not (fn["matched_source"] or fn["best_source"] or latest) and fn["seed"] is None:
+        track = proj["arch"] == "sm83" and (fn["status"] == "documented" or self.asm_track(fn))
+        draft = None
+        if track and not (fn["matched_source"] or fn["best_source"] or latest):
+            from ..rom import gb_asm  # a hand-written routine nobody has tried: the draft that rebuilds it
+
+            draft = gb_asm.draft(self._routine(proj, fn))
+        elif not (fn["matched_source"] or fn["best_source"] or latest) and fn["seed"] is None:
             with self._seed_lock:
                 self._seed_for(fn, proj)
             fn = self._function(fn["name"], slug)
@@ -3199,9 +3264,12 @@ class RomNetwork(Network):
             "insns": fn["n_insns"], "status": fn["status"], "best": fn["best_score"],
             **(_set_aside(fn["meta"]) if fn["status"] == "asm" else {}),
             "asm": self._asm_text(fn, proj),
-            "source": fn["matched_source"] or fn["best_source"] or (latest["source"] if latest else None) or fn["seed"],
-            "source_kind": "matched" if fn["matched_source"] else "best" if fn["best_source"] else
-                           "latest" if latest else "draft" if fn["seed"] else None,
+            "source": fn["matched_source"] or fn["best_source"] or (latest["source"] if latest else None) or draft or fn["seed"],
+            "source_kind": ("documented" if fn["status"] == "documented" else "matched") if fn["matched_source"] else
+                           "best" if fn["best_source"] else "latest" if latest else "asm_draft" if draft else
+                           "draft" if fn["seed"] else None,
+            "track": track,
+            "sample": fn["status"] == "documented" and bool(json.loads(fn["meta"] or "{}").get("sample")),
             "scores": [{"score": a["score"], "t": a["created_at"], "agent": a["agent"]} for a in attempts],
             "notes": [dict(n) for n in notes],
             "calls": [syms.label(a) for a in sorted(x["calls"].get(fn["vram"], ()))],
