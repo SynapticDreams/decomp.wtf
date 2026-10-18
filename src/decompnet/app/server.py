@@ -771,6 +771,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                                                         r.query_params.get("which", "latest")), ["GET"]),
         "/api/compiler": (p_compiler, ["POST"]), "/api/export": (p_export, ["POST"]), "/api/open": (p_open, ["POST"]),
         "/api/compiler/probe": (p_compiler_probe, ["POST"]),
+        "/api/compiler/small-data": (lambda s, r, d: net.small_data_evidence(s), ["POST"]),
         "/api/libraries/psyq": (p_psyq, ["POST"]),
         "/api/resplit": (p_resplit, ["POST"]),
         "/api/give_back": (lambda s, r, d: net.give_to_agents(s, str(d.get("function", ""))), ["POST"]),

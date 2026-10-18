@@ -3086,9 +3086,25 @@ function fillCompilerSettings() {
   showCompilerProbe(c.probe);
   $("psyqPanel").hidden = S.ov.platform !== "psx";
   showPsyqLibraries(c.libraries);
+  $("smallDataPanel").hidden = S.ov.platform !== "psx";
+  showSmallData(c.small_data);
   $("setUnitReset").hidden = !unit;
 }
 $("setCompilerUnit").onchange = fillCompilerSettings;
+function showSmallData(report) {
+  const box = $("smallDataResult");
+  if (!report) { box.innerHTML = ""; return; }
+  const unit = $("setCompilerUnit").value || report.default_unit, row = report.units[unit];
+  box.innerHTML = `<p class="muted small">GP base: ${report.gp_known ? hex8(report.gp) : "unused or unresolved"} · ${esc(report.gp_source || "")}. ${esc(report.note)}</p>`
+    + (row ? `<p class="muted small">${esc(unit)}: ${row.gp_accesses} GP-relative accesses (${row.resolved_accesses} resolved). Active -G${row.active_threshold ?? "?"}; layout trial values ${row.layout_candidates.join(", ") || "not established"}. ${esc(row.note)}</p>`
+      + (row.objects.length ? `<table class="small"><thead><tr><th>Symbol</th><th>Estimated extent</th><th>GP accesses</th></tr></thead><tbody>${row.objects.slice(0, 20).map((o) => `<tr><td>${esc(o.name)}</td><td>${o.estimated_size} bytes</td><td>${o.accesses}</td></tr>`).join("")}</tbody></table>` : "") : "");
+}
+$("smallDataInspect").onclick = async () => {
+  try {
+    S.ov.compiler.small_data = await api("/api/compiler/small-data", { method: "POST", body: { slug: S.slug } });
+    showSmallData(S.ov.compiler.small_data);
+  } catch (e) { toast(esc(e.message), "err"); }
+};
 function showCompilerProbe(probe) {
   const box = $("compilerProbeResult");
   if (!probe) { box.innerHTML = ""; return; }

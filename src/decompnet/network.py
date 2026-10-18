@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import policy, scoring
+from . import policy, scoring, toolchains
 from .compiler import SourceRejected, check_includes, compile_source, uses_naked
 from .elfobj import FunctionObj, Reloc, extract_function
 from .project import compiler_config, compiler_settings
@@ -431,7 +431,14 @@ class Network:
                  f"size {fn['size']} bytes, {fn['n_insns']} instructions, arch {proj['arch']}, "
                  f"context.h v{ctx['version']} ({len(ctx['header'].splitlines())} lines)"]
         compiler = compiler_settings(json.loads(proj["config"]), fn["unit"])
-        lines.append(f"compiler {compiler.get('toolchain', 'project command')}, flags: {' '.join(compiler.get('flags', []))}")
+        flags = compiler.get("flags", toolchains.get(compiler["toolchain"]).flags if compiler.get("toolchain") else [])
+        lines.append(f"compiler {compiler.get('toolchain', 'project command')}, flags: {' '.join(flags)}")
+        if json.loads(proj["config"]).get("platform") == "psx":
+            from .rom.small_data import threshold
+
+            limit = threshold(flags)
+            lines.append(f"small data: -G{limit} ({'disabled' if limit == 0 else 'bytes; inferred thresholds need compile verification'})"
+                         if limit is not None else "small data: the selected -G option could not be read")
         if compiler.get("aspsx"):
             lines.append(f"assembler: maspsx emulating ASPSX {compiler['aspsx']}")
         if claim:

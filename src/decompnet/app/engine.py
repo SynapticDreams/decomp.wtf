@@ -139,10 +139,15 @@ def _banked_segments(platform: str, info: dict, report: dict) -> list[dict]:
 _AUTO_TOKEN = re.compile(r"\b(?:func|D|B|jtbl|RO|STR|FLT|DBL)_[0-9A-F]{8}\b")
 _ADDRESS = re.compile(r"^(?:0x)?([0-9A-Fa-f]{8})$")
 
-GP_NOTE = """
+LEGACY_GP_NOTE = """
 /* This game keeps small globals (8 bytes or less) in $gp-relative small data. Declare those here WITHOUT
  * `extern` (for example `s32 D_8001B278;`): then the compiler reads them through $gp, like the game does.
  * With `extern`, it builds the full address instead and the function can't match. */
+"""
+GP_NOTE = """
+/* Small globals can use $gp-relative small data; the function brief shows this unit's -G threshold.
+ * Declare GP-relative globals here WITHOUT `extern` (for example `s32 D_8001B278;`), so GCC knows their sizes.
+ * Compiler flags, declarations and storage sections all affect whether an access uses $gp. */
 """
 
 BASE_HEADER = """/* context.h for {title}: shared by every function. Agents grow it with edit_context:
@@ -533,13 +538,24 @@ class RomNetwork(Network):
         toolchain = toolchain or DEFAULT_TOOLCHAIN.get(res.compiler, DEFAULT_TOOLCHAIN[info["compiler_guess"]])
         tc = toolchains.get(toolchain)
         default_flags = tc.flags
-        if picked.platform in ("psx", "ps2"):
+        small_data_report = None
+        if picked.platform == "psx":
+            from ..rom import small_data
+
+            small_data_report = small_data.analyze(
+                [{"name": f.name, "unit": f.segment, "target": b"".join(ln.word.to_bytes(4, "little") for ln in f.lines)}
+                 for f in res.functions],
+                [{"name": s.name, "address": s.vram, "size": s.size, "kind": s.kind} for s in res.data], res.gp)
+            resident = small_data_report["units"].get(small_data_report["default_unit"], {})
+            default_flags = small_data.with_threshold(tc.flags, resident.get("default_threshold", 0))
+            small_data_report["gp_source"] = "header" if info.get("gp") else "entry" if res.gp else "unused or unresolved"
+        elif picked.platform == "ps2":
             default_flags = [f for f in tc.flags if not f.startswith("-G")] + [f"-G{8 if res.gp else 0}"]
         cfg = {
             "kind": "rom", "platform": picked.platform, "big_endian": picked.big_endian, "gp": res.gp,
             "rom": {**info, "file": res.image or picked.filename, "program": picked.filename},
             "segments": [vars(s) for s in res.segments],
-            "compiler": {"toolchain": toolchain, "flags": flags or default_flags, "timeout": 20},
+            "compiler": {"toolchain": toolchain, "flags": default_flags if flags is None else flags, "timeout": 20},
             "legal": {"basis": "personal-copy", "license": "personal use only",
                       "statement": "imported by the owner of this copy of the game, who confirmed it was legally obtained",
                       "confirmed_at": time.time()},
@@ -547,9 +563,14 @@ class RomNetwork(Network):
         }
         if picked.platform == "psx" and flags is None and picked.overlays:
             cfg["compiler"]["units"] = {
-                f"ovl_{name}": {"flags": [f for f in default_flags if not f.startswith("-G")] + ["-G0"]}
+                f"ovl_{name}": {"flags": small_data.with_threshold(default_flags, small_data_report["units"].get(
+                    f"ovl_{name}", {}).get("default_threshold", 0))}
                 for name, *_ in picked.overlays
             }
+        if small_data_report is not None:
+            cfg["small_data"] = small_data_report
+            for unit, row in small_data_report["units"].items():
+                row["active_threshold"] = small_data.threshold(compiler_settings(cfg, unit).get("flags", tc.flags))
         symbols = SymbolTable()
         for name, addr in res.named.items():
             symbols.add(Symbol(name, addr, 0, "func"), reindex=False)
@@ -1052,7 +1073,26 @@ class RomNetwork(Network):
 
     def get_context(self, project: str | None, function: str | None = None) -> str:
         self._rom_only(project, "get_context")
+        if function:
+            fn = self._function(function, project)
+            proj = self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        else:
+            proj = self._project(project)
+        if self.cfg(proj).get("platform") == "psx" and self._link(proj["slug"]) is None:
+            with self.store.tx() as db:
+                self._refresh_gp_guidance(db, proj["id"])
         return super().get_context(project, function)
+
+    def _refresh_gp_guidance(self, db, project_id: int) -> None:
+        """Replace only our old generated comment, preserving its line count and every C token."""
+        rows = db.execute("SELECT * FROM context_versions c WHERE project_id=? AND version=(SELECT MAX(version) "
+                          "FROM context_versions WHERE project_id=c.project_id AND unit=c.unit)", (project_id,)).fetchall()
+        for row in rows:
+            if LEGACY_GP_NOTE in row["header"]:
+                version = self._next_version(db, project_id)
+                db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
+                           "VALUES(?,?,?,NULL,?,?,?)", (project_id, version, row["header"].replace(LEGACY_GP_NOTE, GP_NOTE),
+                                                     "update small-data guidance", time.time(), row["unit"]))
 
     def _brief(self, fn, agent, header):
         if self.cfg(self.store.one("SELECT config FROM projects WHERE id=?", fn["project_id"])).get("kind") == "fork":
@@ -3070,6 +3110,7 @@ class RomNetwork(Network):
                          "aspsx": cfg["compiler"].get("aspsx", ""),
                          "probe": cfg.get("compiler_probe"),
                          "libraries": cfg.get("psyq_libraries"),
+                         "small_data": cfg.get("small_data"),
                          "units": cfg["compiler"].get("units", {}),
                          "unit_names": [r["unit"] for r in self.store.all(
                              "SELECT DISTINCT unit FROM functions WHERE project_id=? ORDER BY unit", proj["id"])],
@@ -3635,9 +3676,31 @@ class RomNetwork(Network):
         except Exception:
             logging.getLogger(__name__).debug("automatic PSY-Q library scan unavailable", exc_info=True)
         try:
+            self.small_data_evidence(slug)
+        except Exception:
+            logging.getLogger(__name__).debug("automatic small-data inspection unavailable", exc_info=True)
+        try:
             self.probe_compiler(slug, log=lambda _: None)
         except Exception:
             logging.getLogger(__name__).debug("automatic PS1 compiler probe unavailable", exc_info=True)
+
+    def small_data_evidence(self, slug: str) -> dict:
+        from ..rom import small_data
+
+        proj = self._project(slug)
+        cfg = self.cfg(proj)
+        if self.fork_slug(slug) or cfg.get("platform") != "psx":
+            raise NetworkError("small-data inspection requires a PS1 ROM project")
+        report = small_data.analyze(
+            [dict(r) for r in self.store.all("SELECT * FROM functions WHERE project_id=? AND status IN ('open','matched')", proj["id"])],
+            [dict(r) for r in self.store.all("SELECT * FROM symbols WHERE project_id=? AND kind<>'func'", proj["id"])], cfg.get("gp", 0))
+        report["gp_source"] = "header" if cfg.get("rom", {}).get("gp") else "entry" if cfg.get("gp") else "unused or unresolved"
+        for unit, row in report["units"].items():
+            profile = compiler_settings(cfg, unit)
+            flags = profile.get("flags", toolchains.get(profile["toolchain"]).flags)
+            row["active_threshold"] = small_data.threshold(flags)
+        self._update_cfg(slug, lambda current: current.__setitem__("small_data", report))
+        return report
 
     def identify_psyq_libraries(self, slug: str, datasets: list[dict] | None = None,
                                 apply: bool = False, log=print, unit: str | None = None) -> dict:
@@ -3726,6 +3789,8 @@ class RomNetwork(Network):
         summary["hits"] = report["hits"][:100]
         summary["conflicts"] = report["conflicts"][:100]
         self._update_cfg(slug, lambda cfg: cfg.__setitem__("psyq_libraries", summary))
+        if apply:
+            self.small_data_evidence(slug)
         log(f"PSY-Q signatures: {len(signatures)} usable, {len(report['hits'])} labels, {report['applied']} functions recognized")
         return report
 
@@ -3792,6 +3857,12 @@ class RomNetwork(Network):
             toolchains.require("binutils-mips")
 
     def _save_compiler(self, proj, cfg: dict, unit: str | None = None) -> None:
+        if cfg.get("small_data"):
+            from ..rom.small_data import threshold
+
+            for name, row in cfg["small_data"]["units"].items():
+                profile = compiler_settings(cfg, name)
+                row["active_threshold"] = threshold(profile.get("flags", toolchains.get(profile["toolchain"]).flags))
         for name in [None, *cfg["compiler"].get("units", {})]:
             settings = compiler_settings(cfg, name)
             self._check_aspsx(settings["toolchain"], settings.get("aspsx", ""))
@@ -3812,6 +3883,8 @@ class RomNetwork(Network):
             db.execute("UPDATE functions SET seed=NULL, best_score=NULL WHERE project_id=? AND status='open' "
                        "AND (? IS NULL OR unit=?)", (proj["id"], unit, unit))
             self._event(db, proj["id"], None, "compiler", f"updated compiler settings for {unit or 'project default'}")
+            if cfg.get("platform") == "psx":
+                self._refresh_gp_guidance(db, proj["id"])
 
     def chat_agent(self, base: str) -> tuple[Agent, str]:
         """An identity for an agent the user talks to (Claude Code, Codex, ... connected with `decomp mcp`): `base`,

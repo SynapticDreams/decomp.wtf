@@ -85,3 +85,26 @@ expires. Only the normal linker can contribute an exact match; instruction agree
 Ties, insufficient samples and exhausted budgets are reported. A successful draft under one compiler is evidence,
 not proof of the original toolchain. Probes retain score summaries and recipes, without recording attempts,
 awarding matches or changing compiler settings. Changing settings marks the last report stale.
+
+## Small-data evidence
+
+PS1 imports inspect actual GP-relative loads, stores and address construction per unit. A nonzero executable
+header GP value alone no longer selects `-G8`: units without observed GP accesses start with `-G0`. Units with
+GP accesses start with the conventional `-G8` recipe pending comparison. Explicit import flags remain authoritative,
+and overlays are inspected independently. These are matching starting points, not identification of the original flags.
+
+**Inspect small data** shows access counts, resolved symbols, estimated object extents, common threshold trial values
+and the active setting. Recognized libraries are excluded when refreshing this report. Inferred symbol extents can
+combine adjacent objects, so a large extent cannot force a large threshold. Full-address references cannot establish
+an upper bound: declarations and section choices also affect addressing. Use compilation probes to distinguish
+remaining candidates; some binaries do not contain enough evidence for a unique answer.
+
+If a PS1 header omits GP, the importer examines bounded startup control flow before disassembly. It handles
+initialization loops and branch delay slots, requires a consistent constant at the first calls or tail transfers,
+and accepts a recovered base only in the expected RAM window. Unknown writes, conflicting paths and exhausted
+search limits leave GP unresolved. A supplied header value takes precedence. The existing PS2 recovery path is retained.
+
+Function briefs show the effective unit's actual threshold, including explicit empty flag lists and compiler defaults.
+The generated context comment refers to that value instead of claiming every project uses eight bytes. Opening a local
+PS1 context or saving compiler settings replaces the exact legacy generated comment while preserving its line count
+and C tokens; user-written guidance is retained.
