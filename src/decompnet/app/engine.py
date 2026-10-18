@@ -1724,6 +1724,14 @@ class RomNetwork(Network):
             for r in db.execute("SELECT id, best_source FROM functions WHERE project_id=? AND status='open' "
                                 "AND best_source IS NOT NULL", (proj["id"],)).fetchall():
                 db.execute("UPDATE functions SET best_source=? WHERE id=?", (word.sub(new, r["best_source"]), r["id"]))
+            # documented assembly, and attempts at it, say the name too (but a routine's own `.local` label isn't it)
+            asm_word = re.compile(rf"(?<![.\w]){re.escape(old)}\b")
+            for r in db.execute("SELECT id, matched_source, best_source FROM functions WHERE project_id=? AND status IN "
+                                "('documented','asm') AND (matched_source IS NOT NULL OR best_source IS NOT NULL)",
+                                (proj["id"],)).fetchall():
+                db.execute("UPDATE functions SET matched_source=?, best_source=? WHERE id=?",
+                           (asm_word.sub(new, r["matched_source"]) if r["matched_source"] else None,
+                            asm_word.sub(new, r["best_source"]) if r["best_source"] else None, r["id"]))
             self._event(db, proj["id"], agent.id, "rename", f"{old} → {new}")
         self._syms.pop(proj["id"], None)
         return f"✅ 0x{addr:08X} is now `{new}` (was `{old}`); {len(rewritten)} matched sources updated, all still match."
@@ -2881,7 +2889,8 @@ class RomNetwork(Network):
             cfg = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
             cfg["export"] = {"t": time.time(), "path": str(res["path"]), "identical": res.get("identical"),
                              "matched": res.get("matched"), "functions": res.get("functions"),
-                             "fallback": len(res.get("fallback") or [])}
+                             "fallback": len(res.get("fallback") or []), "documented": res.get("documented"),
+                             "left_out": len(res.get("left_out") or [])}
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
         return res
 

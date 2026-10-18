@@ -9,6 +9,7 @@ import pytest
 
 from decompnet import toolchains
 from decompnet.app.engine import RomNetwork
+from decompnet.rom import gb_asm
 
 from .test_gb import make_rom
 
@@ -91,3 +92,66 @@ def test_a_name_mgbdis_has_no_label_for_is_left_out_not_broken(tmp_path):
     res = net.export_rom(slug, log=lambda *_: None)
     assert res["identical"], res["log"]
     assert [n for n, _ in res["fallback"]] == ["MidCall"]
+
+
+SET_BANK = """; Maps bank 1 the way the game always does: the bank it keeps in HRAM first, then the mapper.
+; In: nothing. Out: A = 1. Maps bank 1 at $4000.
+SetBank1:
+    ld a, 1
+    ldh [hCurrentBank], a
+    ld [rROMB0], a
+    ret
+"""
+
+
+def _documented(tmp_path, text=SET_BANK):
+    net = RomNetwork(tmp_path / "d.db", tmp_path / "ws")
+    slug = net.import_rom(make_rom(size=0x8000, cgb=0xC0, code=CODE), confirmed=True, log=lambda *_: None)
+    pid = net.project_row(slug)["id"]
+    fn = net.store.one("SELECT * FROM functions WHERE project_id=? AND vram=?", pid, 0x158)
+    with net.store.tx() as db:  # documented in assembly, its DEF name the project's
+        db.execute("UPDATE functions SET name='SetBank1', status='documented', matched_source=? WHERE id=?", (text, fn["id"]))
+        db.execute("UPDATE symbols SET name='SetBank1' WHERE project_id=? AND name=?", (pid, fn["name"]))
+        db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)", (pid, "hCurrentBank", 0xFF9B, 0, "data"))
+    return net, slug
+
+
+@pytest.mark.skipif(not gb_asm.available(), reason="needs RGBDS")
+def test_a_documented_routine_goes_in_place_of_its_bytes(tmp_path):
+    from pathlib import Path
+    net, slug = _documented(tmp_path)
+    res = net.export_rom(slug, log=lambda *_: None)
+    assert res["identical"], res["log"]
+    assert (res["documented"], res["left_out"]) == (1, [])
+    out = Path(res["path"])
+    assert (out / "documented" / "SetBank1.asm").read_text() == SET_BANK
+    assert "DEF hCurrentBank EQU $FF9B" in (out / "documented" / "names.inc").read_text()
+    assert (out / "include" / "hardware.inc").exists() and "documented/" in (out / "README.md").read_text()
+    bank0 = (out / "build" / "disassembly" / "bank_000.asm").read_text()
+    assert "; documented in assembly: documented/SetBank1.asm" in bank0 and "    ldh [hCurrentBank], a" in bank0
+    assert "call SetBank1" in bank0  # its caller names it (mgbdis wrote its bytes as data)
+    assert net.cfg(net.project_row(slug))["export"]["documented"] == 1
+    plain = subprocess.run([sys.executable, "build.py", "--no-documented"], cwd=out, capture_output=True, text=True)
+    assert plain.returncode == 0 and "identical" in plain.stdout
+
+
+@pytest.mark.skipif(not gb_asm.available(), reason="needs RGBDS")
+def test_a_documented_routine_that_no_longer_passes_stays_as_mgbdis_has_it(tmp_path):
+    """Judged again with the project's names as they are now: one a name has changed under is left out, and said."""
+    net, slug = _documented(tmp_path)
+    pid = net.project_row(slug)["id"]
+    with net.store.tx() as db:  # a name it uses, gone
+        db.execute("DELETE FROM symbols WHERE project_id=? AND name='hCurrentBank'", (pid,))
+    res = net.export_rom(slug, log=lambda *_: None)
+    assert res["identical"], res["log"]
+    assert res["documented"] == 0 and [n for n, _ in res["left_out"]] == ["SetBank1"]
+    assert "hCurrentBank" in res["left_out"][0][1]
+
+
+@pytest.mark.skipif(not gb_asm.available(), reason="needs RGBDS")
+def test_renaming_a_name_rewrites_the_documented_routines_that_use_it(tmp_path):
+    net, slug = _documented(tmp_path, SET_BANK.replace("    ld [rROMB0], a\n", ".hCurrentBank:\n    ld [rROMB0], a\n"))
+    agent = net.authenticate(net.register_agent("namer"))
+    assert net.rename_symbol(agent, slug, "hCurrentBank", "hMappedBank").startswith("✅")
+    text = net.store.one("SELECT matched_source FROM functions WHERE name='SetBank1'")["matched_source"]
+    assert "ldh [hMappedBank], a" in text and ".hCurrentBank:" in text  # (a local label of the same name is its own)

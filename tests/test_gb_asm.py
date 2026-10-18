@@ -119,3 +119,11 @@ def test_the_draft_rebuilds_the_bytes_and_leaves_the_writing():
     text = gb_asm.draft(routine())
     assert "call FillTilemapZero" in text and "ld a, [wMenuOpen]" in text and "ldh [rLCDC], a" in text
     assert ".l_4a20:" in text and "ld hl, TILEMAP0" in text
+
+
+def test_a_label_the_project_has_for_something_else_is_refused():
+    """In the exported build it would be two things at once."""
+    out = problems(GOOD.replace("ClearMenuBackground:", "FillTilemapZero:"))
+    assert out and out[0].startswith("6. FillTilemapZero already names something else")
+    assert gb_asm.judge(routine(symbols={"ClearMenuBackground": 0x4A10, "wMenuOpen": 0xC0A2,
+                                         "FillTilemapZero": 0x0F31}), GOOD).ok  # (its own name, at its own address)
