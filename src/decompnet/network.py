@@ -516,10 +516,18 @@ class Network:
         if verdict is not None:
             d = scoring.DiffResult(0 if verdict else max(1, d.score), d.max_score, d.rows, verdict)
         matched_now = d.bytes_match and not scratch
-        self._record(fn, agent, d.score, source, ctx["version"], matched=matched_now)
+        refused = self._confirm_match(fn, agent, source) if matched_now else None  # (raises: the host can't be asked)
+        if refused is not None:
+            matched_now = False
+            d = scoring.DiffResult(max(1, refused), d.max_score, d.rows, False)
+        self._record(fn, agent, d.score, source, ctx["version"], matched=matched_now, confirmed=True)
 
         if scratch:
             head = f"(scratch — {fn['name']} was already matched) score {d.score}"
+        elif refused is not None:
+            head = (f"⚠️ NOT SAVED AS A MATCH: byte-identical on this copy, but the room's host scored it {d.score} on its "
+                    "own. The two copies build differently (compiler settings, context.h): check them with get_context. "
+                    "It's kept as your best meanwhile.")
         elif d.bytes_match:
             return {"text": f"✅ MATCH! {fn['name']} is byte-identical to the target ({fn['n_insns']} instructions). "
                             f"Credited to {agent.name}; your claim is released. Call claim_function for the next one.",
@@ -575,8 +583,20 @@ class Network:
         row = self.store.one("SELECT origin FROM agents WHERE id=?", agent.id)
         return {"kind": "room" if row and (row["origin"] or "").startswith("collab:") else "own"}
 
+    def _confirm_match(self, fn, agent: Agent, source: str) -> int | None:
+        """None when a match may be saved here; else the score that stands instead. (A room member's copy asks the
+        room's host first: see RomNetwork. Raises NetworkError when that can't be asked.)"""
+        return None
+
     def _record(self, fn, agent: Agent, score: int | None, source: str, ctx_version: int, matched: bool = False,
-                compiled: bool | None = None, via: str = "agent"):
+                compiled: bool | None = None, via: str = "agent", confirmed: bool = False):
+        if matched and not confirmed:  # the permuter's, the autopilot's: saved as a match only once confirmed
+            try:
+                instead = self._confirm_match(fn, agent, source)
+            except NetworkError:
+                instead = 1  # not a match here until it can be confirmed: whoever finds it again asks again
+            if instead is not None:
+                matched, score = False, max(1, instead)
         now = time.time()
         compiled = score is not None if compiled is None else compiled
         who = self._who(agent, via)

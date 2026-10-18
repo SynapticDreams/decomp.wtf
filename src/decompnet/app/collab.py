@@ -382,26 +382,30 @@ class Room:
         out: dict = {"e": max_e, "events": [dict(ev) for ev in events]}
         first = e == 0
         if first or names:
-            rows = net.store.all("SELECT f.name, f.vram, f.matched_source, a.name AS agent FROM functions f LEFT JOIN agents a "
+            rows = net.store.all("SELECT f.name, f.vram, f.rom_offset, f.size, f.matched_source, a.name AS agent "
+                                 "FROM functions f LEFT JOIN agents a "
                                  "ON a.id=f.matched_agent_id WHERE f.project_id=? AND f.status='matched'", pid)
             out["matched"] = [dict(r) for r in rows if first or r["name"] in names]
-        best = net.store.all("SELECT f.name, f.vram, f.best_score, f.best_source, MAX(t.id) AS last FROM attempts t "
+        best = net.store.all("SELECT f.name, f.vram, f.rom_offset, f.size, f.best_score, f.best_source, MAX(t.id) AS last "
+                             "FROM attempts t "
                              "JOIN functions f ON f.id=t.function_id WHERE f.project_id=? AND t.id>? AND f.status='open' "
                              "AND f.best_source IS NOT NULL GROUP BY f.id", pid, a)
-        out["best"] = [{"name": r["name"], "vram": r["vram"], "score": r["best_score"], "source": r["best_source"]} for r in best]
+        out["best"] = [{"name": r["name"], "vram": r["vram"], "rom_offset": r["rom_offset"], "size": r["size"],
+                        "score": r["best_score"], "source": r["best_source"]} for r in best]
         last = net.store.one("SELECT MAX(t.id) AS m FROM attempts t JOIN functions f ON f.id=t.function_id WHERE f.project_id=?", pid)
         out["a"] = max(a, last["m"] or 0)
-        if first or kinds & {"rename", "split"}:
+        if first or kinds & {"rename", "split", "merge"}:
             out["symbols"] = [dict(r) for r in net.store.all(
                 "SELECT name, address, size, kind FROM symbols WHERE project_id=?", pid) if not AUTO_NAME.match(r["name"])]
             out["functions"] = [dict(r) for r in net.store.all(
-                "SELECT name, vram, size FROM functions WHERE project_id=? ORDER BY vram", pid)]
+                "SELECT name, vram, size, rom_offset FROM functions WHERE project_id=? ORDER BY vram", pid)]
         ctx = net._context(pid)
         if ctx["version"] != ctx_version:
             out["context"] = {"version": ctx["version"], "header": ctx["header"]}
         if first or kinds & {"note"}:
             out["notes"] = [dict(r) for r in net.store.all(
-                "SELECT n.id, n.text, n.created_at, f.vram, a.name AS agent FROM notes n LEFT JOIN functions f ON f.id=n.function_id "
+                "SELECT n.id, n.text, n.created_at, f.vram, f.name AS function, f.rom_offset, a.name AS agent FROM notes n "
+                "LEFT JOIN functions f ON f.id=n.function_id "
                 "LEFT JOIN agents a ON a.id=n.agent_id WHERE n.project_id=? ORDER BY n.id", pid)]
         out["claims"] = [dict(r) for r in net.store.all(
             "SELECT f.name, f.vram, a.name AS agent FROM claims c JOIN functions f ON f.id=c.function_id JOIN agents a "
@@ -540,11 +544,13 @@ def host_app(net, rooms: dict[str, Room], tunnel: bool = False) -> Starlette:
     def attempt(room, member, d):
         agent = room.agent_for(member, d.get("agent"))
         res = net.attempt(agent, str(d.get("function", "")), str(d.get("source", "")), room.slug)
-        return {"score": res["score"], "matched": res["matched"]}
+        # byte-identical here confirms a member's match, also when the room has it already (someone else's, or the
+        # member's own best, which the host compiled and found exact): the member keeps it, then syncs the room's
+        return {"score": res["score"], "matched": res["matched"] or res["score"] == 0}
 
     def best(room, member, d):
-        """A member's attempt got better: kept as the function's best so far, as reported (no compile here: the host
-        only spends its CPU on verifying matches)."""
+        """A member's attempt got better: kept as the function's best so far as this copy scores it (compiled here
+        only when it claims to beat the best)."""
         agent = room.agent_for(member, d.get("agent"))
         net.apply_reported_best(room.slug, str(d.get("function", "")), int(d.get("score", 0)), str(d.get("source", ""))[:65536], agent)
         return {"ok": True}
@@ -888,16 +894,21 @@ class Link:
         if st.get("context") and _contained(st["context"]["header"]):
             net.apply_remote_context(slug, st["context"]["header"], st["context"]["version"])
             self.cursor["v"] = st["context"]["version"]
+        # by ROM offset and name when the host sends them (banks share CPU addresses), by address from older hosts
         for m in st.get("matched") or []:
             if _contained(m["matched_source"]):
-                net.apply_remote_match(slug, m["vram"], m["matched_source"], m["agent"] or "host")
+                net.apply_remote_match(slug, m["vram"], m["matched_source"], m["agent"] or "host", name=m.get("name"),
+                                       rom_offset=m.get("rom_offset"), size=m.get("size"))
         for b in st.get("best") or []:
             if _contained(b["source"]):
-                net.apply_remote_best(slug, b["vram"], b["score"], b["source"])
+                net.apply_remote_best(slug, b["vram"], b["score"], b["source"], name=b.get("name"),
+                                      rom_offset=b.get("rom_offset"), size=b.get("size"))
         for n in st.get("notes") or []:
-            net.apply_remote_note(slug, n["id"], n["vram"], n["text"], n["agent"] or "host", n["created_at"])
+            net.apply_remote_note(slug, n["id"], n["vram"], n["text"], n["agent"] or "host", n["created_at"],
+                                  name=n.get("function"), rom_offset=n.get("rom_offset"))
         for ev in st.get("events") or []:
-            if ev["kind"] in ("match", "claim", "release", "context", "rename", "split", "collab") and not (ev["agent"] or "").startswith(mine):
+            if ev["kind"] in ("match", "claim", "release", "context", "rename", "split", "merge", "collab") \
+                    and not (ev["agent"] or "").startswith(mine):
                 net.remote_event(pid, ev["kind"], ev["detail"], ev["agent"] or "host", ev["created_at"])
         self.claims = [c for c in st.get("claims") or [] if not (c["agent"] or "").startswith(mine)]
         self.members = st.get("members") or []
