@@ -356,7 +356,7 @@ function identifyHead(head, file) {
     const ram = dv.getUint32(0x28, true), entry = dv.getUint32(0x24, true);
     if (ram >= 0x02000000 && ram < 0x02400000 && entry >= ram) return { ...base, platform: "nds", order: "ROM", code: ascii(12, 16), title: ascii(0, 12) || stem, entry };
   }
-  if (text(0x8001, 0x8006) === "CD001" || text(0x9319, 0x931e) === "CD001" || text(0x9311, 0x9316) === "CD001") return { ...base, platform: "playstation", order: "disc image" };
+  if (text(0x8001, 0x8006) === "CD001" || text(0x9319, 0x931e) === "CD001" || text(0x9311, 0x9316) === "CD001" || text(0x9209, 0x920e) === "CD001") return { ...base, platform: "playstation", order: "disc image" };
   if (text(0, 8) === "MComprHD") return { ...base, platform: "playstation", order: "CHD disc image" };
   if (text(0, 4) === "\x7fELF" && head[5] === 1 && dv.getUint16(18, true) === 8) return { ...base, platform: "ps2", order: "ELF program", entry: dv.getUint32(24, true) };
   if (head.length > 0x60 && dv.getUint32(0x1c) === 0xc2339f3d) return { ...base, platform: "gc", order: "disc image", code: ascii(0, 6), title: ascii(0x20, 0x80) || stem };
@@ -388,7 +388,7 @@ function notSupported(head, file) {
   if (["sfc", "smc"].includes(ext)) return "That's a Super Nintendo ROM. SNES games were written in assembly, not compiled from C, so there's no C source to match.";
   if (ext === "nes") return "That NES file has no iNES header (it should start with \"NES\" and a 0x1A byte), so decomp.wtf can't tell how its banks are laid out. Dumps in the UNIF or FDS formats aren't supported yet.";
   if (["md", "gen", "sms", "gg", "pce"].includes(ext)) return "Games for that console were written in assembly, not compiled from C, so there's no C source to match.";
-  if (ext === "cue") return "That's the .cue sheet: pick the .bin file next to it (the track with the game's data, usually Track 1).";
+  if (ext === "cue") return "Use the local-path option for a CUE sheet so the app can read every referenced track.";
   if (["zip", "7z", "rar"].includes(ext)) return "That's an archive: unpack it first, then drop the game file inside.";
   if (ext === "apk") return "Android apps aren't supported yet.";
   if (ext === "pbp" || ext === "cso") return "That's a PSP file. PSP games aren't supported yet.";
@@ -568,8 +568,9 @@ $("analyse").onclick = async () => {
 };
 $("pathPick").onclick = (e) => {
   e.stopPropagation();
-  const body = dialog("Use a file on this computer", `<p class="muted">For big disc images: decomp.wtf reads the file where it is instead of copying it through the browser.</p>
-    <label class="field"><span>Path to the game file</span><input id="ppPath" class="mono" placeholder="/home/me/games/my-game.iso"></label>
+  const body = dialog("Use a file on this computer", `<p class="muted">Use a local path for a disc image or CUE sheet. Keep the referenced binary tracks with the sheet.</p>
+    <label class="field"><span>Path to the game file</span><input id="ppPath" class="mono" placeholder="/path/to/disc.cue"></label>
+    <details><summary>CUE track options</summary><label class="field"><span>Track number (leave empty to detect)</span><input id="ppCueTrack" type="number" min="1" max="99"></label></details>
     <label class="check"><input type="checkbox" id="ppOwn"><span>This is my own copy of this game, obtained legally. The results stay with me for my own use.</span></label>
     <div class="row"><button class="primary" id="ppGo" type="button" disabled>Start decompiling</button><button class="ghost" data-close type="button">Cancel</button></div>`);
   body.querySelector("#ppOwn").onchange = () => { $("ppGo").disabled = !$("ppOwn").checked; };
@@ -577,7 +578,8 @@ $("pathPick").onclick = (e) => {
     const path = $("ppPath").value.trim();
     if (!path) return;
     $("dialog").hidden = true;
-    runImport(`confirmed=1&path=${encodeURIComponent(path)}`, undefined, "Analysing your game…");
+    const track = $("ppCueTrack").value;
+    runImport(`confirmed=1&path=${encodeURIComponent(path)}${track ? `&cue_track=${encodeURIComponent(track)}` : ""}`, undefined, "Analysing your game…");
   };
 };
 $("demoBtn").onclick = () => runImport("demo=1", undefined, "Opening Demo Quest 64…");

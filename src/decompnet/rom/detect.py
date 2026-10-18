@@ -52,20 +52,34 @@ def _program(data: bytes, name: str = "") -> Picked | None:
     return None
 
 
-def identify(src: bytes | Path, name: str = "") -> Picked:
+def identify(src: bytes | Path, name: str = "", cue_track: int | None = None) -> Picked:
     """What the user picked: a ROM or program (bytes or a file), or a disc image (read from the file in place)."""
+    if cue_track is not None and (not isinstance(src, (str, Path)) or Path(src).suffix.lower() != ".cue"):
+        raise RomError("cue_track applies to a local CUE sheet")
     if isinstance(src, (str, Path)):
         path = Path(src)
         name = name or path.name
-        if path.stat().st_size <= SMALL:
-            return identify(path.read_bytes(), name)
+        if path.suffix.lower() == ".cue":
+            from . import cue
+
+            sheet = cue.read(path)
+            selected = sheet.select(cue_track)
+            with cue.TrackStream(selected) as stream:
+                picked = _from_disc(stream)
+            picked.info["disc"].update({"format": "cue", "track": selected.number,
+                                        "tracks": [t.metadata() for t in sheet.tracks]})
+            return picked
         with open(path, "rb") as f:
             head = f.read(8)
         if chd.is_chd(head):  # a compressed disc image: read in place, a hunk at a time
             with chd.Chd(path) as disc:
                 if psx.is_disc(disc):
-                    return _from_disc(disc)
+                    picked = _from_disc(disc)
+                    picked.info["disc"]["format"] = "chd"
+                    return picked
             raise RomError("this CHD doesn't hold a PlayStation disc this app can read")
+        if path.stat().st_size <= SMALL:
+            return identify(path.read_bytes(), name)
         with open(path, "rb") as f:
             if psx.is_disc(f):
                 return _from_disc(f)
@@ -73,6 +87,8 @@ def identify(src: bytes | Path, name: str = "") -> Picked:
     picked = _program(src, name)
     if picked is not None:
         return picked
+    if name.lower().endswith(".cue"):
+        raise RomError("import a CUE sheet by its local path, with its binary tracks in the same folder")
     if psx.is_disc(src):
         return _from_disc(src)
     if src[:4] == b"\x7fELF":
@@ -80,7 +96,7 @@ def identify(src: bytes | Path, name: str = "") -> Picked:
     raise RomError("this isn't a ROM, disc or game program this app can read: pick an N64 ROM (.z64, .n64, .v64), "
                    "a Game Boy or Game Boy Color ROM (.gb, .gbc), a Game Boy Advance ROM (.gba), an NES ROM (.nes), "
                    "a Master System or Game Gear ROM (.sms, .gg), a PlayStation 1 "
-                   "or 2 disc image (.bin, .iso, .chd) or its program file (e.g. SLUS_200.00)")
+                   "or 2 disc image (.bin, .img, .iso, .cue, .chd) or its program file (e.g. SLUS_200.00)")
 
 
 def _from_disc(src) -> Picked:
@@ -88,6 +104,8 @@ def _from_disc(src) -> Picked:
     picked = _program(raw, boot)
     if picked is None:
         raise RomError(f"the disc's program {boot} isn't a PlayStation executable this app can read")
+    disc = psx._Disc(src)
+    picked.info["disc"] = {"format": "iso" if disc.size == 2048 else "raw", "sector_size": disc.size, "skip": disc.skip}
     if picked.platform == "psx":
         from .psyqsym import discover
 

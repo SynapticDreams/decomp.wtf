@@ -50,7 +50,9 @@ def discover(image: Path, seconds: float = 20) -> dict:
     digest = file_digest(image)
     deadline = time.monotonic() + max(0, min(seconds, 120))
     scanned, truncated, regions, total_regions = 0, False, [], 0
-    with image.open('rb') as stream:
+    from .cue import open_image
+
+    with open_image(image) as stream:
         is_disc = psx.is_disc(stream)
         disc = psx._Disc(stream) if is_disc else None
         if disc is None:
