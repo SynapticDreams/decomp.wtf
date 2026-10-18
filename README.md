@@ -351,8 +351,9 @@ analyses DS ROMs (ARM9, ITCM, DTCM, overlays) inside a generated project of the 
 ROMs are split by [luvdis](https://github.com/aarant/luvdis) plus decomp.wtf's own pass for code nothing calls.
 Game Boy and Game Boy Color ROMs are split by [mgbdis](https://github.com/mattcurrie/mgbdis) and
 [rgbds](https://github.com/gbdev/rgbds) (the disassembly reassembles to the same bytes), banks included, and
-matched with GBDK-2020's SDCC. The code is followed first with the banks it maps (its jump tables, the handlers it
-keeps in RAM), so graphics, tables and padding are shown as data instead of being handed out as functions. Master System and Game Gear ROMs use decomp.wtf's own Z80 disassembler and the same
+matched with GBDK-2020's SDCC. The code is followed first with the banks it maps (its jump tables, far calls, the handlers it
+keeps in RAM, the bytes a routine reads after its call), so graphics, tables and padding are shown as data instead of
+being handed out as functions. Master System and Game Gear ROMs use decomp.wtf's own Z80 disassembler and the same
 SDCC (its Z80 back end), with the Sega mapper's banks: the code is followed with the banks it maps, so each bank's
 code is found running where the game puts it, and a WLA-DX `.sym` file next to the ROM names and seeds functions
 (a project split by an older version is split again from its Settings, keeping its work). That fits games written

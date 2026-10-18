@@ -28,7 +28,8 @@ nothing in the flags), one that sets the stack pointer to an address (start-up c
 writes those only as inline assembly, which decomp.wtf doesn't take). And what SDCC (GBDK-2020 4.5, SDCC 4.5.1) never
 writes, measured: a routine that reads h or l before setting them (it passes arguments in a, e, de and bc; hl never),
 a jr out of the function (its jr stays inside one; it reaches other functions with jp, conditional tail calls
-included), and a call followed by a ret no branch reaches (a call at the end becomes a jp).
+included), a call followed by a ret no branch reaches (a call at the end becomes a jp), and a routine that takes its
+return address first (`pop hl`, `ld hl, sp+$00`: it reads the bytes after its call).
 
 6502 (NES) and Z80 (Master System, Game Gear), see mos6502_reason and z80_reason. Their splits start a function at
 every address code jumps or branches to, and hand-written code branches into the middle of its routines, so what they
@@ -309,6 +310,12 @@ def sm83_reason(code: bytes, base: int = 0, capped: bool = False) -> str | None:
             z = True
         elif _SM83_C.match(text):
             c = True
+    for _addr, text, _ln in insns:  # its return address taken before anything is pushed: it reads what follows its call
+        if text.startswith("push ") or _SM83_BRANCH.match(text):
+            break
+        if re.match(r"^pop (hl|de|bc)$", text) or text == "ld hl, sp+$00":
+            return (f"{text} first: it takes its return address to read the bytes after its call (or to go elsewhere), "
+                    "hand-written")
     if (early := _sm83_hl_first(insns)):
         return f"reads {early} before setting it: SDCC passes arguments in a, e, de and bc, never in hl"
     end = base + len(code)
@@ -316,8 +323,11 @@ def sm83_reason(code: bytes, base: int = 0, capped: bool = False) -> str | None:
     for i, (addr, text, ln) in enumerate(insns):
         if text.startswith("ld sp, $"):
             return "sets the stack pointer to an address: start-up code, hand-written"
-        if text == "halt" or text.startswith("stop"):
-            return f"{text.split()[0]} at ${addr:04x}: C writes it only as inline assembly, which isn't taken"
+        if text.startswith("stop"):
+            return (f"stop at ${addr:04x} (the Color's speed switch, or low power): C writes it only as inline "
+                    "assembly, which isn't taken")
+        if text == "halt":
+            return f"halt at ${addr:04x}: C writes it only as inline assembly, which isn't taken"
         if text.startswith("jr ") and not base <= (to := int(text.rsplit("$", 1)[1], 16)) < end:
             return f"{text} leaves the function (to ${to:04x}): SDCC's jr stays inside one, other code it reaches with jp"
         nxt = insns[i + 1] if i + 1 < len(insns) else None
