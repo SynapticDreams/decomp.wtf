@@ -2981,12 +2981,13 @@ async function renderProjectSettings() {
   const banked = ["gb", "gbc", "sms", "gg", "nes"].includes(ov.platform) && !fork && ov.room?.role !== "guest";
   if ($("resplitPanel").hidden === banked) { $("resplitApply").hidden = true; $("resplitResult").innerHTML = ""; $("resplitLog").hidden = true; }
   $("resplitPanel").hidden = !banked;
-  const corrects = ["gb", "gbc"].includes(ov.platform) && !fork && ov.room?.role !== "guest";
+  const corrects = ["gb", "gbc", "sms", "gg"].includes(ov.platform) && !fork && ov.room?.role !== "guest";
   $("correctionsPanel").hidden = !corrects;
+  for (const id of ["covHead", "covText", "covRow"]) $(id).hidden = !["gb", "gbc"].includes(ov.platform);  // (Game Boy only, for now)
   if (corrects) loadCorrections();
 }
 
-/* Corrections agents made to the split (Game Boy), each with its reason, undoable; and the user's own symbol file. */
+/* Corrections agents made to the split (Game Boy, Master System), each with its reason, undoable; and the user's own symbol file. */
 async function loadCorrections() {
   const slug = S.slug;
   let r;

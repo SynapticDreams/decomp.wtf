@@ -1850,7 +1850,7 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
                             s(function=st("function", True), reason=st("what a person should look at", True))),
         "merge_function": ("Join a function with its neighbour when the split cut one routine in two.",
                            s(function=st("function", True))),
-        "correct_split": ("Game Boy: tell the split what it got wrong (used when the game is split again): kind data | "
+        "correct_split": ("Game Boy, Master System: tell the split what it got wrong (used when the game is split again): kind data | "
                           "code | table | operands | noreturn, at a function, NN:AAAA or an address, count (bytes, "
                           "entries), and how you know.",
                           s(kind=st("data | code | table | operands | noreturn", True),

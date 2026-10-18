@@ -22,6 +22,13 @@ encoding. Both consoles use the same mapper and the same compiler, so everything
   (`ld de,.next / push de / jp (hl)`), which comes back to `.next`. A symbol file next to the ROM names functions,
   and its automatic `_LABEL_..._` names say where code starts. Code reached only through pointers kept in RAM may
   still be missing, and data inside a function's range is not told apart from code.
+- When the split took data for code, missed a function, or decoded the bytes after a call as instructions, say so
+  with `correct_split(kind, at, reason, count)`, with how you know (what reads it, what calls it, what it holds):
+  `data` (`count` bytes at `at` aren't code), `code` (a function starts at `at`), `table` (`count` handler
+  addresses at `at`), `operands` (the routine at `at` reads `count` bytes after each call to it and returns past
+  them), `noreturn` (it never returns). `at` is a function's name, `NN:AAAA` (the bank and the address it runs at,
+  `05:8123` for bank 5 in slot 2) or an address in `function`'s bank. It's used the next time a person splits the
+  game again (they can undo it first); ten an hour at most.
 
 ## The matching lane
 

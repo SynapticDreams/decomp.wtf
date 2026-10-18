@@ -804,7 +804,7 @@ class RomNetwork(Network):
             raise NetworkError(f"the project's copy of the game ({cfg['rom']['file']}) isn't in its folder any more")
         lane = sms if arch == "z80" else nes if arch == "mos6502" else gb
         report: dict = {}
-        hints = self._hints(proj) if arch == "sm83" else None
+        hints = self._hints(proj) if arch in ("sm83", "z80") else None
         if hints is not None:
             fns = lane.split(rom_path, root, log=log, report=report, hints=hints)
         else:
@@ -869,6 +869,10 @@ class RomNetwork(Network):
                 r = by_off.get(f.rom)
                 if r is not None and r["id"] in kept and (getattr(f, "edges", None) or "edges" in (r["meta"] or "")):
                     db.execute("UPDATE functions SET meta=? WHERE id=?", (_with_edges(r["meta"], f.edges), r["id"]))
+                if r is not None and r["id"] in kept and f.asm and f.asm != r["asm"]:  # (the same bytes, read anew:
+                    # what follows a call is the routine's operands now, say)
+                    db.execute("UPDATE functions SET asm=?, n_insns=?, relocs=? WHERE id=?",
+                               (f.asm, f.n_insns, json.dumps([list(x) for x in f.refs or []]), r["id"]))
             for r in gone:  # its notes go to whatever covers its start now
                 if r["id"] not in noted:
                     continue
@@ -1286,7 +1290,7 @@ class RomNetwork(Network):
         syms = self.symbols(proj["id"])
         text = what.strip()
         bank = None
-        if (m := re.fullmatch(r"(?:0x|\$)?([0-9A-Fa-f]{1,3}):(?:0x|\$)?([0-9A-Fa-f]{1,4})", text)):
+        if (m := re.fullmatch(r"(?:0x|\$)?([0-9A-Fa-f]{1,4}):(?:0x|\$)?([0-9A-Fa-f]{1,4})", text)):
             bank, addr = int(m.group(1), 16), int(m.group(2), 16)
         elif (m := re.fullmatch(r"(?:0x|\$)?([0-9A-Fa-f]{1,8})", text)) and not syms.by_name.get(text):
             addr = int(m.group(1), 16) & 0xFFFF
@@ -2014,13 +2018,14 @@ class RomNetwork(Network):
     }
 
     def _banked_at(self, proj, at: str, function: str | None = None) -> tuple[int, int]:
-        """(ROM offset, CPU address) of a place in a Game Boy game: a function's name, `NN:AAAA` (its bank and
-        address), or an address in the bank of `function` (or in bank 0, or one only one function has)."""
+        """(ROM offset, CPU address) of a place in a Game Boy or Master System game: a function's name, `NN:AAAA` (its
+        bank and the address it runs at), or an address in the bank of `function` (or in bank 0, or one only one
+        function has)."""
         text = str(at or "").strip()
         row = self.store.one("SELECT rom_offset, vram FROM functions WHERE project_id=? AND name=?", proj["id"], text)
         if row is not None and row["rom_offset"] is not None:
             return row["rom_offset"], row["vram"]
-        if (m := re.fullmatch(r"(?:0x|\$)?([0-9A-Fa-f]{1,3}):(?:0x|\$)?([0-9A-Fa-f]{1,4})", text)):
+        if (m := re.fullmatch(r"(?:0x|\$)?([0-9A-Fa-f]{1,4}):(?:0x|\$)?([0-9A-Fa-f]{1,4})", text)):
             bank, cpu = int(m.group(1), 16), int(m.group(2), 16)
         elif (m := re.fullmatch(r"(?:0x|\$)?([0-9A-Fa-f]{1,4})", text)):
             cpu = int(m.group(1), 16)
@@ -2037,24 +2042,33 @@ class RomNetwork(Network):
                 bank = banks.pop()
         else:
             raise NetworkError(f"`{at}` is not a function, NN:AAAA (a bank and an address) or an address")
-        if cpu >= 0x8000 or (cpu < 0x4000 and bank not in (0, None)) or (cpu >= 0x4000 and bank == 0):
-            raise NetworkError(f"{bank:02X}:{cpu:04X} isn't in the ROM: bank 0 is at $0000-$3FFF, every other bank at "
-                               "$4000-$7FFF")
-        flat = cpu if cpu < 0x4000 else bank * 0x4000 + cpu - 0x4000
+        z80 = (self.cfg(proj).get("arch") or "").lower() == "z80"  # (Master System: slots at $4000 and $8000, and
+        # slot 0 paged above its first KiB)
+        if z80:
+            bad = cpu >= 0xC000 or (cpu < 0x0400 and bank not in (0, None)) or (cpu >= 0x4000 and bank == 0)
+            where = "bank 0 is at $0000-$3FFF, the others at $4000-$BFFF (or $0400-$3FFF when slot 0 is paged)"
+        else:
+            bad = cpu >= 0x8000 or (cpu < 0x4000 and bank not in (0, None)) or (cpu >= 0x4000 and bank == 0)
+            where = "bank 0 is at $0000-$3FFF, every other bank at $4000-$7FFF"
+        if bad:
+            raise NetworkError(f"{bank:02X}:{cpu:04X} isn't in the ROM: {where}")
+        flat = cpu if cpu < 0x4000 and not bank else bank * 0x4000 + (cpu & 0x3FFF)
         if flat >= int(self.cfg(proj)["rom"].get("size") or 0):
             raise NetworkError(f"{bank:02X}:{cpu:04X} is past the end of the ROM")
         return flat, cpu
 
     def correct_split(self, agent: Agent, project: str | None, kind: str, at: str, reason: str, count: int = 0,
                       function: str = "") -> str:
-        """An agent says what the split got wrong about the game's code and data (Game Boy): bytes that aren't code, a
-        function start, a table of handler addresses, a routine that reads bytes after its call, one that never
-        returns. Kept with its reason for a person to see (and undo), and used when the game is split again."""
+        """An agent says what the split got wrong about the game's code and data (Game Boy, Master System): bytes that
+        aren't code, a function start, a table of handler addresses, a routine that reads bytes after its call, one
+        that never returns. Kept with its reason for a person to see (and undo), and used when the game is split
+        again."""
         if self._link(project) is not None:
             raise NetworkError("in a room, leave a note (add_note): the room's host splits the game")
         proj = self._project(project)
-        if (self.cfg(proj).get("arch") or "").lower() != "sm83" or self.fork_slug(proj["slug"]):
-            raise NetworkError("corrections to the split are for Game Boy projects for now: leave a note (add_note)")
+        if (self.cfg(proj).get("arch") or "").lower() not in ("sm83", "z80") or self.fork_slug(proj["slug"]):
+            raise NetworkError("corrections to the split are for Game Boy and Master System projects for now: leave a "
+                               "note (add_note)")
         kind = str(kind or "").strip().lower()
         if kind not in self.CORRECTION_KINDS:
             raise NetworkError(f"kind is one of {', '.join(self.CORRECTION_KINDS)}")
@@ -2133,7 +2147,7 @@ class RomNetwork(Network):
             pass  # (a file that can't be read any more: Settings says so)
         return hints
 
-    _SYM_LINE = re.compile(r"^([0-9A-Fa-f]{1,3}):([0-9A-Fa-f]{4})\s+([A-Za-z_][A-Za-z0-9_@#$]*(?:\.[A-Za-z0-9_@#$]+)?|"
+    _SYM_LINE = re.compile(r"^([0-9A-Fa-f]{1,4}):([0-9A-Fa-f]{4})\s+([A-Za-z_][A-Za-z0-9_@#$]*(?:\.[A-Za-z0-9_@#$]+)?|"
                            r"\.(?:code|data|text|byt|asc|padding):[0-9A-Fa-f]{1,5}(?::[0-9A-Za-z,]{1,40})?)\s*$")
 
     def _sym_path(self, proj) -> Path:
@@ -2151,13 +2165,15 @@ class RomNetwork(Network):
                 "from": cfg.get("symbol_file", {}).get("from", path.name)}
 
     def import_symbols(self, slug: str, text: str, name: str = "") -> dict:
-        """A symbol file the user chose (RGBDS / mgbdis `bank:address Name` lines, with `.data:length` style blocks),
-        for this project only: kept next to its copy of the game, so splitting again uses its names and blocks, and
-        functions with automatic names at its labels are named after them. Only well-formed lines are kept (comments,
-        headers and anything else, a refusal test string included, never reach an agent); nothing is shared."""
+        """A symbol file the user chose (RGBDS / mgbdis / WLA-DX `bank:address Name` lines, with `.data:length` style
+        blocks on the Game Boy), for this project only: kept next to its copy of the game, so splitting again uses its
+        names and blocks, and functions with automatic names at its labels are named after them (not after the
+        file's own automatic ones, `_LABEL_9D9_`: those only say where code starts). Only well-formed lines are kept
+        (comments, headers and anything else, a refusal test string included, never reach an agent); nothing is
+        shared."""
         proj = self._project(slug)
-        if (self.cfg(proj).get("arch") or "").lower() != "sm83" or self.fork_slug(slug):
-            raise NetworkError("importing a symbol file is for Game Boy projects for now")
+        if (self.cfg(proj).get("arch") or "").lower() not in ("sm83", "z80") or self.fork_slug(slug):
+            raise NetworkError("importing a symbol file is for Game Boy and Master System projects for now")
         if slug in self.links:
             raise NetworkError("a room member's copy follows its host: the host imports it")
         if len(text or "") > 8 << 20:
@@ -2172,7 +2188,8 @@ class RomNetwork(Network):
             else:
                 dropped += 1
         if not kept:
-            raise NetworkError("no `bank:address Name` lines in that file: is it an RGBDS, BGB or mgbdis symbol file?")
+            raise NetworkError("no `bank:address Name` lines in that file: is it an RGBDS, BGB, mgbdis or WLA-DX symbol "
+                               "file?")
         path = self._sym_path(proj)
         path.write_text("; imported into decomp.wtf for this project only\n" + "\n".join(kept) + "\n", encoding="utf-8")
         self._update_cfg(slug, lambda cfg: cfg.update(symbol_file={"from": Path(name).name or path.name,
@@ -2182,7 +2199,7 @@ class RomNetwork(Network):
         names = {}
         for line in kept:
             loc, label = line.split()
-            if not label.startswith(".") and "." not in label:
+            if not label.startswith((".", "_LABEL_", "_DATA_", "_RAM_")) and "." not in label:
                 bank, cpu = (int(x, 16) for x in loc.split(":"))
                 names[(bank, cpu)] = label
         taken = {r["name"] for r in self.store.all("SELECT name FROM functions WHERE project_id=?", proj["id"])}
