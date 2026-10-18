@@ -505,7 +505,7 @@ class RomNetwork(Network):
     # ------------------------------------------------------------------ import
 
     def import_rom(self, data: bytes | Path, *, toolchain: str | None = None, flags: list[str] | None = None,
-                   confirmed: bool = False, name: str = "", log=print) -> str:
+                   confirmed: bool = False, name: str = "", log=print, cue_track: int | None = None) -> str:
         """Import a game the user owns (ROM bytes, or a file such as a disc image): split it, store every function
         as a target. Returns the slug."""
         if not confirmed:
@@ -514,7 +514,7 @@ class RomNetwork(Network):
         if project_file is not None:  # a dtk-template or ds-decomp project, worked on like a fork
             compiler = toolchain if toolchain and toolchain.startswith(("GC/", "Wii/", "DS/")) else None
             return self.forks.create_scratch(project_file, compiler=compiler, log=log)
-        picked = detect.identify(data, name)
+        picked = detect.identify(data, name, cue_track=cue_track)
         rom, info = picked.data, picked.info
         for p in self.store.all("SELECT slug, config, root FROM projects"):
             if json.loads(p["config"]).get("rom", {}).get("sha1") == info["sha1"]:

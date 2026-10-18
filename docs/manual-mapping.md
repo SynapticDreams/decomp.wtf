@@ -3,7 +3,7 @@
 A mapping profile tells decomp.wtf which bytes are executable and where they live
 in memory. This helps games whose code is hidden in large resource containers or
 loaded in banks that reuse an address. The profile is YAML or JSON data; it cannot
-run commands. Version 1 supports PS1 binary files and ISO9660 BIN/ISO disc images.
+run commands. Version 1 supports PS1 binary files and ISO9660 BIN/ISO/CUE disc inputs. CUE sheets use their indexed data track; see [disc inputs](ps1-disc-inputs.md) for formats and bounds.
 
 This milestone provides a CLI and an authenticated operator API. A mapping editor
 in the frontend and profiles for other platforms can build on the same service.
@@ -44,7 +44,7 @@ records the author's reviewed evidence; the app cannot prove its meaning. Hashes
 extents, alignment, function hints and instruction bytes are checked mechanically.
 `derived` regions can be analysed but cannot be imported or applied.
 
-The whole input hash pins a profile to a particular dump. Each region also pins
+The whole input hash pins a profile to a particular dump. For CUE, use the composite sheet-and-binaries identity from `mapping discover` or `mapping.file_digest`, rather than hashing the text alone. Each region also pins
 its source container. A different input must have a separately reviewed profile;
 do not change hashes to bypass a version mismatch. For binary input the two hashes
 are identical. No game bytes need to be distributed with a profile.

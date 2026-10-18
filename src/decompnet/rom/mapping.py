@@ -77,6 +77,10 @@ def digest(data):
 
 
 def file_digest(path):
+    if Path(path).suffix.lower() == ".cue":
+        from .cue import digest as cue_digest
+
+        return cue_digest(Path(path))
     h = hashlib.sha256()
     with Path(path).open("rb") as f:
         for block in iter(lambda: f.read(1024 * 1024), b""):
@@ -223,11 +227,14 @@ def prepare(profile: Profile, image: Path, directory: Path, log=lambda *_: None)
         raise MappingError("analysis directory must not exist")
     directory.mkdir(parents=True)
     data, functions, symbols = {}, {}, {}
-    with image.open("rb") as stream:
+    from .cue import open_image
+
+    with open_image(image) as stream:
+        source_size = getattr(stream, "length", image.stat().st_size)
         class BoundedDisc(psx._Disc):
             def read(self, lba, length):
                 if lba < 0 or length < 0 or length > 64 * 1024 * 1024 or \
-                        (lba + (length + 2047) // 2048) * self.size > image.stat().st_size:
+                        (lba + (length + 2047) // 2048) * self.size > source_size:
                     raise MappingError("disc file extent is outside the image or exceeds the v1 64 MiB source limit")
                 return super().read(lba, length)
 
@@ -246,7 +253,7 @@ def prepare(profile: Profile, image: Path, directory: Path, log=lambda *_: None)
                     sources.clear()  # bound memory even if a profile refers to many different large files
                     try:
                         blob = disc.find(region.file)
-                    except (IndexError, struct.error) as e:
+                    except (IndexError, struct.error, psx.RomError) as e:
                         raise MappingError(f"malformed ISO9660 directory: {e}") from None
                     if blob is None:
                         raise MappingError(f"disc file not found: {region.file}")

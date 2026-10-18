@@ -534,6 +534,10 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             return bad
         q = request.query_params
         toolchain = q.get("toolchain") or None
+        try:
+            cue_track = int(q["cue_track"]) if q.get("cue_track") else None
+        except ValueError:
+            return fail(ValueError("cue_track must be a track number"))
         if q.get("demo") == "1":
             game: bytes | Path | None = _static("demo/demo-quest-64.z64")
             if game is None:
@@ -568,7 +572,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
         def work(log):
             try:
-                slug = net.import_rom(game, toolchain=toolchain, confirmed=True, name=name, log=log)
+                slug = net.import_rom(game, toolchain=toolchain, confirmed=True, name=name, log=log, cue_track=cue_track)
             finally:
                 if uploaded:
                     shutil.rmtree(game.parent, ignore_errors=True)
