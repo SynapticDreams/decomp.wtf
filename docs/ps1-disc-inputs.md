@@ -13,3 +13,5 @@ Bounds: 1 MiB sheets, at most 99 tracks and unique binary FILE entries, ordered 
 Manual mapping and archive discovery also accept CUE sheets with one bootable data track. For CUE, `input.sha256` is a composite identity: SHA-256 over `decomp-cue-v1` plus a zero byte, the exact sheet bytes, and the 32-byte SHA-256 digest of each referenced binary in first-track order. Use `decompnet.rom.mapping.file_digest(Path(...))` or `mapping discover` to compute it. Source-container hashes still validate extracted ISO files. Changing an audio binary invalidates the input identity too.
 
 Format facts: [GNU CUE INDEX reference](https://www.gnu.org/software/ccd2cue/manual/html_node/INDEX-_0028CUE-Command_0029.html), [GNU track modes](https://www.gnu.org/software/ccd2cue/manual/html_node/MODE-_0028Compact-Disc-fields_0029.html), and [PSX-SPX disc images](https://psx-spx.consoledev.net/dev/ps1/cdr/cdromfileformats/diskimages/). Readers are original code; no third-party parser or retail image is bundled.
+
+Fixed-extent output is available through **Build disc image**; see [disc export](ps1-disc-export.md) for preserved extents, supported sector formats and verification.

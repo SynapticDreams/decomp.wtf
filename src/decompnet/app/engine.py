@@ -516,8 +516,14 @@ class RomNetwork(Network):
             return self.forks.create_scratch(project_file, compiler=compiler, log=log)
         picked = detect.identify(data, name, cue_track=cue_track)
         rom, info = picked.data, picked.info
+        if picked.platform == "psx" and info.get("disc"):
+            from ..rom.mapping import file_digest
+            import hashlib
+
+            info["disc"]["sha256"] = file_digest(data) if isinstance(data, Path) else hashlib.sha256(data).hexdigest()
         for p in self.store.all("SELECT slug, config, root FROM projects"):
-            if json.loads(p["config"]).get("rom", {}).get("sha1") == info["sha1"]:
+            previous = json.loads(p["config"]).get("rom", {})
+            if previous.get("sha1") == info["sha1"] and previous.get("disc", {}).get("sha256") == info.get("disc", {}).get("sha256"):
                 if self._import_again(p, log):  # it was imported when it could not work: it has been removed
                     break
                 log(f"already imported as {p['slug']}")
@@ -3070,6 +3076,18 @@ class RomNetwork(Network):
 
     # ------------------------------------------------------------------ export
 
+    def export_disc(self, slug: str, original: Path, edited: Path | None = None, log=print) -> dict:
+        from ..rom.disc_export import export_disc
+
+        result = export_disc(self, slug, original, edited, log)
+        proj = self._project(slug)
+        with self.store.tx() as db:
+            cfg = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
+            cfg.setdefault("rom", {}).setdefault("disc", {}).setdefault("sha256", result["base_sha256"])
+            cfg["disc_export"] = {"t": time.time(), **result}
+            db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
+        return result
+
     def export_rom(self, slug: str, log=print, translation_units: list[dict] | None = None) -> dict:
         """Write a rebuildable source tree (the base for ports and mods) and prove it rebuilds the game."""
         if self.fork_slug(slug):  # a fork's work is already in its source tree, committed
@@ -3082,7 +3100,7 @@ class RomNetwork(Network):
 
         proj = self._project(slug)
         if self.cfg(proj).get("mapping"):
-            raise NetworkError("mapping v1 verifies individual functions; complete-disc export is not supported yet")
+            raise NetworkError("mapping v1 supports fixed-extent disc export; a complete source-tree export is not supported yet")
         platform = self.cfg(proj).get("platform")
         if translation_units is not None and platform != "psx":
             raise NetworkError("translation-unit export groups currently support PS1 projects")

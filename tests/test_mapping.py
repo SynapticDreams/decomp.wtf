@@ -259,7 +259,7 @@ def test_unsafe_layout_operations_and_room_sharing_are_disabled(mapped):
         net.rename_symbol(agent, slug, "add__func_80100000", "renamed")
     with pytest.raises(NetworkError, match="profile; v1"):
         net.split_function(agent, slug, "add__func_80100000", "0x80100004", "tail")
-    with pytest.raises(NetworkError, match="complete-disc"):
+    with pytest.raises(NetworkError, match="source-tree"):
         net.export_rom(slug)
     with pytest.raises(NetworkError, match="overlay-aware"):
         Room(net, slug)
