@@ -34,15 +34,19 @@ class SymbolTable:
         self.by_addr: dict[int, Symbol] = {}
         self._starts: list[int] = []
         for s in symbols or []:
-            self.add(s, reindex=False)
+            # every name the list holds stays one: on the Game Boy, Master System and NES two banks' functions
+            # share a CPU address, and both names must resolve (a call by name, a rename)
+            self.add(s, reindex=False, replace=False)
         self._reindex()
 
     def _reindex(self) -> None:
         self._starts = sorted(self.by_addr)
 
-    def add(self, sym: Symbol, reindex: bool = True) -> None:
+    def add(self, sym: Symbol, reindex: bool = True, replace: bool = True) -> None:
+        """Add a symbol; with `replace`, it takes the place of the name its address had (a function's real name
+        for its automatic one)."""
         old = self.by_addr.get(sym.address)
-        if old is not None and old.name != sym.name:
+        if replace and old is not None and old.name != sym.name:
             self.by_name.pop(old.name, None)
         self.by_name[sym.name] = sym
         self.by_addr[sym.address] = sym
