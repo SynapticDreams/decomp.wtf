@@ -3082,9 +3082,28 @@ function fillCompilerSettings() {
   $("setFlags").value = (override.flags || (tc === c.toolchain ? c.flags : [])).join(" ");
   $("setAspsxField").hidden = S.ov.platform !== "psx";
   $("setAspsx").value = override.aspsx ?? c.aspsx ?? "";
+  $("compilerProbePanel").hidden = S.ov.platform !== "psx";
+  showCompilerProbe(c.probe);
   $("setUnitReset").hidden = !unit;
 }
 $("setCompilerUnit").onchange = fillCompilerSettings;
+function showCompilerProbe(probe) {
+  const box = $("compilerProbeResult");
+  if (!probe) { box.innerHTML = ""; return; }
+  box.innerHTML = `<p class="muted small">Unit ${esc(probe.unit || "(unnamed)")} · ${esc(probe.confidence)} · ${probe.samples.length} samples${probe.truncated ? " · budget reached" : ""}${probe.stale ? " · settings have changed; compare again" : ""}</p><p class="muted small">${esc(probe.note)}</p>`
+    + (probe.results.length ? `<table class="small"><thead><tr><th>Compiler / flags</th><th>Assembler</th><th>Compiled</th><th>Exact</th><th>Mean match</th></tr></thead><tbody>${probe.results.slice(0, 12).map((r) => `<tr><td>${esc(r.toolchain)}<br><code>${esc(r.flags.join(" "))}</code></td><td>${esc(r.aspsx || "GNU")}</td><td>${r.compiled}/${probe.samples.length}</td><td>${r.exact}/${probe.samples.length}</td><td>${r.percent.toFixed(1)}%</td></tr>`).join("")}</tbody></table>` : "");
+}
+$("compilerProbe").onclick = async () => {
+  const btn = $("compilerProbe");
+  btn.disabled = true;
+  $("compilerProbeLog").hidden = false;
+  try {
+    const { job } = await api("/api/compiler/probe", { method: "POST", body: { slug: S.slug, unit: $("setCompilerUnit").value, expanded: $("compilerProbeExpanded").checked } });
+    const result = await followJob(job, $("compilerProbeLog"));
+    S.ov.compiler.probe = result;
+    showCompilerProbe(result);
+  } catch (e) { toast(esc(e.message), "err"); } finally { btn.disabled = false; }
+};
 $("setUnitReset").onclick = async () => {
   try {
     S.ov = await api("/api/compiler", { method: "POST", body: { slug: S.slug, unit: $("setCompilerUnit").value } });

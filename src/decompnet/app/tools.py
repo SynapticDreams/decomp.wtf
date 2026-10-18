@@ -4,6 +4,7 @@ built-in API agent. Every tool works on the project the agent was started on."""
 from __future__ import annotations
 
 import re
+import json
 from importlib import resources
 from typing import Callable
 
@@ -250,6 +251,8 @@ def _compile(net: RomNetwork, agent: Agent, slug: str, function: str, source: st
 
 HANDLERS: dict[str, Callable[..., str]] = {
     "project_info": lambda net, agent, slug: project_info(net, slug),
+    "probe_compiler": lambda net, agent, slug, unit="", expanded=False: json.dumps(
+        net.probe_compiler(slug, unit or None, bool(expanded), log=lambda _: None), indent=2),
     "claim_function": lambda net, agent, slug, function="", strategy="", count=1, track="":
         _claim(net, agent, slug, function, strategy, count, track),
     "get_function": lambda net, agent, slug, function, start_line=0: (
@@ -287,7 +290,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
         net.forks.split_file(agent, _fork(net, slug, "split_file"), path, at, new_name, data),
 }
 
-ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "merge_function", "correct_split"}
+ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "merge_function", "correct_split", "probe_compiler"}
 FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file"}
 
 
@@ -340,6 +343,13 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
     async def project_info(ctx: Context) -> str:
         """Which game you're working on, its compiler, and progress so far."""
         return await run(ctx, "project_info")
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def probe_compiler(ctx: Context, unit: str = "", expanded: bool = False) -> str:
+        """Compare installed PS1 compiler settings on small C drafts in one unit. Returns ranked hypotheses,
+        exact linked match counts and confidence; does not change compiler settings or record matches.
+        Empty unit selects resident code. The expanded search uses more samples and a larger compile budget."""
+        return await run(ctx, "probe_compiler", unit=unit, expanded=expanded)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def claim_function(ctx: Context, function: str = "", strategy: str = "", count: int = 1, track: str = "") -> str:

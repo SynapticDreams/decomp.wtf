@@ -22,3 +22,5 @@ def _no_surprise_downloads(monkeypatch):
     from decompnet.app.engine import RomNetwork
 
     monkeypatch.setattr(RomNetwork, "auto_install_tools", False)
+    # The configuration probe has dedicated tests; unrelated imports should not launch background compiles.
+    monkeypatch.setattr(RomNetwork, "auto_probe_compilers", False)

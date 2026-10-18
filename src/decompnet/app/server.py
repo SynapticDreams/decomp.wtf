@@ -669,6 +669,10 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             net.set_compiler(slug, str(data.get("toolchain", "")), data.get("flags"), data.get("aspsx"))
         return net.overview(slug)
 
+    def p_compiler_probe(slug, request, data):
+        return {"job": jobs.start("compiler probe", lambda log: net.probe_compiler(
+            slug, str(data["unit"]) if data.get("unit") else None, bool(data.get("expanded")), log))}
+
     def p_export(slug, request, data):
         def work(log):
             res = net.export_rom(slug, log=log)
@@ -762,6 +766,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/diff": (lambda s, r, d: net.function_diff(s, r.query_params.get("name", ""),
                                                         r.query_params.get("which", "latest")), ["GET"]),
         "/api/compiler": (p_compiler, ["POST"]), "/api/export": (p_export, ["POST"]), "/api/open": (p_open, ["POST"]),
+        "/api/compiler/probe": (p_compiler_probe, ["POST"]),
         "/api/resplit": (p_resplit, ["POST"]),
         "/api/give_back": (lambda s, r, d: net.give_to_agents(s, str(d.get("function", ""))), ["POST"]),
         "/api/corrections": (lambda s, r, d: net.corrections(s), ["GET"]),
