@@ -271,6 +271,25 @@ documented routines, reports omissions and checks the rebuilt image byte for byt
 
 ## The matching lane
 
+The Python splitter also supports `sms.split(..., symbol_layout=declaration)` for explicit WLA source geometry.
+This is a library entry point; project symbol-upload controls still use the historical physical-bank format.
+The version 1 declaration contains `input: {size, sha256}` for the normalized image, `banks` with
+`{id, offset, size}` in physical file order, `slots` with `{id, start, size, space}`, and `views` with
+`{bank, slot, offset, size, role}`. Bank sizes may differ; they must cover the image exactly once. A view's
+offset is relative to its source bank and CPU slot, not to a hardware mapper bank. Spaces are `rom`, `ram`
+or `unknown`; roles are `code`, `data` or `unknown`. All fields are required and integer values are decimal JSON
+numbers. The declaration describes assembler placement rather than live hardware state.
+
+Only declared code labels and automatic `_LABEL_<hex>_` markers in otherwise unknown ROM views become seed
+suggestions. Data, RAM, local, impossible and conflicting records do not seed routines. Ordinary labels in unknown
+views stay suggestions; automatic markers never supply semantic function names. `report.symbol_import` preserves
+source hash, original label coordinates, normalized offsets, aliases and unresolved reasons. WLA ROM checksums,
+when supplied, must match. Sources are bounded to 8 MiB, 250,000 lines and 100,000 records; declarations and normalization have
+explicit bank/view/work budgets. A different revision or exhausted budget is refused.
+
+This adapter follows the pinned [WLA symbol format](https://github.com/vhelin/wla-dx/blob/v10.7/doc/symbols.rst)
+and [assembler bank/slot directives](https://github.com/vhelin/wla-dx/blob/v10.7/doc/asmdiv.rst).
+
 Settings and Source show separate SMS/GG evidence dimensions. Physical byte totals use range unions, so aliases
 or overlapping entries cannot inflate C-reference, documented-assembly, code or data totals. Code/data overlap
 is reported explicitly; classified data is not automatically typed data. The C percentage covers C candidates,
