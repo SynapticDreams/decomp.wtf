@@ -16,6 +16,7 @@ from .test_coverage import cdl
 from .test_nes import make_rom as nes_rom
 from .test_sms import make_rom as sms_rom
 from .test_sms_corrections import CODE
+from .sms_wla_fixture import bank_zero_layout
 
 
 def _project(tmp_path, name: str, data: bytes):
@@ -45,7 +46,7 @@ def test_a_master_system_log_starts_functions_and_keeps_data_out(tmp_path):
     info = net.import_coverage(slug, log, "game.cdl")
     assert info["entries"] == 1 and info["from"] == "game.cdl"
     # CDL is physical ROM evidence; this declaration supplies the CPU window it does not contain.
-    net.import_symbols(slug, "[labels]\n0000:0700 _LABEL_700_\n", "fixture.sym")
+    net.import_symbols(slug, "[labels]\n0000:0700 _LABEL_700_\n", "fixture.sym", layout=bank_zero_layout(data, role='unknown'))
     net.resplit_banked(slug, apply=True, log=lambda *_: None)
     starts = _starts(net, slug)
     assert 0x0700 in starts and 0x0800 not in starts and 0x0250 not in starts  # (its only "caller" was data)

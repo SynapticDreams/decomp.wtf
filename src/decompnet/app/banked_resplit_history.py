@@ -15,7 +15,7 @@ from . import sms_resplit_dependencies as dependencies
 
 def capture(net, proj):
     cfg = net.cfg(proj)
-    inputs = state.external(Path(proj["root"]), cfg["rom"]["file"])
+    inputs = state.external(Path(proj["root"]), cfg["rom"]["file"], symbol_source=cfg.get('symbol_file'))
     captured = dependencies.capture(Path(proj['root']), cfg)
     if captured is not None:
         inputs['compiler_dependencies'] = captured

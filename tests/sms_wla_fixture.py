@@ -2,6 +2,15 @@
 from decompnet.rom.wla_layout import identity
 
 
+def bank_zero_layout(image, *, role='code'):
+    """Explicit authored 16 KiB source banks with only bank zero's CPU view declared."""
+    return {'version': 1, 'input': identity(image),
+            'banks': [{'id': n, 'offset': n * 0x4000, 'size': min(0x4000, len(image) - n * 0x4000)}
+                      for n in range((len(image) + 0x3FFF) // 0x4000)],
+            'slots': [{'id': 0, 'start': 0, 'size': 0x4000, 'space': 'rom'}],
+            'views': [{'bank': 0, 'slot': 0, 'offset': 0, 'size': min(0x4000, len(image)), 'role': role}]}
+
+
 def layout_for(image):
     def view(bank, slot, offset, size, role):
         return dict(bank=bank, slot=slot, offset=offset, size=size, role=role)

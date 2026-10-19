@@ -11,6 +11,7 @@ from decompnet.app.engine import RomNetwork
 from decompnet.network import NetworkError
 
 from .test_sms import make_rom
+from .sms_wla_fixture import bank_zero_layout
 
 WHY = "the menu code at 00:0100 reads these with ld a,(hl) in a loop"
 CODE = {
@@ -86,8 +87,13 @@ def test_a_place_is_a_bank_and_the_address_it_runs_at(game):
 
 
 def test_a_symbol_file_names_functions_but_not_after_its_automatic_names(game):
+    from decompnet.app.sms_symbol_import import image
+
     net, slug, agent = game
-    out = net.import_symbols(slug, "[labels]\n00:0700 StartGame\n00:0600 _LABEL_600_\n", "game.sym")
+    proj = net._project(slug)
+    original = image(proj, net.cfg(proj))
+    layout = bank_zero_layout(original)
+    out = net.import_symbols(slug, "[labels]\n00:0700 StartGame\n00:0600 _LABEL_600_\n", "game.sym", layout=layout)
     assert out["kept"] == 2 and out["renamed"] <= 1
     pid = net._project(slug)["id"]
     names = {r["rom_offset"]: r["name"] for r in net.store.all("SELECT * FROM functions WHERE project_id=?", pid)}

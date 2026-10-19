@@ -515,7 +515,20 @@ def split(path: Path, workdir: Path, log=lambda *_: None, report: dict | None = 
         f"{', header found' if info['header'] else ', no header'})")
     labels = seeds = None
     sym = Path(path).with_suffix(".sym")
-    if symbol_layout is not None:
+    reference = (hints or {}).get('symbol_source')
+    if reference is not None:
+        from . import wla_bundle
+
+        if symbol_layout is not None:
+            raise ValueError('choose a project symbol source or a direct layout, not both')
+        labels = seeds = {}
+        if not isinstance(reference, dict) or reference.get('format') != 'disabled':
+            imported = wla_bundle.load(Path(path).parent, reference, data, mapper=(hints or {}).get('mapper', 'sega'))
+            labels, seeds = imported.names, imported.seeds
+            if report is not None:
+                report['symbol_import'] = imported.report
+            log(f"stored symbol source: {imported.report['state']}; {len(seeds)} seed suggestions")
+    elif symbol_layout is not None:
         from . import wla_layout, wla_symbols
         from .export_sms_artifacts import read_regular
 
