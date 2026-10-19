@@ -275,6 +275,12 @@ does not silently become an assembly acceptance contract. Stored source is retai
   RAM layouts record unobserved contents and cannot imply runtime values or lifetimes. New metadata versions
   reset review; a caller's copied receipt is insufficient. Briefs label tentative research and leave archives out
   of current instructions; search can point you to their original subjects for inspection and forward recovery.
+- In Settings, **Research and split corrections** provides paged correction/note/symbol inspection and a
+  **New proposal** editor with typed geometry, layout JSON examples and evidence fields. Preview before applying.
+  Existing note text/attachment stays immutable through **Edit metadata**. Approval/rejection and metadata
+  detachment each have their own preview; archived originals remain read-only. **Copy to new proposal**
+  discards old bindings, origin and review authority. Inspect the supporting evidence and choose the new
+  attachment explicitly. Unsupported, stale and unavailable subjects cannot be approved through these controls.
 - A person can also import what an emulator saw while they played (Settings, a Mesen2 code/data log or a
   `bank:address` trace): splitting the game again then starts functions where calls entered and where code ran that
   wasn't reached, and keeps what was only read as data out of functions.
