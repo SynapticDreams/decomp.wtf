@@ -93,6 +93,7 @@ def export_sms(net, slug: str, out: Path, log=print) -> dict:
     shutil.copyfile(Path(__file__).with_name("z80.py"), out / "tools" / "z80.py")
     shutil.copyfile(Path(__file__).with_name("sms_identity.py"), out / "tools" / "sms_identity.py")
     shutil.copyfile(Path(__file__).with_name("sms_mapping.py"), out / "tools" / "sms_mapping.py")
+    shutil.copyfile(Path(__file__).with_name("sms_codemasters.py"), out / "tools" / "sms_codemasters.py")
     (out / "build.json").write_text(json.dumps({"title": proj["name"], "platform": platform, "image": base,
                                                 "sha1": hashlib.sha1(image).hexdigest(), "size": len(image),
                                                 "identity": cfg["rom"].get("identity"),
@@ -179,7 +180,7 @@ reconstruction independently of those mapping and naming limits.
 | `documented/` | Routines documented in assembly: names, comments and constants for what the disassembly has as numbers, each checked to rebuild its bytes. `build.py` puts each in place of its bytes; `names.inc` holds the names they use that aren't labels (RAM, constants). `python build.py --no-documented` builds without them. |
 | `include/hardware.inc` | The hardware's names the documented routines use (ports, the mapper's registers). |
 | `c/` | Functions matched in C: SDCC compiles each to exactly the original code. For reference: the build is the assembly. |
-| `tools/z80.py`, `tools/sms_identity.py`, `tools/sms_mapping.py`, `build.py`, `build.json` | The decoder, revision checks, shared mapper, build and input manifest. |
+| `tools/z80.py`, `tools/sms_identity.py`, `tools/sms_mapping.py`, `tools/sms_codemasters.py`, `build.py`, `build.json` | The decoder, revision checks, shared mapper, build and input manifest. |
 
 `build/disassembly/` is made from your copy on every build, so keep your work in `layout.json`, `comments.txt` and
 `documented/`. To change the game itself, copy `build/disassembly/` elsewhere and edit it there (`game.asm` is the

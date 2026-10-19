@@ -62,7 +62,7 @@ def test_declaring_sega_enables_work_and_preserves_revision_and_notes(project):
     assert net.store.one("SELECT * FROM claims") == held
 
 
-@pytest.mark.parametrize("mapper", ["codemasters", "unsupported", "unknown"])
+@pytest.mark.parametrize("mapper", ["unsupported", "unknown"])
 def test_recording_a_mapper_does_not_invent_implementation_support(project, mapper):
     net, slug, _agent, _name = project
     result = net.sms.configure(slug, mapper, "experimental", REASON)

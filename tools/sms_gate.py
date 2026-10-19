@@ -15,6 +15,7 @@ TESTS = (
     "tests/test_sms_asm.py",
     "tests/test_sms_asm_mapping.py",
     "tests/test_sms_mapper_integration.py",
+    "tests/test_sms_mapper_hardware.py",
     "tests/test_sms_documented.py",
     "tests/test_export_sms.py",
 )
@@ -53,6 +54,10 @@ def verify_report(report: Path) -> int:
     if not any(case.get("classname") == "tests.test_export_sms" and "[gg]" in case.get("name", "")
                for case in cases):
         raise ValueError("SMS gate report is missing Game Gear export checks")
+    matrix = {case.get("name") for case in cases if case.get("classname") == "tests.test_sms_mapper_integration"}
+    if not all(f"test_declared_models_agree_across_project_consumers[{mapper}-{platform}]" in matrix
+               for mapper in ("sega", "mapperless", "codemasters") for platform in ("sms", "gg")):
+        raise ValueError("SMS gate report is missing the supported-mapper SMS/GG build matrix")
     return len(cases)
 
 

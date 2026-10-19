@@ -1,7 +1,7 @@
 "use strict";
 /* A small project-settings component. Supplied metadata is rendered as text. */
 window.SMSProfileUI = {
-  render(panel, view, save) {
+  render(panel, view, save, inspect) {
     panel.replaceChildren();
     if (!view) return;
     const body = document.createElement("div");
@@ -12,6 +12,26 @@ window.SMSProfileUI = {
     status.className = "muted small";
     status.textContent = view.message;
     body.append(heading, status);
+    if (inspect) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "Inspect mapper evidence";
+      const evidence = document.createElement("p");
+      evidence.className = "muted small";
+      button.onclick = async () => {
+        button.disabled = true;
+        try {
+          const report = (await inspect()).suggestions;
+          const candidates = (report.candidates || []).map(c => c.mapper).join(", ") || "none";
+          const offsets = (report.evidence || []).map(e => `${e.mapper} at ROM $${e.offset.toString(16)}`).join("; ");
+          evidence.textContent = report.available ? `Low confidence suggestions: ${candidates}. ` +
+            `Scanned ${report.scan_bytes} of ${report.total_bytes} bytes; showing ${report.evidence.length} of ` +
+            `${report.pattern_count} patterns. ${report.message} ${offsets}` : report.message;
+        } catch (error) { evidence.textContent = error.message; }
+        finally { button.disabled = false; }
+      };
+      body.append(button, evidence);
+    }
     const profile = view.profile || {};
     const select = (label, choices, value) => {
       const field = document.createElement("label");

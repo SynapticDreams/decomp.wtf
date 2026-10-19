@@ -193,8 +193,13 @@ class Disassembly:
             name = HW_PORTS.get((port, m.group(1).startswith("out")))
             if name:
                 return text.replace(f"(${m.group(2)})", f"({name})", 1)
-        if (m := MEMORY.search(text)) and int(m.group(1), 16) in HW_MAPPER:
-            return text.replace(m.group(0), f"({HW_MAPPER[int(m.group(1), 16)]})", 1)
+        if (m := MEMORY.search(text)) and self.mapper is not None:
+            cpu = int(m.group(1), 16)
+            write = text.startswith("ld ($")
+            kind = self.mapper.kind
+            name = HW_MAPPER.get((kind, cpu)) if kind == "sega" or write else None
+            if name:
+                return text.replace(m.group(0), f"({name})", 1)
         if text.startswith("db "):
             return "." + text
         return text
@@ -265,7 +270,7 @@ class Disassembly:
 
 
 HW_PORTS: dict[tuple[int, bool], str] = {}
-HW_MAPPER: dict[int, str] = {}
+HW_MAPPER: dict[tuple[str, int], str] = {}
 
 
 def hardware() -> None:
@@ -275,9 +280,11 @@ def hardware() -> None:
         if (m := re.match(r"^\.DEFINE (\w+) \$([0-9A-Fa-f]+)$", line)):
             names[m.group(1)] = int(m.group(2), 16)
     for name, v in names.items():
-        if v >= 0xFFFC:
-            HW_MAPPER[v] = name
-        else:
+        if name.startswith("Mapper"):
+            HW_MAPPER[("sega", v)] = name
+        elif name.startswith("CodemastersSlot"):
+            HW_MAPPER[("codemasters", v)] = name
+        elif name.startswith("Port"):
             for write in (False, True):
                 HW_PORTS.setdefault((v, write), name)
     for name, v in names.items():  # (a port two names share: the PSG is written, the VDP's status read)

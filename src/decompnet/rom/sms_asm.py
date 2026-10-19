@@ -175,7 +175,7 @@ def _maps(r: Routine) -> str:
 
 
 def _wrapper(r: Routine, symbols: dict[str, int], at: int, hw_moved: bool) -> str:
-    return (_maps(r) + sms_hw.inc(moved=hw_moved)
+    return (_maps(r) + sms_hw.inc(moved=hw_moved, mapper=r.mapper, address_delta=at - r.cpu)
             + "".join(f".DEFINE {n} ${v & 0xFFFF:04X}\n" for n, v in sorted(symbols.items()))
             + f".BANK {r.bank} SLOT {at >> 14}\n.ORG ${at & (BANK - 1):04X}\n.SECTION \"routine\" FORCE\n")
 
@@ -241,13 +241,14 @@ def _clean(log: str, offset: int) -> str:
     return text
 
 
-def _moved(value: int, delta: int) -> int:
+def _moved(value: int, delta: int, mapper: str = "sega") -> int:
     """An address the shift test moves: ROM and RAM ones by `delta` (RAM kept in RAM); not numbers, not hardware."""
     if 0x100 <= value < 0xC000:
         return (value + delta) & 0xFFFF
-    if 0xC000 <= value < 0xFFFC:
+    ram_end = 0xFFFC if mapper == "sega" else 0x10000
+    if 0xC000 <= value < ram_end:
         moved = value + delta
-        return moved if 0xC000 <= moved < 0xFFFC else value - delta
+        return moved if 0xC000 <= moved < ram_end else value - delta
     return value
 
 
@@ -274,9 +275,9 @@ def _operands(text: str, ln: int):
     return None
 
 
-def _hardware(role: str, value: int) -> bool:
+def _hardware(role: str, value: int, mapper: str = "sega") -> bool:
     """Whether an operand names hardware (checked by moving its names), not an address of the game's."""
-    return role == "port" or value >= 0xFFFC or (role == "write" and value < 0xC000)  # (a write to ROM: a mapper's)
+    return role == "port" or value in sms_hw.mapper_names(mapper, write=role == "write") or (role == "write" and value < 0xC000)
 
 
 def judge(r: Routine, text: str, tmp_root: Path | None = None) -> Verdict:
@@ -336,9 +337,9 @@ def judge(r: Routine, text: str, tmp_root: Path | None = None) -> Verdict:
         for it in items:  # its own names, moved like the project's
             if it.kind == "def":
                 name, value = _DEFINE.match(it.text).group(1), defines[_DEFINE.match(it.text).group(1)]
-                moved_lines[it.line - 1] = f".DEFINE {name} ${_moved(value, delta) & 0xFFFF:04X}"
+                moved_lines[it.line - 1] = f".DEFINE {name} ${_moved(value, delta, r.mapper) & 0xFFFF:04X}"
         try:
-            shifted = _assemble(tmp, r, moved_lines, {n: _moved(v, delta) for n, v in symbols.items()}, r.cpu + delta,
+            shifted = _assemble(tmp, r, moved_lines, {n: _moved(v, delta, r.mapper) for n, v in symbols.items()}, r.cpu + delta,
                                 hw_moved=False, labels=placed, delta=delta)
             hw_shifted = _assemble(tmp, r, lines, symbols, r.cpu, hw_moved=True, labels=placed)
         except AsmError as e:
@@ -368,10 +369,10 @@ def _difference(r: Routine, got: bytes, at: int) -> str:
             f"{len(r.code)} bytes match before it")
 
 
-def _hardware_hint(role: str, value: int, text: str) -> str:
+def _hardware_hint(role: str, value: int, text: str, mapper: str = "sega") -> str:
     if role == "port":
         return sms_hw.port_name(value, write=text.startswith("out")) or "a port's name from sms_hw, plus an offset"
-    return sms_hw.MAPPER.get(value, "a mapper register's name")
+    return sms_hw.mapper_names(mapper, write=role == "write").get(value, "a mapper register's name")
 
 
 def _shift_checks(r: Routine, layout, shifted: bytes, hw_shifted: bytes) -> list[str]:
@@ -387,11 +388,11 @@ def _shift_checks(r: Routine, layout, shifted: bytes, hw_shifted: bytes) -> list
                 out.append(f"2. line {it.line}: `{it.text}`: ${value:04X} is an address left as a number: name it "
                            "(a label, or the project's name for the function there)")
             continue
-        moved = hw_shifted if _hardware(role, value) else shifted
+        moved = hw_shifted if _hardware(role, value, r.mapper) else shifted
         if all(moved[off + p] == r.code[off + p] for p in positions):
             if moved is hw_shifted:
                 out.append(f"5. line {it.line}: `{it.text}`: ${value:0{2 if role == 'port' else 4}X} is hardware: use "
-                           f"its name ({_hardware_hint(role, value, text)})")
+                           f"its name ({_hardware_hint(role, value, text, r.mapper)})")
             else:
                 out.append(f"2. line {it.line}: `{it.text}`: ${value:04X} is an address left as a number: name it "
                            f"(a label, the project's name for it, or .DEFINE NAME ${value:04X})"
@@ -478,8 +479,8 @@ def draft(r: Routine) -> str:
         return r.functions.get(flat, f"${target:04x}")
 
     def address(value: int, role: str) -> str:
-        if value in sms_hw.MAPPER:
-            return sms_hw.MAPPER[value]
+        if value in (mapper_names := sms_hw.mapper_names(r.mapper, write=role == "write")):
+            return mapper_names[value]
         if value >= 0xC000 and value in names:
             return names[value]
         return f"${value:04x}"

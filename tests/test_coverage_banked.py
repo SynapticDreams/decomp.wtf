@@ -65,7 +65,7 @@ def test_unresolved_sms_trace_import_restores_the_previous_log(tmp_path):
     net, slug = _project(tmp_path, "input.gg", data)
     previous = cdl(data, {0x0700: 1})
     net.import_coverage(slug, previous, "previous.cdl")
-    with pytest.raises(NetworkError, match="declared Sega or mapperless"):
+    with pytest.raises(NetworkError, match="declared supported model"):
         net.import_coverage(slug, b"00:0700\n", "new.trace")
     assert net._coverage_path(net.project_row(slug)).read_bytes() == previous
     assert net.coverage_file(slug)["from"] == "previous.cdl"
@@ -94,7 +94,7 @@ def test_legacy_trace_stays_inspectable_until_its_mapper_is_declared(tmp_path):
     path = (Path(proj["root"]) / net.cfg(proj)["rom"]["file"]).with_suffix(".trace")
     raw = b"00:0700\n"
     path.write_bytes(raw)
-    assert "declared Sega or mapperless" in net.coverage_file(slug)["error"]
+    assert "declared supported model" in net.coverage_file(slug)["error"]
     assert "coverage" not in net._hints(proj) and path.read_bytes() == raw
     net.sms.configure(slug, "sega", "annotated-original", "The authored fixture specifies Sega cartridge mapping.")
     assert net.coverage_file(slug)["code"] == 2

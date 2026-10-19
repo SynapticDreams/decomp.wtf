@@ -6,10 +6,26 @@ encoding. Cartridge mapping and original compiler depend on the project; an SMS/
 
 Choose the cartridge mapping and build intent in project Settings, with the evidence for that choice.
 New imports and legacy projects with no declaration remain readable as provisional Sega-based listings;
-accepting new C or documented assembly requires a supported declaration. Sega and mapperless models are supported under
-the static-analysis limits below and authored synthetic checks. Codemasters and other mappings can be recorded
-but remain unsupported until their models are qualified. Mapperless inputs must fit within 48 KiB; undeclared
+accepting new C or documented assembly requires a supported declaration. Sega, mapperless and qualified Codemasters
+models are supported under the static-analysis limits below and authored synthetic checks. Other mappings can be
+recorded but remain unsupported. Mapperless inputs must fit within 48 KiB; undeclared
 small-ROM mirroring remains unresolved. A declaration does not establish hardware accuracy.
+Codemasters qualification currently covers power-of-two inputs from 32 to 512 KiB and canonical writes to
+$0000/$4000/$8000. All three windows page, including the first KiB; the selected reset recipe is 0/1/0.
+[SMS Power](https://www.smspower.org/Development/Mappers) describes mirrored writes throughout each window;
+[Gearsystem](https://github.com/drhelius/Gearsystem/blob/master/src/CodemastersMemoryRule.cpp) decodes canonical
+addresses and separately gates cartridge RAM. Noncanonical ROM writes therefore invalidate the affected selector
+and report unqualified mirror decoding. A set/unknown slot-1 high bit leaves $A000–$BFFF unresolved without RAM-wiring
+evidence; $8000–$9FFF remains ROM. Clearing the flag restores ROM selection. Effective source knowledge and raw
+selector values remain separate. Codemasters selectors have write-only names; reads there name ROM, not a latch.
+The hardware include retains existing Sega aliases for stored source, while new drafts use the selected model.
+
+Settings offers **Inspect mapper evidence** (also `/api/sms/profile` GET). This scans at most 64 KiB for possible
+absolute-store byte patterns and returns at most 32 records with ROM offsets, scan/record truncation and candidates.
+Suggestions always have low confidence and remain ambiguous: patterns may occur in data or patched code, and size
+or absent patterns prove no mapper. They never change the declaration, acceptance gate or revision identity.
+Missing/changed input makes suggestions unavailable. Use independent wiring evidence for profile selection.
+
 Profile changes retain existing work and refuse mapping changes that would reinterpret accepted source.
 After selecting mapperless, preview and apply a resplit if existing function coordinates came from Sega paging;
 source acceptance remains blocked while any such incompatible coordinates remain.

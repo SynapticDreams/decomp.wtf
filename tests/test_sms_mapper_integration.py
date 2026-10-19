@@ -15,13 +15,16 @@ CODE = {0: bytes.fromhex("3e01 32ffff cd0002 18fe"), 0x200: bytes.fromhex("cd008
         0x4000: bytes.fromhex("3e01 c9"), 0x8000: bytes.fromhex("3e02 c9")}
 
 
-@pytest.mark.parametrize("platform,region", [("sms", 4), ("gg", 6)])
-@pytest.mark.parametrize("mapper,flat,value", [("sega", 0x4000, 1), ("mapperless", 0x8000, 2)])
+@pytest.mark.parametrize("platform,region", [("sms", 4), ("gg", 6)], ids=["sms", "gg"])
+@pytest.mark.parametrize("mapper,flat,value", [("sega", 0x4000, 1), ("mapperless", 0x8000, 2), ("codemasters", 0xC000, 3)],
+                         ids=["sega", "mapperless", "codemasters"])
 @pytest.mark.skipif(not sms_asm.available(), reason="needs WLA-DX")
 def test_declared_models_agree_across_project_consumers(tmp_path, platform, region, mapper, flat, value):
     net = RomNetwork(tmp_path / "state.db", tmp_path / "projects")
     net.auto_install_tools = False
-    image = make_rom(size=0xC000, region=region, code=CODE)
+    code = {**CODE, 0: bytes.fromhex("3e03 320080 cd0002 18fe"), 0xC000: bytes.fromhex("3e03 c9")} \
+        if mapper == "codemasters" else CODE
+    image = make_rom(size=0x10000 if mapper == "codemasters" else 0xC000, region=region, code=code)
     slug = net.import_rom(image, name=f"fixture.{platform}", confirmed=True, log=lambda *_: None)
     proj = net.project_row(slug)
     identity = net.cfg(proj)["rom"]["identity"]
@@ -39,7 +42,7 @@ def test_declared_models_agree_across_project_consumers(tmp_path, platform, regi
     assert net._hints(proj)["mapper"] == mapper
     lane = net._lane(proj)
     assert lane.sms_mapper == mapper
-    assert lane.flat_of(0x8000, 0, 0, mapping=BusState.cartridge_only((0, 1, 1))) == flat
+    assert lane.flat_of(0x8000, 0, 0, mapping=BusState.cartridge_only((0, 1, flat // 0x4000 if mapper != "mapperless" else 1))) == flat
     fn = net.store.one("SELECT * FROM functions WHERE project_id=? AND rom_offset=?", proj["id"], flat)
     assert fn is not None and fn["vram"] == 0x8000
     routine = net._routine(proj, fn)

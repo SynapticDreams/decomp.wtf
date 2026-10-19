@@ -31,7 +31,7 @@ def read_trace(text: str, rom: bytes, *, mapper: str) -> Coverage:
     try:
         model = Mapper(mapper, len(rom))
     except ValueError as exc:
-        raise CoverageError("SMS/GG ROM traces need a declared Sega or mapperless model in project Settings") from exc
+        raise CoverageError("SMS/GG ROM traces need a declared supported model in project Settings") from exc
     cov = Coverage(bytearray(len(rom)), bytearray(len(rom)), kind="trace")
     previous = None
     seen = False

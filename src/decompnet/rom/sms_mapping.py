@@ -9,6 +9,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+if __package__:
+    from . import sms_codemasters as cm
+else:  # the same resolver is copied into standalone exports
+    import sms_codemasters as cm
+
 BANK = 0x4000
 REGISTERS = {0xFFFD: 0, 0xFFFE: 1, 0xFFFF: 2}
 
@@ -87,17 +92,21 @@ class Mapper:
     size: int
 
     def __post_init__(self):
-        if self.kind not in ("sega", "mapperless"):
-            raise ValueError("this mapping model supports Sega and mapperless cartridges")
+        if self.kind not in ("sega", "mapperless", "codemasters"):
+            raise ValueError("this mapping model supports Sega, mapperless and qualified Codemasters cartridges")
         if type(self.size) is not int or not 0x2000 <= self.size <= 0x400000 or self.size % 0x2000:
             raise ValueError("invalid SMS/GG cartridge size")
         if self.kind == "mapperless" and self.size > 3 * BANK:
             raise ValueError("a mapperless cartridge cannot expose more than 48 KiB")
+        if self.kind == "codemasters" and (not 0x8000 <= self.size <= 0x80000 or self.size & (self.size - 1)):
+            raise ValueError("qualified Codemasters images need a power-of-two size from 32 to 512 KiB")
 
     def reset(self) -> BusState:
         """Selected wiring/recipe, without assigning one mapper's raw registers to another."""
         if self.kind == "mapperless":
             return BusState.cartridge_only((0, 1, 2), control=None)
+        if self.kind == "codemasters":
+            return BusState.cartridge_only((0, 1, 0), registers=(0, 1, 0), control=0, control_known=cm.RAM)
         # Sega's selected 315-5235/emulator recipe is not a reset guarantee for every chip revision.
         banks = tuple(bank & bank_mask(self.size) for bank in (0, 1, 2))
         return BusState.cartridge_only(banks, registers=(0, 1, 2))
@@ -106,14 +115,21 @@ class Mapper:
         """Conditional ROM-entry facts under this model, separate from reset and section placement."""
         if self.kind == "mapperless":
             return BusState.cartridge_only((0, 1, 2), control=None)
+        if self.kind == "codemasters":
+            banks = [None, None, None]
+            if 0 <= flat < self.size and 0 <= cpu < 0xC000 and flat % BANK == cpu % BANK:
+                banks[cpu // BANK] = flat // BANK
+            known = cm.RAM if banks[2] is not None and cpu >= 0xA000 else 0
+            return BusState.cartridge_only(banks, control=0 if known else None, control_known=known)
         return entry_state(flat, cpu, self.size)
 
     def register_slot(self, cpu: int) -> int | None:
         """The canonical bank selector at a CPU address, if this model has one there."""
-        return REGISTERS.get(cpu) if self.kind == "sega" and type(cpu) is int else None
+        registers = cm.SELECTORS if self.kind == "codemasters" else REGISTERS if self.kind == "sega" else {}
+        return registers.get(cpu) if type(cpu) is int else None
 
     def is_mapper_register(self, cpu: int) -> bool:
-        return self.kind == "sega" and type(cpu) is int and (cpu == 0xFFFC or self.register_slot(cpu) is not None)
+        return type(cpu) is int and ((self.kind == "sega" and cpu == 0xFFFC) or self.register_slot(cpu) is not None)
 
     def resolve(self, cpu: int, state: BusState) -> Address:
         if type(cpu) is not int or not 0 <= cpu <= 0xFFFF:
@@ -121,7 +137,7 @@ class Mapper:
         if cpu >= 0xC000:
             if state.other_source is not False:
                 return Address(cpu, "unknown", reason="other device/RAM selection is unresolved")
-            high_ram = False if self.kind == "mapperless" or state.cartridge is False else \
+            high_ram = False if self.kind != "sega" or state.cartridge is False else \
                 state.control_flag(0x10) if state.cartridge is True else None
             if high_ram is True:
                 if state.wram is not False:
@@ -142,15 +158,15 @@ class Mapper:
             return Address(cpu, "unknown", reason="cartridge contents may have been modified")
         if self.kind == "mapperless":
             flat, bank = cpu, cpu // BANK
-        elif cpu < 0x0400:
+        elif self.kind == "sega" and cpu < 0x0400:
             flat, bank = cpu, 0
         else:
-            if cpu >= 0x8000:
-                ram = state.control_flag(8)
+            if cpu >= (0xA000 if self.kind == "codemasters" else 0x8000):
+                ram = state.control_flag(cm.RAM if self.kind == "codemasters" else 8)
                 if ram is None:
                     return Address(cpu, "unknown", reason="slot 2 RAM selection is unresolved")
                 if ram:
-                    selected = state.control_bits(4)
+                    selected = state.control_bits(4) if self.kind == "sega" else None
                     return Address(cpu, "cart_ram", reason="cartridge RAM size/wiring is not declared",
                                    bank=selected >> 2 if selected is not None else None)
             bank = state.banks[cpu // BANK]
@@ -168,6 +184,8 @@ class Mapper:
             raise ValueError("a mapper write is a byte or an unknown value")
         if self.kind == "mapperless":
             return state
+        if self.kind == "codemasters":
+            return cm.write(state, cpu, value, bank_mask(self.size))
         if cpu == 0xFFFC or cpu in REGISTERS:
             if state.cartridge is not True:
                 return replace(state, banks=(None, None, None), registers=(None, None, None), control=None)
@@ -189,6 +207,8 @@ class Mapper:
         """An unqualified byte store may select any register or change writable cartridge contents."""
         if self.kind == "mapperless":
             return state
+        if self.kind == "codemasters":
+            return replace(state, banks=(None, None, None), registers=(None, None, None), control=None)
         return replace(state, banks=(None, None, None), registers=(None, None, None), control=None,
                        rom_modified=state.rom_modified or (
                            state.cartridge is not False and state.control_flag(0x80) is not False))

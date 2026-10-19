@@ -8,6 +8,17 @@ from .sms_mapping import Mapper, wram_address
 from .sms_state import State
 
 
+def limits(writes: tuple[Write, ...], model: Mapper) -> set[str]:
+    reasons = set()
+    if model.kind == "codemasters":
+        for write in writes:
+            if write.cpu is not None and write.cpu < 0xC000 and not model.is_mapper_register(write.cpu):
+                reasons.add("Codemasters selector mirror decoding is not qualified")
+            elif write.cpu == 0x4000 and (type(write.value) is not int or write.value & 0x80):
+                reasons.add("Codemasters upper-slot RAM wiring is undeclared")
+    return reasons
+
+
 def apply(state: State, writes: tuple[Write, ...], source_change: bool, model: Mapper) -> None:
     for write in writes:
         if write.cpu is None:
