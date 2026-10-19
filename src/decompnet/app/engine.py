@@ -2265,7 +2265,7 @@ class RomNetwork(Network):
         """The project's coverage, read against its copy of the game (rom/coverage.py), or None. Indexed as the
         project's split works: by ROM offset on the Game Boy and the Master System (a copier header left out), by
         program ROM offset on the NES."""
-        from ..rom import coverage, gb_trace, nes, sm83, sms, z80
+        from ..rom import coverage, gb_trace, nes, sm83, sms, sms_coverage
 
         path = self._coverage_path(proj)
         if path is None:
@@ -2284,24 +2284,16 @@ class RomNetwork(Network):
         if path.suffix == ".cdl":
             return coverage.read_cdl(path.read_bytes(), rom, {zlib.crc32(rom), zlib.crc32(file)})
         if arch == "z80":
-            def decode(flat):
-                text, ln = z80.decode(rom[flat:flat + 4], flat)
-                kind, target = z80.flow(text)
-                return text, ln, kind, target
+            return sms_coverage.from_config(path.read_text(encoding="utf-8", errors="replace"), rom, self.cfg(proj))
+        tracer = gb_trace.Tracer(rom)
 
-            def flat_of(bank, cpu):  # (slot 0, paged above its first KiB; slots 1 and 2)
-                return cpu if cpu < 0x0400 or (cpu < 0x4000 and not bank) else \
-                    bank * 0x4000 + (cpu & 0x3FFF) if cpu < 0xC000 else None
-        else:
-            tracer = gb_trace.Tracer(rom)
+        def decode(flat):
+            text, ln = tracer.decode(flat)
+            kind, target = sm83.flow(text)
+            return text, ln, kind, target
 
-            def decode(flat):
-                text, ln = tracer.decode(flat)
-                kind, target = sm83.flow(text)
-                return text, ln, kind, target
-
-            def flat_of(bank, cpu):
-                return cpu if cpu < 0x4000 else bank * 0x4000 + cpu - 0x4000 if cpu < 0x8000 and bank else None
+        def flat_of(bank, cpu):
+            return cpu if cpu < 0x4000 else bank * 0x4000 + cpu - 0x4000 if cpu < 0x8000 and bank else None
 
         return coverage.read_trace(path.read_text(encoding="utf-8", errors="replace"), rom, flat_of, decode)
 

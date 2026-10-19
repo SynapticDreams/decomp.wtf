@@ -52,9 +52,50 @@ def test_a_master_system_log_starts_functions_and_keeps_data_out(tmp_path):
 
 def test_a_master_system_trace_starts_functions_where_code_ran(tmp_path):
     net, slug = _project(tmp_path, "game.sms", sms_rom(size=0x20000, code=CODE))
+    net.sms.configure(slug, "sega", "annotated-original", "The authored fixture specifies Sega cartridge mapping.")
     net.import_coverage(slug, b"00:0700\n00:0702\n", "game.trace")
     net.resplit_banked(slug, apply=True, log=lambda *_: None)
     assert 0x0700 in _starts(net, slug)
+
+
+def test_unresolved_sms_trace_import_restores_the_previous_log(tmp_path):
+    data = sms_rom(size=0x20000, code=CODE)
+    net, slug = _project(tmp_path, "input.gg", data)
+    previous = cdl(data, {0x0700: 1})
+    net.import_coverage(slug, previous, "previous.cdl")
+    with pytest.raises(NetworkError, match="declared Sega or mapperless"):
+        net.import_coverage(slug, b"00:0700\n", "new.trace")
+    assert net._coverage_path(net.project_row(slug)).read_bytes() == previous
+    assert net.coverage_file(slug)["from"] == "previous.cdl"
+
+
+def test_sms_trace_does_not_turn_an_unrelated_target_occurrence_into_a_function_entry(tmp_path):
+    data = sms_rom(size=0x20000, code={0x100: bytes.fromhex("cd0080c9"), 0x14000: b"\xc9"})
+    net, slug = _project(tmp_path, "input.sms", data)
+    net.sms.configure(slug, "sega", "annotated-original", "The authored fixture specifies Sega cartridge mapping.")
+    result = net.import_coverage(slug, b"00:0100\n00:0103\n05:8000\n", "capture.trace")
+    assert result["entries"] == 0 and result["code"] == 5
+
+
+def test_sms_trace_does_not_reattribute_an_impossible_fixed_prefix_bank(tmp_path):
+    net, slug = _project(tmp_path, "input.sms", sms_rom(size=0x20000))
+    net.sms.configure(slug, "sega", "annotated-original", "The authored fixture specifies Sega cartridge mapping.")
+    with pytest.raises(NetworkError, match="no valid cartridge-ROM"):
+        net.import_coverage(slug, b"05:0123\n", "wrong.trace")
+    assert net._coverage_path(net.project_row(slug)) is None
+
+
+def test_legacy_trace_stays_inspectable_until_its_mapper_is_declared(tmp_path):
+    net, slug = _project(tmp_path, "input.sms", sms_rom(size=0x20000, code=CODE))
+    proj = net.project_row(slug)
+    from pathlib import Path
+    path = (Path(proj["root"]) / net.cfg(proj)["rom"]["file"]).with_suffix(".trace")
+    raw = b"00:0700\n"
+    path.write_bytes(raw)
+    assert "declared Sega or mapperless" in net.coverage_file(slug)["error"]
+    assert "coverage" not in net._hints(proj) and path.read_bytes() == raw
+    net.sms.configure(slug, "sega", "annotated-original", "The authored fixture specifies Sega cartridge mapping.")
+    assert net.coverage_file(slug)["code"] == 2
 
 
 NES = {0x0000: bytes.fromhex("4c0080"),  # reset: jmp $8000

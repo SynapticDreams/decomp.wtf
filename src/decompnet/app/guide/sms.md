@@ -53,6 +53,13 @@ instruction geometry; unresolved references remain numeric while the build still
 - A person can also import what an emulator saw while they played (Settings, a Mesen2 code/data log or a
   `bank:address` trace): splitting the game again then starts functions where calls entered and where code ran that
   wasn't reached, and keeps what was only read as data out of functions.
+  SMS/GG text traces describe physical cartridge-ROM banks and CPU instruction addresses. Declare Sega or mapperless
+  mapping in Settings before interpreting them; RAM/BIOS execution needs a richer format. Invalid coordinates and
+  explicit gaps break entry evidence. Entry candidates require adjacent call/target records; a target appearing
+  elsewhere in the log is insufficient. Observed CPU windows are retained, including paged slot 0; multiple windows
+  for one physical entry remain ambiguous. The format has no session identity or loss accounting, so it does not
+  establish a complete capture. A failed import retains the previous file. Byte-indexed code/data logs remain
+  readable without a mapper declaration.
 
 - The import reads which toolchain built the game: GBDK-2020's start-up code (C), or an SDSC tag (homebrew,
   not which tool). A game none of them built is most likely assembly, for the assembly track.

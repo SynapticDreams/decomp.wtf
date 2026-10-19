@@ -316,7 +316,8 @@ def candidates(data: bytes, limit: int = 4000, labels: dict | None = None,
             bases[bank] = base
     handlers = {f: c for f, c in _hint_tables(data, hints, bases).items() if f not in seeds}
     if cov is not None:  # where calls entered while the game ran, at the address its bank runs at
-        handlers.update({f: (_cpu_at(f, bases, size), "ran") for f in sorted(cov.entries) if f not in seeds and f < size})
+        handlers.update({f: (cpu, "ran") for f in sorted(cov.entries) if f not in seeds and f < size
+                         and (cpu := _coverage_cpu(cov, f, bases, size)) is not None})
     if handlers:  # (the tables corrections name, read in the banks their code was found running at)
         seeds.update(handlers)
         found = sms_trace.Tracer(data, paged={s for s, n in probe.slot_writes.items() if n}, hints=hints).follow(seeds)
@@ -331,8 +332,9 @@ def candidates(data: bytes, limit: int = 4000, labels: dict | None = None,
         found = sms_trace.Tracer(data, paged=paged, hints=hints).follow({**more, **seeds})
         bases = {**bases, **found.bank_base}
     if cov is not None:  # code that ran but wasn't followed (reached through a pointer): where each run of it starts
-        ran = {f: (_cpu_at(f, bases, size), "ran") for f in range(size) if cov.code[f] and (f == 0 or not cov.code[f - 1])
-               and f not in found.code and f not in more and f not in seeds}
+        ran = {f: (cpu, "ran") for f in range(size) if cov.code[f] and (f == 0 or not cov.code[f - 1])
+               and f not in found.code and f not in more and f not in seeds
+               and (cpu := _coverage_cpu(cov, f, bases, size)) is not None}
         if ran:
             more.update(ran)
             found = sms_trace.Tracer(data, paged=paged, hints=hints).follow({**more, **seeds})
@@ -366,6 +368,13 @@ def _cpu_at(flat: int, bases: dict[int, int], size: int) -> int:
     (else where it most likely runs)."""
     bank = flat // BANK_SIZE
     return flat if bank == 0 else bases.get(bank, slot_base(bank, size)) + (flat & (BANK_SIZE - 1))
+
+
+def _coverage_cpu(cov, flat: int, bases: dict[int, int], size: int) -> int | None:
+    observed = cov.cpus.get(flat)
+    if observed:
+        return next(iter(observed)) if len(observed) == 1 else None
+    return _cpu_at(flat, bases, size)  # byte-indexed CDL carries no CPU-window evidence
 
 
 def _hint_tables(data: bytes, hints: dict, bases: dict[int, int]) -> dict[int, tuple[int, str]]:
