@@ -3076,6 +3076,11 @@ class RomNetwork(Network):
 
     # ------------------------------------------------------------------ export
 
+    def explain_difference(self, slug: str, function: str, left: str, right: str) -> dict:
+        from ..gcc_diagnostics import explain
+
+        return explain(self, slug, function, left, right)
+
     def export_disc(self, slug: str, original: Path, edited: Path | None = None, log=print) -> dict:
         from ..rom.disc_export import export_disc
 

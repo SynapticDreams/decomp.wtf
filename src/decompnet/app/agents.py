@@ -1833,6 +1833,10 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
                              track=st("asm (Game Boy, Master System, NES): a hand-written routine to document in assembly"))),
         "get_function": ("Show any function by name or address (a long one's assembly in parts: start_line).",
                          s(function=st("name or address", True), start_line=it("assembly line to show from"))),
+        "explain_difference": ("Compare two C attempts with the selected function's pinned GCC 2.x compiler and unit context. "
+                               "Returns the first observed RTL dump difference; does not record matches.",
+                               s(function=st("function", True), left=st("attempt A C source", True),
+                                 right=st("attempt B C source", True))),
         "compile_and_diff": ("Compile C for the function, link it at its address and diff against the ROM. "
                              "Score 0 = matched. Several functions: names comma-separated, all definitions in source.",
                              s(function=st("function name, or several: a, b, c", True), source=st("C source", True))),

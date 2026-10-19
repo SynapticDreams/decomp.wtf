@@ -12,11 +12,20 @@ import shutil
 import subprocess
 import tempfile
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import wsl
 
+DUMP_PASSES = ("rtl", "jump", "cse", "addressof", "gcse", "loop", "cse2", "bp", "flow",
+               "combine", "regmove", "sched", "lreg", "greg", "flow2", "sched2", "jump2", "mach", "dbr", "stack")
+# Numbered dump names emitted by the pinned EE-GCC 2.96 pipeline.
+EE_DUMPS = ("00.rtl", "01.sibling", "02.jump", "03.cse", "04.addressof", "05.ssa", "06.ccp",
+            "07.dce", "08.gcse", "09.loop", "10.cse2", "11.cfg", "12.bp", "13.life", "14.combine",
+            "15.ce", "16.regmove", "17.sched", "18.stack", "19.lreg", "20.greg", "21.flow2",
+            "22.ce2", "23.rnreg", "24.bbro", "25.sched2", "26.stack", "27.jump2", "28.mach", "29.dbr")
+DUMP_NAMES = (*DUMP_PASSES, *EE_DUMPS)
+MAX_DUMP_BYTES = 4 << 20
 MAX_SOURCE_BYTES = 64 * 1024
 # Per-compile resource caps (address space, CPU seconds, output file size) and a global
 # concurrency cap, so a hostile submission can't take the host down with it.
@@ -100,6 +109,7 @@ class CompileResult:
     ok: bool
     obj: bytes | None
     log: str
+    artifacts: dict[str, str] = field(default_factory=dict)
 
 
 def _sandbox_mode(cfg: CompilerConfig) -> str:
@@ -164,7 +174,7 @@ def run_in(cfg: CompilerConfig, work: Path, argv: list[str], timeout: float = 30
                  **({} if outputs is None else {"inputs": inputs, "outputs": outputs}))
 
 
-def compile_source(cfg: CompilerConfig, context_header: str, source: str, trusted: bool = False) -> CompileResult:
+def compile_source(cfg: CompilerConfig, context_header: str, source: str, trusted: bool = False, *, diagnostics: bool = False) -> CompileResult:
     if not trusted:
         try:
             check_source(source)
@@ -198,14 +208,27 @@ def compile_source(cfg: CompilerConfig, context_header: str, source: str, truste
         subst = {"{src}": f"{root}/func.c", "{obj}": f"{root}/func.o", "{include}": f"{root}/include"}
         argv = [subst.get(a, a) for a in cfg.cmd]
         argv = [a.replace("{include}", subst["{include}"]) for a in argv]
+        if diagnostics:
+            argv.append("-da")
+        outputs = ["func.o"] + ([f"func.c.{suffix}" for suffix in DUMP_NAMES] if diagnostics else [])
         try:
             with _SLOTS:
                 proc = _exec(cfg, work, argv, cfg.timeout,
-                             **({"outputs": ["func.o"], "stage": root} if _sandbox_mode(cfg) == "wsl" else {}))
+                             **({"outputs": outputs, "stage": root} if _sandbox_mode(cfg) == "wsl" else {}))
         except subprocess.TimeoutExpired:
             return CompileResult(False, None, f"compiler timed out after {cfg.timeout}s")
         log = (proc.stdout + proc.stderr).replace(root + "/", "")
         obj = work / "func.o"
         if proc.returncode != 0 or not obj.exists():
             return CompileResult(False, None, log[-4000:] or f"compiler exited with {proc.returncode}")
-        return CompileResult(True, obj.read_bytes(), log[-2000:])
+        artifacts = {}
+        if diagnostics:
+            used = 0
+            for suffix in DUMP_NAMES:
+                path = work / ("func.c." + suffix)
+                if path.is_file():
+                    used += path.stat().st_size
+                    if used > MAX_DUMP_BYTES:
+                        return CompileResult(False, None, "compiler dump capture exceeds 4 MiB; reduce the source")
+                    artifacts[suffix] = path.read_text(encoding="utf-8", errors="replace").replace(root + "/", "")
+        return CompileResult(True, obj.read_bytes(), log[-2000:], artifacts)

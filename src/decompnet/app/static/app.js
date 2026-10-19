@@ -2986,12 +2986,29 @@ $("srcExport").onclick = async () => {
   } catch (e) { toast(esc(e.message), "err"); } finally { $("srcExport").disabled = false; }
 };
 
+$("compilerDiagnostic").onclick = () => {
+  const body = dialog("Compare compiler passes", '<p>Compare two C attempts with the selected function\'s compiler and unit context. The result shows the first observed RTL dump difference. It does not compare against the original compiler\'s RTL.</p>'
+    + '<label class="field"><span>Function</span><input id="rtlFunction"></label>'
+    + '<label class="field"><span>Attempt A</span><textarea id="rtlLeft" rows="8" maxlength="65536"></textarea></label>'
+    + '<label class="field"><span>Attempt B</span><textarea id="rtlRight" rows="8" maxlength="65536"></textarea></label>'
+    + '<button class="primary" id="rtlCompare" type="button">Compare</button><pre class="joblog tall" id="rtlResult"></pre>');
+  body.querySelector("#rtlCompare").onclick = async () => {
+    $("rtlCompare").disabled = true;
+    try {
+      const { job } = await api("/api/compiler/diagnostics", { method: "POST", body: { slug: S.slug, function: $("rtlFunction").value.trim(), left: $("rtlLeft").value, right: $("rtlRight").value } });
+      const r = await followJob(job);
+      $("rtlResult").textContent = (r.first_difference ? "First observed difference: " + r.first_difference : "Captured dumps are equal") + "\n" + r.diff + "\n" + r.interpretation + "\nLocal artifacts: " + r.path;
+    } catch (e) { toast(esc(e.message), "err"); } finally { if ($("rtlCompare")) $("rtlCompare").disabled = false; }
+  };
+};
+
 /* ------------------------------------------------------------------ project settings */
 async function renderProjectSettings() {
   const ov = S.ov;
   if (!ov) return;
   const fork = ov.kind === "fork";
   $("compilerPanel").hidden = fork;
+  $("compilerDiagnostic").hidden = fork || !["psx", "ps2"].includes(ov.platform);
   if (!fork) {
     if (!S.st) await loadState();
     const unit = $("setCompilerUnit").value;

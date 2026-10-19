@@ -696,6 +696,10 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         return {"job": jobs.start("PS1 debug information", lambda log: net.import_psx_debug(
             slug, decoded, bool(data.get("apply")), str(data["unit"]) if data.get("unit") else None))}
 
+    def p_gcc_diagnostics(slug, request, data):
+        return {"job": jobs.start("compiler diagnostics", lambda log: net.explain_difference(
+            slug, data.get("function", ""), data.get("left"), data.get("right")))}
+
     def p_disc_export(slug, request, data):
         if not isinstance(data.get("original"), str) or not data["original"].strip():
             raise NetworkError("provide the original local BIN, IMG, ISO or CUE path")
@@ -796,7 +800,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/function": (lambda s, r, d: net.function_detail(s, r.query_params.get("name", "")), ["GET"]),
         "/api/diff": (lambda s, r, d: net.function_diff(s, r.query_params.get("name", ""),
                                                         r.query_params.get("which", "latest")), ["GET"]),
-        "/api/compiler": (p_compiler, ["POST"]), "/api/export": (p_export, ["POST"]), "/api/disc/export": (p_disc_export, ["POST"]), "/api/open": (p_open, ["POST"]),
+        "/api/compiler": (p_compiler, ["POST"]), "/api/export": (p_export, ["POST"]), "/api/disc/export": (p_disc_export, ["POST"]), "/api/compiler/diagnostics": (p_gcc_diagnostics, ["POST"]), "/api/open": (p_open, ["POST"]),
         "/api/compiler/probe": (p_compiler_probe, ["POST"]),
         "/api/compiler/small-data": (lambda s, r, d: net.small_data_evidence(s), ["POST"]),
         "/api/libraries/psyq": (p_psyq, ["POST"]),

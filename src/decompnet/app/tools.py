@@ -249,8 +249,17 @@ def _compile(net: RomNetwork, agent: Agent, slug: str, function: str, source: st
     return net.attempt_many(agent, [net.resolve_function(agent, slug, n) for n in names], source, slug)
 
 
+def _explain(net, agent, slug, function, left, right):
+    net._require_budget(agent)
+    try:
+        return json.dumps(net.explain_difference(slug, function, left, right), indent=2)
+    except ValueError as exc:
+        raise NetworkError(str(exc)) from exc
+
+
 HANDLERS: dict[str, Callable[..., str]] = {
     "project_info": lambda net, agent, slug: project_info(net, slug),
+    "explain_difference": lambda net, agent, slug, function, left, right: _explain(net, agent, slug, function, left, right),
     "probe_compiler": lambda net, agent, slug, unit="", expanded=False: json.dumps(
         net.probe_compiler(slug, unit or None, bool(expanded), log=lambda _: None), indent=2),
     "claim_function": lambda net, agent, slug, function="", strategy="", count=1, track="":
@@ -290,7 +299,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
         net.forks.split_file(agent, _fork(net, slug, "split_file"), path, at, new_name, data),
 }
 
-ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "merge_function", "correct_split", "probe_compiler"}
+ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "merge_function", "correct_split", "probe_compiler", "explain_difference"}
 FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file"}
 
 
@@ -376,6 +385,12 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         functions to learn how this codebase is written. A long function's assembly comes in parts: start_line
         shows the part from that line on."""
         return await run(ctx, "get_function", function=function, start_line=start_line)
+
+    @mcp.tool()
+    async def explain_difference(ctx: Context, function: str, left: str, right: str) -> str:
+        """Compare two C attempts using the selected function's pinned GCC 2.x recipe and unit context.
+        Returns bounded RTL pass hashes, first observed difference and local artifacts. Does not record matches."""
+        return await run(ctx, "explain_difference", function=function, left=left, right=right)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def compile_and_diff(ctx: Context, function: str, source: str) -> str:
