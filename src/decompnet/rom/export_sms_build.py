@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "tools"))
 import z80  # noqa: E402  (decomp.wtf's Z80 disassembler, next to this file)
 from sms_identity import strip_copier_header, verify_normalized  # noqa: E402
+from sms_mapping import BusState, Mapper, entry_state  # noqa: E402
 
 B = json.loads((ROOT / "build.json").read_text(encoding="utf-8"))
 L = json.loads((ROOT / "layout.json").read_text(encoding="utf-8"))
@@ -91,9 +92,16 @@ class Disassembly:
 
     def __init__(self, image: bytes, documented: bool):
         self.image, self.size = image, len(image)
+        profile = (B.get("sms_profile") or {}).get("profile") or {}
+        self.mapper = None
+        if type(profile.get("version")) is int and profile["version"] == 1 and profile.get("origin") == "operator":
+            try:
+                self.mapper = Mapper(profile.get("mapper"), self.size)
+            except ValueError:
+                pass  # unsupported/undeclared wiring can still rebuild as numeric references
         self.banks = max(1, -(-self.size // BANK))
         bases = {int(b): v for b, v in L["banks"].items()}
-        # (where nothing says: as at power-on, every bank where it is up to 48 KiB, else bank 1 in slot 1, the rest in 2)
+        # Section placement only: these defaults do not establish a live cartridge mapping.
         self.base = [bases.get(b, b * BANK if self.size <= 3 * BANK else 0x4000 if b == 1 else 0x8000) if b else 0
                      for b in range(self.banks)]
         self.data = bytearray(self.size)  # 1: bytes the map has as data (a routine's operands, tables)
@@ -113,16 +121,20 @@ class Disassembly:
         """The address the byte at `flat` has in the build (its bank's slot)."""
         return flat if flat < BANK else self.base[flat // BANK] + flat % BANK
 
-    def resolve(self, target: int, from_flat: int) -> int | None:
-        """The ROM offset a jump to `target` from code at `from_flat` reaches, when the build can tell: bank 0, or the
-        slot the code's own bank runs from."""
-        if target < BANK:
-            return target if target < self.size else None
-        bank = from_flat // BANK
-        if bank and self.base[bank] == target & 0xC000 and target < 0xC000:
-            flat = bank * BANK + (target & (BANK - 1))
-            return flat if flat < self.size else None
-        return None
+    def resolve(self, target: int, from_flat: int, *, mapping: BusState | None = None) -> int | None:
+        """Name references only under a declared model and established source/context.
+
+        An emitted instruction supplies conditional entry geometry. A section's display placement cannot
+        establish any bank; an explicit bus context overrides geometry, including RAM/BIOS selection.
+        """
+        if self.mapper is None:
+            return None
+        if mapping is None:
+            source = self.emitted.get(from_flat)
+            if source is None:
+                return None
+            mapping = entry_state(from_flat, source[2], self.size)
+        return self.mapper.resolve(target, mapping).rom_offset
 
     def decode(self) -> None:
         for f in self.funcs:

@@ -92,6 +92,7 @@ def export_sms(net, slug: str, out: Path, log=print) -> dict:
     (out / "tools").mkdir(exist_ok=True)
     shutil.copyfile(Path(__file__).with_name("z80.py"), out / "tools" / "z80.py")
     shutil.copyfile(Path(__file__).with_name("sms_identity.py"), out / "tools" / "sms_identity.py")
+    shutil.copyfile(Path(__file__).with_name("sms_mapping.py"), out / "tools" / "sms_mapping.py")
     (out / "build.json").write_text(json.dumps({"title": proj["name"], "platform": platform, "image": base,
                                                 "sha1": hashlib.sha1(image).hexdigest(), "size": len(image),
                                                 "identity": cfg["rom"].get("identity"),
@@ -164,6 +165,11 @@ in assembly (in `documented/`), and {matched} are also matched in C (in `c/`).
    copy. Needs WLA-DX: decomp.wtf's pinned one when decomp.wtf is installed, else `wla-z80` and `wlalink` on `PATH`
    (or `WLA_DX` set to the folder that has them).
 
+The build includes the same cartridge resolver as the application. A declared supported model and an emitted
+instruction's CPU address can establish references within its own window; section placement does not establish
+other mapped banks. Undeclared or unresolved references remain numeric. Matching the entire image verifies its
+reconstruction independently of those mapping and naming limits.
+
 ## Layout
 
 | Path | What it is |
@@ -173,7 +179,7 @@ in assembly (in `documented/`), and {matched} are also matched in C (in `c/`).
 | `documented/` | Routines documented in assembly: names, comments and constants for what the disassembly has as numbers, each checked to rebuild its bytes. `build.py` puts each in place of its bytes; `names.inc` holds the names they use that aren't labels (RAM, constants). `python build.py --no-documented` builds without them. |
 | `include/hardware.inc` | The hardware's names the documented routines use (ports, the mapper's registers). |
 | `c/` | Functions matched in C: SDCC compiles each to exactly the original code. For reference: the build is the assembly. |
-| `tools/z80.py`, `tools/sms_identity.py`, `build.py`, `build.json` | The disassembler, revision identity checks, the build, and which game it's for. |
+| `tools/z80.py`, `tools/sms_identity.py`, `tools/sms_mapping.py`, `build.py`, `build.json` | The decoder, revision checks, shared mapper, build and input manifest. |
 
 `build/disassembly/` is made from your copy on every build, so keep your work in `layout.json`, `comments.txt` and
 `documented/`. To change the game itself, copy `build/disassembly/` elsewhere and edit it there (`game.asm` is the

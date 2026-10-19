@@ -19,6 +19,8 @@ is fixed to bank 0. Mapper-register reads see work RAM, including its mirror: wr
 change that readback without selecting a new bank. Reset register values are a selected analysis recipe,
 not a guarantee for every mapper revision. Full bus-context propagation and consumer migration are in progress;
 the provisional trace still uses a cartridge-only reset model and cannot establish BIOS or cartridge-RAM execution.
+Standalone exports include this shared resolver. Generated reference names require a declared model and established
+instruction geometry; unresolved references remain numeric while the build still verifies whole-image equality.
 
 ## What the importer does with a .sms / .gg file
 

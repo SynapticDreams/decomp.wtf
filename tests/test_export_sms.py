@@ -67,6 +67,8 @@ def test_the_export_rebuilds_the_game_with_its_documented_routine(exported):
     assert ".DEFINE wMenuOpen $C0A2" in (out / "documented" / "names.inc").read_text()
     assert {"layout.json", "comments.txt", "build.py", "build.json", "README.md", ".gitignore"} <= {p.name for p in out.iterdir()}
     assert (out / "tools" / "z80.py").exists() and (out / "include" / "hardware.inc").exists()
+    from decompnet.rom import sms_mapping
+    assert (out / "tools" / "sms_mapping.py").read_bytes() == Path(sms_mapping.__file__).read_bytes()
     plain = subprocess.run([sys.executable, "build.py", "--no-documented"], cwd=out, capture_output=True, text=True)
     assert plain.returncode == 0 and "identical" in plain.stdout, plain.stdout + plain.stderr
 
