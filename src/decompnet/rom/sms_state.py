@@ -62,3 +62,4 @@ class Found:
     bank_base: dict[int, int] = field(default_factory=dict)  # bank -> the CPU address its code was found running at
     exhausted: dict[int, set[str]] = field(default_factory=dict)  # entry -> bounded traversal limits reached
     unknown_writes: set[int] = field(default_factory=set)  # entries with unqualified explicit write effects
+    unresolved: dict[int, set[str]] = field(default_factory=dict)  # entry -> unqualified callee effects

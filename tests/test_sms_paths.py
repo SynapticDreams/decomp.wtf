@@ -18,7 +18,8 @@ def test_control_values_joining_at_one_store_both_reach_the_callee():
     })
     found = sms_trace.Tracer(rom).follow({0: (0, "vector")})
     assert {state.control for state in found.entered[0x200]} == {0, 8}
-    assert 0x14000 not in found.starts  # joining the callers cannot prove that slot 2 contains ROM
+    assert found.unresolved[0x200]  # joined callers cannot prove that slot 2 contains ROM
+    assert all(state.control_flag(8) is False for state in found.entered[0x14000])  # conditional ROM path only
 
 
 def test_push_history_belongs_to_the_path_that_pushed():
@@ -42,11 +43,10 @@ def test_context_exhaustion_removes_singleton_caller_mapping_and_helper_claims()
 def test_exhausted_callee_cannot_hide_the_callers_continuation():
     rom = make_rom(size=0x8000, code={
         0: bytes.fromhex("cd0002 cd0003 18fe"),
-        0x200: bytes.fromhex("e1 00000000000000000000 c9"), 0x300: b"\xc9",
+        0x200: bytes.fromhex("0000000000000000000000 c9"), 0x300: b"\xc9",
     })
     found = sms_trace.Tracer(rom, limits=Limits(steps=6)).follow({0: (0, "vector")})
     assert "instruction budget exhausted" in found.exhausted[0x200]
-    assert 0x200 in found.takes_return
     assert 0x300 in found.starts
 
 

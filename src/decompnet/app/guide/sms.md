@@ -28,7 +28,7 @@ followed separately. Each function has instruction, per-address context, stack a
 unchanged loops converge as table/bound marks age and expire. Exhausted entries appear in split logs and the
 `analysis_exhausted` report/resplit result with their ROM offsets and reasons. Their discovered callees retain
 only conditional entry-window facts; exhausted analysis cannot prove a mapper helper or a nonreturning routine.
-General callee effects, physical stack accesses and interrupt restoration remain analysis limits; this does not qualify
+Physical stack accesses and interrupt restoration remain analysis limits; this does not qualify
 BIOS, cartridge-RAM or peripheral execution, or establish complete discovery when no budget was exhausted.
 Control knowledge is tracked per bit: a Sega ROM entry in slot 2 establishes that RAM is deselected there, without inventing
 shift/write-enable bits or raw register latches. Joins keep agreed bits even when another control bit differs.
@@ -39,7 +39,17 @@ Known VDP/PSG/I/O-control output ports preserve mapping; unknown outputs and pos
 leave bus sources unresolved. Hardware/mode-specific port enable values are not interpreted as a new mapping.
 The virtual stack does not qualify physical SP placement, interrupt interleaving or stack/device aliasing.
 Explicit SP changes discard saved virtual values; popping an untracked index register still consumes its value.
-General callee effects and complete call/interrupt summaries remain pending; a store adapter is not CPU emulation.
+Ordinary callees are evaluated with actual incoming registers, mapping and sparse RAM. Conditional calls include
+the uncalled path, and returned mapping/RAM facts are joined across all known return paths. Evaluation has a shared
+2,048-instruction budget across nested calls, depth limit eight and per-address/stack/memory limits. Unknown sources,
+unqualified writes or returns, SP changes, interrupt returns, EI/HALT and exhausted budgets leave caller effects
+unresolved. `analysis_unresolved` reports caller entry offsets and reasons in split logs and resplit results.
+Computed continuations with known pushed addresses and declared inline-return adjustments use the same evaluator.
+Known nested call targets are retained as conditional static discovery evidence even when another path is unresolved;
+they do not establish a complete target set or execution observations.
+Explicit nonreturn corrections apply; an incomplete trace never supplies a preserving or nonreturning contract.
+This remains static analysis under an ordinary virtual-stack contract; asynchronous interrupt preservation and
+complete inter-function expansion/round qualification remain pending. Neither adapter is a CPU emulator.
 Instruction forms follow the [Zilog Z80 manual](https://www.zilog.com/docs/z80/um0080.pdf); source-selection
 limits follow the [memory-control reference](https://www.smspower.org/Development/Port3E) and
 [hardware notes](https://github.com/drhelius/Gearsystem/blob/master/skills/gearsystem-debugging/references/smstech.md).
@@ -47,7 +57,9 @@ Standalone exports include this shared resolver. Generated reference names requi
 instruction geometry; unresolved references remain numeric while the build still verifies whole-image equality.
 Assembly judging uses the same source/bank resolver. A unique routine name at a CPU address cannot establish its
 physical bank, including slot 0 above the first KiB. Unknown references stay pending. Known stores invalidate
-affected entry-bank facts conservatively; precise values across paths/callees still need qualified summaries.
+affected entry-bank facts conservatively. Assembly routine records do not supply callee bodies or return contracts;
+references following a call remain numeric/pending rather than inheriting its entry-bank facts. Tracer evaluation
+does not silently become an assembly acceptance contract. Stored source is retained if revalidation reports an omission.
 
 ## What the importer does with a .sms / .gg file
 
