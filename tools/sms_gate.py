@@ -17,26 +17,30 @@ TESTS = (
     "tests/test_sms_mapper_integration.py",
     "tests/test_sms_mapper_hardware.py",
     "tests/test_sms_resplit_history.py",
+    "tests/test_sms_resplit_source_check.py",
+    "tests/test_sms_resplit_revalidate.py",
     "tests/test_sms_documented.py",
     "tests/test_export_sms.py",
 )
 
 
-def require_tools() -> str:
+def require_tools(tid: str = "wla-dx") -> str:
     """Check the install manifest against the registry, not a fallback assembler on PATH."""
-    manifest = toolchains.installed("wla-dx")
-    spec = toolchains.get("wla-dx")
+    manifest = toolchains.installed(tid)
+    spec = toolchains.get(tid)
     if manifest is None:
-        raise ValueError("install the pinned tools: decompnet toolchain install wla-dx")
+        raise ValueError(f"install the pinned tools: decompnet toolchain install {tid}")
     expected = {(p["url"], p["sha256"]) for p in spec.parts_for()}
     installed = {(p["url"], p["sha256"]) for p in manifest.get("parts", [])}
     if not expected or installed != expected or manifest.get("source") != spec.source:
-        raise ValueError("WLA-DX install differs from the registry pin; reinstall with --force")
-    folder = toolchains.path("wla-dx")
-    for name in ("wla-z80", "wlalink"):
-        exe = folder / (name + (".exe" if sys.platform == "win32" else ""))
-        if not exe.is_file() or not os.access(exe, os.X_OK):
-            raise ValueError(f"pinned WLA-DX executable is missing or not executable: {name}")
+        raise ValueError(f"{tid} install differs from the registry pin; reinstall with --force")
+    folder = toolchains.path(tid)
+    dirs = [folder] if tid == 'wla-dx' else [folder / 'bin', folder / 'gbdk/bin']
+    names = ('wla-z80', 'wlalink') if tid == 'wla-dx' else ('sdcc', 'sdasz80')
+    for name in names:
+        executables = [directory / (name + ('.exe' if sys.platform == 'win32' else '')) for directory in dirs]
+        if not any(exe.is_file() and os.access(exe, os.X_OK) for exe in executables):
+            raise ValueError(f"pinned {tid} executable is missing or not executable: {name}")
     return spec.source
 
 
@@ -63,6 +67,13 @@ def verify_report(report: Path) -> int:
     if not all(f"test_changed_documented_source_and_attempts_are_recoverable_and_rebuild_after_undo[{platform}]" in recovery
                for platform in ("sms", "gg")):
         raise ValueError("SMS gate report is missing SMS/GG source recovery and rebuild checks")
+    revalidation = {case.get('name') for case in cases if case.get('classname') == 'tests.test_sms_resplit_revalidate'}
+    required = {f'test_c_resplit_rechecks_bytes_and_unit_header_and_preserves_provenance[{platform}-{changed}]'
+                for platform in ('sms', 'gg') for changed in ('False', 'True')}
+    required.update(f'test_assembly_resplit_rechecks_new_cpu_then_inserts_retained_source_in_exact_export[{platform}]'
+                    for platform in ('sms', 'gg'))
+    if not required <= revalidation:
+        raise ValueError('SMS gate report is missing actual C/assembly resplit revalidation checks')
     return len(cases)
 
 
@@ -73,7 +84,7 @@ def main(argv=None) -> int:
     # Keep artifacts ignored by default, and remove stale reports before starting the process.
     report = (args.report or ROOT / "build" / "sms-tool-tests.xml").resolve()
     try:
-        print(f"SMS gate toolchain: {require_tools()}", flush=True)
+        print(f"SMS gate toolchains: {require_tools()}; {require_tools('gbdk-2020')}", flush=True)
         report.parent.mkdir(parents=True, exist_ok=True)
         report.unlink(missing_ok=True)
         proc = subprocess.run([sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",

@@ -58,6 +58,13 @@ window.ResplitHistoryUI = {
   },
   changes(panel, report) {
     if (!report.changed_work) return;
+    const checks = document.createElement("p");
+    checks.className = "muted small";
+    const result = report.source_revalidation;
+    checks.textContent = result ? `Source checks: ${result.passed} passed, ${result.failed} failed, ` +
+      `${result.unresolved} unresolved. Failed/unresolved source remains unaccepted; retained interpretation needs review.` :
+      `${report.source_revalidation_pending || 0} accepted sources need checks against the proposed layout on apply.`;
+    panel.append(checks);
     const summary = document.createElement("p");
     summary.className = "muted small";
     summary.textContent = `Showing ${report.changed_work.length} of ${report.changed_work_count} changed routines. ` +

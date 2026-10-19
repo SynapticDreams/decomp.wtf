@@ -29,4 +29,5 @@ jobs:
           python-version: '3.12'
       - run: uv sync --locked
       - run: uv run decompnet toolchain install wla-dx
+      - run: uv run decompnet toolchain install gbdk-2020
       - run: uv run python tools/sms_gate.py

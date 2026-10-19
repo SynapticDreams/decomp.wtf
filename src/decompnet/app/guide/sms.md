@@ -99,9 +99,20 @@ or before mutation still stop the apply.
 
 An SMS/GG apply saves a private, versioned snapshot of its configuration, functions, attempts, claims, notes,
 symbols, corrections, data regions and context headers. New candidates never reuse deleted function IDs, and
-removed attempts are retained in the snapshot. A changed documented routine's prior source remains recoverable;
-the new candidate starts unaccepted. Existing matched-C ranges retain their protection, with changed entries
-flagged for revalidation. Snapshot retention does not establish source validity under changed boundaries/context.
+removed attempts are retained in the snapshot. Changed SMS/GG layouts no longer protect old matched-C ranges
+from the splitter. Accepted C and assembly are checked against the proposed entry, bytes, symbols, CPU placement,
+data map and stored unit header before opening the database transaction. Concurrent edits invalidate the result.
+A passing assembly check establishes byte/placement validity under the declared model; a passing C check is a
+function-byte reference under the current compiler/context. Neither proves original compiler identity, linked
+replacement behavior, ABI correctness or semantic purpose. Retained semantic interpretation needs review.
+Failed or unresolved source remains an unaccepted draft at the same physical entry when available; otherwise
+it remains in history. Old attempts and scores stay with their original target. Applicable names and review
+metadata survive; documented source is returned to the review sample. Revalidation checks at most 32 functions,
+64 KiB per source, with a 30-second batch budget and bounded individual tool runs. Exhausted checks, missing tools,
+removed named entries, unsupported mapping and external compiler includes remain unresolved and unaccepted.
+The preview reports the number requiring checks; apply reports passed/failed/unresolved counts and bounded
+metadata-only details. External include dependency capture and forward recovery from history remain pending.
+Snapshot retention does not establish source validity under changed boundaries/context.
 SMS classification, data changes and history are committed in one SQLite transaction, including rollback on
 commit failure. Unchanged work and applicable claims remain attached to their original function rows; applying
 changes to an actively claimed function requires releasing that claim first.

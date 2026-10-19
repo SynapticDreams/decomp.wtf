@@ -23,7 +23,7 @@ def describe(before: dict, candidates, kept: set[int]) -> dict:
         details.append({"id": row["id"], "name": row["name"], "rom_offset": low, "cpu": row["vram"], "size": size,
                         "status": row["status"], "accepted_source": bool(row["matched_source"]),
                         "requires_revalidation": row["status"] in ("matched", "documented"),
-                        "action": "retained" if row["status"] == "matched" else "archived",
+                        "action": "archived",
                         "overlap_count": len(overlaps), "overlaps_truncated": len(overlaps) > OVERLAPS,
                         "overlaps": [{"rom_offset": fn.rom, "cpu": fn.vram, "size": len(fn.code)}
                                      for fn in overlaps[:OVERLAPS]]})

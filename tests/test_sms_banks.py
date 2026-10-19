@@ -93,7 +93,9 @@ def test_a_project_split_by_an_older_splitter_is_split_again_keeping_its_work(tm
     assert net._function("func_000_0105", slug)  # a preview changes nothing
     out = net.resplit_banked(slug, apply=True, log=lambda *_: None)
     rows = {r["rom_offset"]: r for r in net.store.all("SELECT * FROM functions WHERE project_id=?", pid)}
-    assert 261 not in rows and rows[0x0160]["status"] == "matched" and out["kept"] >= 1
+    assert 261 not in rows and rows[0x0160]["status"] != "matched" and out["kept"] >= 1
+    assert rows[0x0160]['best_source'] == '/* a */' and rows[0x0160]['matched_source'] is None
+    assert out['source_revalidation']['unresolved'] >= 1  # undeclared cartridge; historical text is retained
     assert rows[0x0170]["name"] == "LoadTwo" and rows[0x0170]["vram"] == 0x0170  # the name stays, the address is right
     note = net.store.one("SELECT function_id FROM notes WHERE text='starts mid-routine'")
     assert note["function_id"] == rows[0x0100]["id"]  # moved to main, which covers where it started

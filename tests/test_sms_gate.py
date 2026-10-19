@@ -6,10 +6,18 @@ import pytest
 from tools import sms_gate
 
 
-def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True):
+def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True, revalidation=True):
     suite = ET.Element("testsuite")
     modules = sms_gate.TESTS[:-1] if missing_module else sms_gate.TESTS
     for name in modules:
+        if name.endswith('test_sms_resplit_revalidate.py') and revalidation:
+            for platform in ('sms', 'gg'):
+                for changed in ('False', 'True'):
+                    ET.SubElement(suite, 'testcase', classname='tests.test_sms_resplit_revalidate', name=
+                        f'test_c_resplit_rechecks_bytes_and_unit_header_and_preserves_provenance[{platform}-{changed}]')
+                ET.SubElement(suite, 'testcase', classname='tests.test_sms_resplit_revalidate', name=
+                    f'test_assembly_resplit_rechecks_new_cpu_then_inserts_retained_source_in_exact_export[{platform}]')
+            continue
         if name.endswith("test_sms_resplit_history.py") and recovery:
             for platform in ("sms", "gg"):
                 ET.SubElement(suite, "testcase", classname="tests.test_sms_resplit_history", name=
@@ -50,7 +58,7 @@ def test_gate_rejects_an_install_manifest_without_binaries(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("kwargs", [{"skipped": True}, {"failed": True}, {"missing_module": True}, {"gg": False},
-                                    {"mapper_matrix": False}, {"recovery": False}])
+                                    {"mapper_matrix": False}, {"recovery": False}, {"revalidation": False}])
 def test_gate_rejects_incomplete_or_unsuccessful_execution(tmp_path, kwargs):
     with pytest.raises(ValueError):
         sms_gate.verify_report(report(tmp_path, **kwargs))
@@ -63,4 +71,10 @@ def test_gate_requires_a_valid_report_with_executed_tests(tmp_path):
     path.write_text("<testsuite />")
     with pytest.raises(ValueError, match="executed, passing tests"):
         sms_gate.verify_report(path)
-    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 6
+    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 11
+
+
+def test_gate_rejects_gbdk_from_path_without_the_pinned_install(monkeypatch):
+    monkeypatch.setattr(sms_gate.toolchains, 'installed', lambda _: None)
+    with pytest.raises(ValueError, match='install gbdk-2020'):
+        sms_gate.require_tools('gbdk-2020')
