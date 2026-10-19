@@ -39,6 +39,7 @@ class Coverage:
     read: bytearray
     entries: set[int] = field(default_factory=set)
     kind: str = "cdl"
+    cpus: dict[int, set[int]] = field(default_factory=dict)  # observed CPU entries for each physical instruction
 
     def summary(self) -> dict:
         return {"kind": self.kind, "code": sum(self.code), "read": sum(self.read), "entries": len(self.entries)}
