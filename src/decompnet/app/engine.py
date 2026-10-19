@@ -513,16 +513,17 @@ class RomNetwork(Network):
         workdir = self.workspace / slug
         workdir.mkdir(parents=True)
         (workdir / picked.filename).write_bytes(rom)
-        if isinstance(data, Path) and picked.platform in ("sms", "gg") and data.with_suffix(".sym").is_file():
-            # a WLA-DX symbol file next to the ROM names and seeds functions (rom/sms_trace.py): it comes along
-            shutil.copyfile(data.with_suffix(".sym"), (workdir / picked.filename).with_suffix(".sym"))
+        sidecar_notice = None
+        if isinstance(data, Path) and picked.platform in ("sms", "gg"):
+            from .sms_symbol_adjacent import copy
+            sidecar_notice = copy(data, workdir / picked.filename, log)
         size = f"{info['size'] // (1024 * 1024)} MiB" if info["size"] >= 1 << 20 else f"{info['size'] // 1024} KiB"
         log(f"{detect.PLATFORMS[picked.platform]}: {info['title']} ({info['game_code'] or 'no game code'}, "
             f"{info['region']}), {size}, looks built with {info['compiler_guess']}")
         if picked.platform == "gba":
             return self._import_gba(picked, slug, workdir, toolchain, flags, log)
         if picked.platform in BANKED_PLATFORMS:
-            return self._import_banked(picked, slug, workdir, log)
+            return self._import_banked(picked, slug, workdir, log, sidecar_notice=sidecar_notice)
         if picked.overlays:
             log(f"{len(picked.overlays)} overlay{'s' if len(picked.overlays) != 1 else ''} on the disc: "
                 + ", ".join(f"{o[0]} at 0x{o[2]:08X}" for o in picked.overlays[:6]) + (", ..." if len(picked.overlays) > 6 else ""))
@@ -762,10 +763,11 @@ class RomNetwork(Network):
                 if total and total == aside:
                     db.execute("UPDATE functions SET status='open' WHERE project_id=? AND status='asm'", (proj["id"],))
 
-    def _import_banked(self, picked, slug: str, workdir: Path, log) -> str:
+    def _import_banked(self, picked, slug: str, workdir: Path, log, *, sidecar_notice=None) -> str:
         from .banked_import import import_project
 
-        return import_project(self, picked, slug, workdir, log, BASE_HEADER.format(title=picked.info["title"]))
+        return import_project(self, picked, slug, workdir, log, BASE_HEADER.format(title=picked.info["title"]),
+                              sidecar_notice=sidecar_notice)
 
     def resplit_banked(self, slug: str, apply: bool = False, log=print, *, expected_plan: str | None = None, profile: dict | None = None,
                        inspection: dict | None = None) -> dict:
@@ -2100,20 +2102,20 @@ class RomNetwork(Network):
         return sms_symbol_import.present(self, slug) if self.cfg(self._project(slug)).get('arch') == 'z80' else symbol_files.present_legacy(self, slug)
 
     def import_symbols(self, slug: str, text: str, name: str = "", *, layout=None, apply=True,
-                       expected_plan=None, source_base64=None) -> dict:
+                       expected_plan=None, source_base64=None, offset=0) -> dict:
         from . import symbol_files, sms_symbol_import
 
         if self.cfg(self._project(slug)).get('arch') == 'z80':
             return sms_symbol_import.import_source(self, slug, text, name, layout=layout, apply=apply,
-                                                   expected_plan=expected_plan, source_base64=source_base64)
-        if layout is not None or not apply or expected_plan is not None or source_base64 is not None:
+                                                   expected_plan=expected_plan, source_base64=source_base64, offset=offset)
+        if layout is not None or not apply or expected_plan is not None or source_base64 is not None or offset != 0:
             raise NetworkError('declared symbol import is for local SMS/GG projects')
         return symbol_files.import_legacy(self, slug, text, name)
 
-    def inspect_symbols(self, slug: str, *, offset=0, expected_source=None) -> dict:
+    def inspect_symbols(self, slug: str, *, offset=0, expected_source=None, expected_context=None) -> dict:
         from .sms_symbol_import import inspect
 
-        return inspect(self, slug, offset=offset, expected_source=expected_source)
+        return inspect(self, slug, offset=offset, expected_source=expected_source, expected_context=expected_context)
 
     def remove_symbol_file(self, slug: str) -> dict:
         from . import symbol_files, sms_symbol_import

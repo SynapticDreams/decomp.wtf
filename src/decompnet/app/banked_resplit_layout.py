@@ -1,5 +1,6 @@
 """Plan banked function/range reconciliation without changing stored work."""
 from dataclasses import dataclass
+from collections import Counter
 
 
 @dataclass
@@ -46,4 +47,9 @@ def reconcile(net, proj, before, old, fns, report):
            + sum(f.size for f in fresh),
            "corrections": net.store.one("SELECT COUNT(*) AS n FROM corrections WHERE project_id=? AND undone_at IS "
                                          "NULL", proj["id"])["n"]}
+    source = report.get('symbol_import')
+    if isinstance(source, dict):
+        records = source.get('records') or []
+        out['symbol_source'] = {'state': source.get('state'), 'source': source.get('source', {}),
+                                'record_count': len(records), 'counts': dict(Counter(row['status'] for row in records))}
     return Layout(by_off, kept, fresh, gone, noted, regions, out)

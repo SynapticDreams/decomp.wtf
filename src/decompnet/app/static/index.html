@@ -426,6 +426,20 @@
         <h3 class="sub" id="symHead">Symbol file</h3>
         <p class="muted small" id="symText">Symbol files name addresses and may identify code or data. They stay private to this project. Game Boy imports keep recognized names and blocks. SMS/GG imports retain the original source and require a declared layout before using its labels; existing routine names and accepted work are retained.</p>
         <div class="row" id="symRow"><label class="ghost small-btn file-btn">Import a symbol file…<input type="file" id="symFile" accept=".sym,.txt" hidden></label><span class="muted small grow" id="symStatus"></span><button class="ghost small-btn" id="symRemove" type="button" hidden>Remove it</button></div>
+        <div id="smsSymbols" hidden>
+          <p class="muted small">Select the original symbol source and its declared layout JSON to preview source coordinates. Without a layout, records remain pending. Applying a source retains existing names and accepted work; preview resplitting before changing the function layout.</p>
+          <div class="row">
+            <label class="ghost small-btn file-btn">Symbol source…<input data-symbol="source" type="file" accept=".sym,.txt" hidden></label>
+            <label class="ghost small-btn file-btn">Layout JSON…<input data-symbol="layout" type="file" accept=".json" hidden></label>
+            <button data-symbol="preview" class="ghost small-btn" type="button">Preview source</button>
+            <button data-symbol="apply" class="ghost small-btn" type="button" disabled>Apply preview</button>
+            <button data-symbol="inspect" class="ghost small-btn" type="button">Inspect stored source</button>
+            <button data-symbol="remove" class="ghost small-btn" type="button">Disable source</button>
+          </div>
+          <p data-symbol="status" class="muted small" role="status"></p>
+          <div data-symbol="records" class="small"></div>
+          <button data-symbol="more" class="ghost small-btn" type="button" hidden>Next 50 records</button>
+        </div>
         <h3 class="sub" id="covHead">Coverage from an emulator</h3>
         <p class="muted small" id="covText">Play your copy of the game in an emulator that logs what runs, then import the log: a Mesen2 code/data log (<code>.cdl</code>, from its Code/Data Logger; FCEUX's too, for an NES game) or an execution trace (<code>bank:address</code> lines; Game Boy and Master System). Splitting the game again follows the code it saw run, and shows what it saw read as data. The more of the game you play, the more it finds.</p>
         <div class="row" id="covRow"><label class="ghost small-btn file-btn">Import coverage…<input type="file" id="covFile" accept=".cdl,.trace,.txt,.log" hidden></label><span class="muted small grow" id="covStatus"></span><button class="ghost small-btn" id="covRemove" type="button" hidden>Remove it</button></div>
@@ -544,6 +558,7 @@
 <div class="toasts" id="toasts" aria-live="polite"></div>
 <script src="/assets/sms-profile.js"></script>
 <script src="/assets/sms-progress.js"></script>
+<script src="/assets/sms-symbols.js"></script>
 <script src="/assets/sms-profile-migration.js"></script>
 <script src="/assets/resplit-archive.js"></script>
 <script src="/assets/resplit-history.js"></script>

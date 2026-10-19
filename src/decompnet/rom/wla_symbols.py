@@ -12,7 +12,7 @@ import io
 import re
 import zlib
 
-from .wla_layout import Layout, identity
+from .wla_layout import Layout, identity, declare
 
 MAX_BYTES = 8 * 1024 * 1024
 MAX_RECORDS = 100_000
@@ -155,3 +155,22 @@ def normalize(document: Document, layout: Layout, image: bytes) -> Normalized:
             seen_aliases[key].add(row['name'])
     names = {key: values[0] for key, values in aliases.items()}
     return Normalized(document, identity(image), layout.declaration, records, names, seeds, dict(aliases))
+
+
+def read_names(text, seeds=False, *, layout=None, image=None, mapper='sega', physical=False):
+    """Declared assembler records, or explicitly asserted physical code coordinates for legacy scripts."""
+    if type(physical) is not bool or (physical and layout is not None):
+        raise ValueError('choose declared assembler geometry or explicit physical code records')
+    if layout is None and not physical:
+        raise ValueError('WLA symbols need layout/image; physical=True is only for explicitly physical code records')
+    doc = read(text.encode('utf-8'))
+    if layout is not None:
+        if image is None:
+            raise ValueError('declared WLA symbols require normalized image bytes')
+        imported = normalize(doc, declare(layout, image, mapper=mapper), image)
+        return imported.seeds if seeds else imported.names
+    if doc.version not in (None, 1, 2, 3):
+        return {}
+    return {(r['bank'], r['cpu']): r['name'] for r in doc.records
+            if not ((r['name'].startswith(('_', '@')) and not (seeds and r['name'].startswith('_LABEL_')))
+                    or '.' in r['name'] or '$' in r['name'])}

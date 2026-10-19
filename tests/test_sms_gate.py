@@ -6,12 +6,19 @@ import pytest
 from tools import sms_gate
 
 
-def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True, revalidation=True, archive=True, dependencies=True, undo=True, migration=True, inspection=True, project_archive=True, legacy=True, verification=True, progress=True, export_state=True, c_reference=True, progress_routes=True, artifacts=True, wla=True, symbol_imports=True):
+def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True, revalidation=True, archive=True, dependencies=True, undo=True, migration=True, inspection=True, project_archive=True, legacy=True, verification=True, progress=True, export_state=True, c_reference=True, progress_routes=True, artifacts=True, wla=True, symbol_imports=True, adjacent=True):
     suite = ET.Element("testsuite")
     modules = sms_gate.TESTS[:-1] if missing_module else sms_gate.TESTS
     for name in modules:
         extra = None
-        if name.endswith('test_sms_symbol_import.py') and symbol_imports:
+        if name.endswith('test_sms_symbol_adjacent.py') and adjacent:
+            extra = [f'test_initial_sidecar_import_preserves_bytes_and_never_guesses_nonuniform_geometry[{p}-{mode}]'
+                     for p in ('sms', 'gg') for mode in ('declared', 'missing', 'malformed', 'different_revision', 'invalid_geometry',
+                                                        'null', 'new_version', 'wrong_crc', 'oversized', 'bad_source', 'future_symbols')]
+            extra += [f'{test}[{p}]' for p in ('sms', 'gg') for test in (
+                'test_legacy_layout_uncertainty_preserves_actual_accepted_source_and_recovery',
+                'test_stored_inspection_cannot_mix_mapper_contexts_with_the_same_source_bytes')]
+        elif name.endswith('test_sms_symbol_import.py') and symbol_imports:
             extra = [f'{test}[{p}]' for p in ('sms', 'gg') for test in (
                 'test_preview_apply_reload_resplit_and_undo_preserve_source_identity_and_existing_work',
                 'test_missing_layout_retains_raw_records_without_applying_names_or_seeds',
@@ -30,7 +37,8 @@ def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=Tr
             extra = [f'test_actual_nonuniform_wla_symbols_seed_the_right_bytes_and_keep_aliases[{p}]' for p in ('sms', 'gg')]
         elif name.endswith('test_sms_wla_symbols.py') and wla:
             extra = ['test_nonuniform_banks_aliases_duplicate_cpu_windows_and_automatic_seeds_are_distinct',
-                     'test_data_ram_locals_unknown_and_impossible_fixed_prefix_do_not_seed_code']
+                     'test_data_ram_locals_unknown_and_impossible_fixed_prefix_do_not_seed_code',
+                     'test_public_reader_requires_geometry_or_explicit_physical_code_coordinates']
         elif name.endswith('test_sms_progress.py') and progress:
             extra = ['test_aliases_and_data_overlap_are_measured_as_physical_unions',
                      'test_current_reference_dates_attribute_overlapping_bytes_once_and_bound_the_chart'] + [
@@ -163,7 +171,7 @@ def test_gate_rejects_an_install_manifest_without_binaries(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("kwargs", [{"skipped": True}, {"failed": True}, {"missing_module": True}, {"gg": False},
-                                    {"mapper_matrix": False}, {"recovery": False}, {"revalidation": False}, {"archive": False}, {"dependencies": False}, {"undo": False}, {"migration": False}, {"inspection": False}, {"project_archive": False}, {"legacy": False}, {"verification": False}, {"progress": False}, {"export_state": False}, {"c_reference": False}, {"progress_routes": False}, {"artifacts": False}, {"wla": False}, {"symbol_imports": False}])
+                                    {"mapper_matrix": False}, {"recovery": False}, {"revalidation": False}, {"archive": False}, {"dependencies": False}, {"undo": False}, {"migration": False}, {"inspection": False}, {"project_archive": False}, {"legacy": False}, {"verification": False}, {"progress": False}, {"export_state": False}, {"c_reference": False}, {"progress_routes": False}, {"artifacts": False}, {"wla": False}, {"symbol_imports": False}, {"adjacent": False}])
 def test_gate_rejects_incomplete_or_unsuccessful_execution(tmp_path, kwargs):
     with pytest.raises(ValueError):
         sms_gate.verify_report(report(tmp_path, **kwargs))
@@ -176,7 +184,7 @@ def test_gate_requires_a_valid_report_with_executed_tests(tmp_path):
     path.write_text("<testsuite />")
     with pytest.raises(ValueError, match="executed, passing tests"):
         sms_gate.verify_report(path)
-    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 117
+    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 143
 
 
 def test_gate_rejects_gbdk_from_path_without_the_pinned_install(monkeypatch):

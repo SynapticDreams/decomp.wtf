@@ -51,7 +51,7 @@ def segments(platform: str, info: dict, report: dict) -> list[dict]:
             for b in range(max(1, -(-info["size"] // lane.BANK_SIZE)))]
 
 
-def import_project(net, picked, slug: str, workdir: Path, log, context_header: str) -> str:
+def import_project(net, picked, slug: str, workdir: Path, log, context_header: str, *, sidecar_notice=None) -> str:
     """Game Boy / Game Boy Color (SM83) and Master System / Game Gear (Z80): functions found by the fork's own
     disassemblers (mgbdis and rgbs for the Game Boy when installed), banks included.
 
@@ -68,7 +68,12 @@ def import_project(net, picked, slug: str, workdir: Path, log, context_header: s
     label = "Master System / Game Gear" if sega else "NES" if famicom else "Game Boy"
     net._ensure_tools(BANKED_TOOLS[arch], log)
     report: dict = {}
-    fns = lane.split(workdir / picked.filename, workdir, log=log, report=report)
+    source = None
+    if sega:
+        from .sms_symbol_adjacent import initialize
+        source = initialize(workdir / picked.filename, picked.data, sidecar_notice, log)
+    fns = lane.split(workdir / picked.filename, workdir, log=log, report=report,
+                     **({'hints': {'symbol_source': source}} if source is not None else {}))
     matchable = gb_build.available(arch)
     # The toolchain is named even when it is not installed: the project's overview reads it (and says it is missing).
     compiler = {"toolchain": gb_build.TOOLCHAIN, "flags": ["--fsigned-char"], "timeout": 120, "wrapper": "cc",
@@ -100,6 +105,8 @@ def import_project(net, picked, slug: str, workdir: Path, log, context_header: s
     if sega:
         from ..rom.sms_profile import initial
         cfg["sms_profile"] = initial(cfg["rom"])
+        if source is not None:
+            cfg['symbol_file'] = source
         log("cartridge mapping is unresolved: the Sega-based listing is provisional until declared in Settings")
     mode = info["region"] if sega or famicom else info["cgb"]["mode"]
     now = time.time()

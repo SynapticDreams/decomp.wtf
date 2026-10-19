@@ -25,7 +25,9 @@ def test_actual_nonuniform_wla_symbols_seed_the_right_bytes_and_keep_aliases(tmp
     assert imported.aliases[(0, 0x2100)] == ['First', 'FirstAlias']
     assert imported.names[(0, 0x1100)] == 'MainAt1100'
     assert imported.names[(2, 0x1100)] == 'OtherAt1100'
-    assert sms_trace.read_sym(original.decode())[(1, 0x2100)] == 'FirstAlias'  # historical parser loses the alias
+    with pytest.raises(ValueError, match='need layout/image'):
+        sms_trace.read_sym(original.decode())
+    assert sms_trace.read_sym(original.decode(), layout=layout_for(image), image=image)[(0, 0x2100)] == 'First'
     report = {}
     functions = {f.rom: f for f in sms.split(path, tmp_path, report=report, symbol_layout=layout_for(image))}
     for flat, cpu, name, code in ((0x2100, 0x2100, 'First', '3e01c9'), (0x6100, 0x6100, 'Second', '3e02c9'),

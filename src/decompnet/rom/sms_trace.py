@@ -15,7 +15,6 @@ These limits are separate from preserving full bus state on the paths this trace
 from __future__ import annotations
 
 import bisect
-import re
 
 from . import sms_calls, sms_effects, sms_registers, sms_seeds, sms_stack, sms_trace_writes, z80
 from .sms_mapping import BusState, Mapper, REGISTERS, join
@@ -445,28 +444,11 @@ class Tracer:
         self.found.bank_base = {b: max(v, key=v.get) for b, v in votes.items()}
 
 
-_SYM = re.compile(r"^\s*([0-9A-Fa-f]{1,4}):([0-9A-Fa-f]{4})\s+([A-Za-z_.@$][\w.@$]*)\s*$")
+def read_sym(text: str, seeds: bool = False, *, layout=None, image=None, mapper='sega', physical=False) -> dict[tuple[int, int], str]:
+    """Normalize declared WLA geometry; legacy physical code records require explicit physical=True."""
+    from .wla_symbols import read_names
 
-
-def read_sym(text: str, seeds: bool = False) -> dict[tuple[int, int], str]:
-    """A WLA-DX symbol file's labels: {(bank, CPU address): name}, from its [labels] section (or a file of bare
-    `bank:address name` lines). Local labels (starting with `_` or `@`, or holding a dot) are left out. `seeds`:
-    the automatic names emulators and disassemblers give code (`_LABEL_9D9_`) are kept too: where code starts, but
-    no name for it."""
-    out: dict[tuple[int, int], str] = {}
-    section = "labels"
-    for line in text.splitlines():
-        line = line.split(";", 1)[0].strip()
-        if line.startswith("[") and line.endswith("]"):
-            section = line[1:-1].strip().lower()
-            continue
-        if section != "labels" or not (m := _SYM.match(line)):
-            continue
-        name = m.group(3)
-        if (name.startswith(("_", "@")) and not (seeds and name.startswith("_LABEL_"))) or "." in name or "$" in name:
-            continue
-        out[(int(m.group(1), 16), int(m.group(2), 16))] = name
-    return out
+    return read_names(text, seeds, layout=layout, image=image, mapper=mapper, physical=physical)
 
 
 def sym_seeds(labels: dict[tuple[int, int], str], data: bytes, *, mapper: str = "sega") -> dict[int, tuple[int, str]]:

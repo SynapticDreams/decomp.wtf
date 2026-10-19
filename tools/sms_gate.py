@@ -40,6 +40,7 @@ TESTS = (
     "tests/test_sms_symbol_import.py",
     "tests/test_sms_symbol_routes.py",
     "tests/test_sms_symbol_preservation.py",
+    "tests/test_sms_symbol_adjacent.py",
     "tests/test_sms_documented.py",
     "tests/test_export_sms.py",
 )
@@ -166,7 +167,8 @@ def verify_report(report: Path) -> int:
     if not all(f'test_actual_nonuniform_wla_symbols_seed_the_right_bytes_and_keep_aliases[{p}]' in wla
                for p in ('sms', 'gg')) or not {
                    'test_nonuniform_banks_aliases_duplicate_cpu_windows_and_automatic_seeds_are_distinct',
-                   'test_data_ram_locals_unknown_and_impossible_fixed_prefix_do_not_seed_code'} <= symbols:
+                   'test_data_ram_locals_unknown_and_impossible_fixed_prefix_do_not_seed_code',
+                   'test_public_reader_requires_geometry_or_explicit_physical_code_coordinates'} <= symbols:
         raise ValueError('SMS gate report is missing declared WLA symbol normalization checks')
     imports = {
         'tests.test_sms_symbol_import': {
@@ -186,6 +188,15 @@ def verify_report(report: Path) -> int:
     for module, required in imports.items():
         if not required <= {case.get('name') for case in cases if case.get('classname') == module}:
             raise ValueError(f'SMS gate report is missing project symbol preservation checks: {module}')
+    adjacent = {case.get('name') for case in cases if case.get('classname') == 'tests.test_sms_symbol_adjacent'}
+    modes = ('declared', 'missing', 'malformed', 'different_revision', 'invalid_geometry', 'null', 'new_version',
+             'wrong_crc', 'oversized', 'bad_source', 'future_symbols')
+    if not {f'test_initial_sidecar_import_preserves_bytes_and_never_guesses_nonuniform_geometry[{platform}-{mode}]'
+            for platform in ('sms', 'gg') for mode in modes} <= adjacent or not {
+                f'{test}[{p}]' for p in ('sms', 'gg') for test in (
+                    'test_legacy_layout_uncertainty_preserves_actual_accepted_source_and_recovery',
+                    'test_stored_inspection_cannot_mix_mapper_contexts_with_the_same_source_bytes')} <= adjacent:
+        raise ValueError('SMS gate report is missing declared/pending adjacent-source and legacy recovery checks')
     return len(cases)
 
 

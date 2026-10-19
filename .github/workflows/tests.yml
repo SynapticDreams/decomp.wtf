@@ -31,6 +31,7 @@ jobs:
       - run: node --check src/decompnet/app/static/app.js
       - run: node --check src/decompnet/app/static/sms-profile.js
       - run: node --check src/decompnet/app/static/sms-progress.js
+      - run: node --check src/decompnet/app/static/sms-symbols.js
       - run: node --check src/decompnet/app/static/sms-profile-migration.js
       - run: node --check src/decompnet/app/static/resplit-history.js
       - run: node --check src/decompnet/app/static/resplit-inspection.js

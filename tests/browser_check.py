@@ -8,15 +8,19 @@ import subprocess
 import pytest
 
 
-def run(tmp_path, scripts):
+def run(tmp_path, scripts, *, markup='', asynchronous=False):
     chromium = shutil.which('google-chrome') or shutil.which('chromium') or shutil.which('chromium-browser')
     if chromium is None:
         pytest.skip('requires local Chrome or Chromium for the authored browser check')
     root = Path(__file__).resolve().parents[1]
     page = tmp_path / 'harness.html'
     content = '<!doctype html><meta charset="utf-8"><div id="panel"></div><pre id="report">RUNNING</pre>'
-    page.write_text(content + ''.join('<script>' + (root / path).read_text().replace('</script', '<\\/script') + '</script>'
+    page.write_text(content + markup + ''.join('<script>' + (root / path).read_text().replace('</script', '<\\/script') + '</script>'
                                      for path in scripts))
+    if asynchronous:
+        from .browser_async import run as wait_for_result
+        wait_for_result(chromium, page, tmp_path)
+        return
     result = subprocess.run([chromium, '--headless', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage',
         '--disable-background-networking', '--no-first-run', '--no-default-browser-check', '--virtual-time-budget=5000',
         f'--user-data-dir={tmp_path / "browser"}', '--dump-dom', page.as_uri()], text=True, capture_output=True, timeout=60)

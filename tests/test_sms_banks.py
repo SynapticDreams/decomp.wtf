@@ -11,6 +11,7 @@ from decompnet.app.engine import RomNetwork
 from decompnet.rom import sms
 
 from .test_sms import make_rom
+from .sms_wla_fixture import bank_zero_layout
 
 SIZE = 0x20000  # 8 banks: the Sega mapper pages slot 2
 CODE = {
@@ -69,7 +70,10 @@ def test_a_symbol_file_next_to_the_rom_names_and_seeds_functions(tmp_path):
     rom.write_bytes(_rom())
     (tmp_path / "game.sym").write_text("; WLA-DX\n[labels]\n0000:0160 HandlerA\n0005:8200 Bank5Helper\n"
                                        "0000:0170 _local\n0007:8800 Unreached\n")
-    fns = {f.rom: f for f in sms.split(rom, tmp_path, log=lambda *_: None)}
+    layout = bank_zero_layout(_rom())
+    layout['slots'].append({'id': 2, 'start': 0x8000, 'size': 0x4000, 'space': 'rom'})
+    layout['views'].append({'bank': 5, 'slot': 2, 'offset': 0, 'size': 0x4000, 'role': 'code'})
+    fns = {f.rom: f for f in sms.split(rom, tmp_path, log=lambda *_: None, symbol_layout=layout)}
     assert fns[0x0160].name == "HandlerA" and fns[0x14200].name == "Bank5Helper"
     assert fns[0x0170].name == "func_000_0170"  # local labels are left out
 
@@ -108,6 +112,7 @@ def test_importing_a_rom_brings_the_symbol_file_next_to_it(tmp_path):
     src.mkdir()
     (src / "game.sms").write_bytes(_rom())
     (src / "game.sym").write_text("[labels]\n0000:0160 HandlerA\n")
+    (src / 'game.sym.layout.json').write_text(json.dumps(bank_zero_layout(_rom())))
     net = RomNetwork(tmp_path / "d.db", tmp_path / "ws")
     slug = net.import_rom(src / "game.sms", confirmed=True, log=lambda *_: None)
     assert net._function("HandlerA", slug)["rom_offset"] == 0x0160
