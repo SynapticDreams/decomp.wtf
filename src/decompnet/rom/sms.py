@@ -286,12 +286,15 @@ def candidates(data: bytes, limit: int = 4000, labels: dict | None = None,
     mapper = mapper if mapper is not None else hints.get("mapper", "sega")
     Mapper(mapper, len(data))  # reject unsupported explicit model requests rather than silently substituting
     exhausted: dict[int, set[str]] = {}
+    unresolved: dict[int, set[str]] = {}
 
     def trace(entries):
         tracer = sms_trace.Tracer(data, hints=hints, mapper=mapper, limits=limits)
         found = tracer.follow(entries)
         for at, reasons in found.exhausted.items():
             exhausted.setdefault(at, set()).update(reasons)
+        for at, reasons in found.unresolved.items():
+            unresolved.setdefault(at, set()).update(reasons)
         return tracer, found
 
     size = len(data)
@@ -345,6 +348,8 @@ def candidates(data: bytes, limit: int = 4000, labels: dict | None = None,
     if report is not None:
         report["analysis_exhausted"] = [{"rom_offset": at, "reasons": sorted(reasons)}
                                         for at, reasons in sorted(exhausted.items())]
+        report["analysis_unresolved"] = [{"rom_offset": at, "reasons": sorted(reasons)}
+                                         for at, reasons in sorted(unresolved.items())]
     return starts, bases
 
 
@@ -438,6 +443,10 @@ def functions(data: bytes, log=lambda *_: None, labels: dict | None = None,
     if exhausted := report["analysis_exhausted"]:
         log(f"static tracing reached a budget in {len(exhausted)} entries; discovery and mapper effects remain incomplete")
         for row in exhausted[:10]:
+            log(f"ROM offset {row['rom_offset']:x}: {', '.join(row['reasons'])}")
+    if unresolved := report["analysis_unresolved"]:
+        log(f"callee effects remain unresolved in {len(unresolved)} entries")
+        for row in unresolved[:10]:
             log(f"ROM offset {row['rom_offset']:x}: {', '.join(row['reasons'])}")
     if not found:
         raise RomError("no code found in this ROM: every candidate address pointed outside it")

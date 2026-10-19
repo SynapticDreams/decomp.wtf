@@ -30,6 +30,8 @@ def reference(routine, target: int, offset: int = 0, *, prefix=None) -> Address:
     # Do not reuse an entry bank after a store changes its selection. Value/path summaries are not
     # established here, so known mapper stores use unknown values rather than guessing an A/HL value.
     for text in prefix if prefix is not None else _prefix(routine, offset):
+        if z80.flow(text)[0] == "call":
+            state = BusState()  # this routine record does not supply the callee's body/return contract
         for write in sms_effects.memory_writes(text):
             state = model.unknown_write(state) if write.cpu is None else model.write(state, write.cpu, None)
         if sms_effects.port_may_change_source(text):

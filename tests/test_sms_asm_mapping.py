@@ -135,3 +135,17 @@ def test_typed_data_cannot_hide_a_following_mapper_write_from_reference_checks()
     assert verdict.same == len(r.code) and not verdict.ok
     assert any(p.startswith("3.") for p in verdict.problems)
     assert "call $8200" in sms_asm.draft(r)
+
+
+@NEEDS_WLA
+def test_a_call_without_a_return_contract_cannot_preserve_a_named_reference():
+    state = BusState.cartridge_only((0, 1, 5))
+    r = sms_asm.Routine("CallerEntry", 5, 0x8100, bytes.fromhex("cd0002 cd0082 c9"),
+                        {"CallerEntry": 0x8100, "FixedHelper": 0x200, "Handler": 0x8200},
+                        {0x14100: "CallerEntry", 0x200: "FixedHelper", 0x14200: "Handler"},
+                        {0x14100: 0x8100, 0x200: 0x200, 0x14200: 0x8200}, mapping=state)
+    text = HEADER + "RouteEntry:\n    call FixedHelper\n    call Handler\n    ret\n"
+    verdict = sms_asm.judge(r, text)
+    assert verdict.same == verdict.size == 7
+    assert not verdict.ok and any(p.startswith("3.") and "isn't known yet" in p for p in verdict.problems)
+    assert "call $8200" in sms_asm.draft(r)

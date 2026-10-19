@@ -28,7 +28,7 @@ def test_cartridge_ram_selection_survives_a_call_instead_of_resolving_rom():
 
 
 def test_restoring_rom_selection_uses_the_preserved_bank():
-    found = follow({0: bytes.fromhex("3e05 32ffff 3e08 32fcff cd0080 3e00 32fcff cd0080 18fe"),
+    found = follow({0: bytes.fromhex("3e05 32ffff 3e08 32fcff 3e00 32fcff cd0080 18fe"),
                     0x14000: bytes.fromhex("3e05 c9")})
     assert found.starts[0x14000] == (0x8000, "call")
     assert all(state.control == 0 and state.banks[2] == 5 for state in found.entered[0x14000])
@@ -46,10 +46,12 @@ def test_work_ram_readback_is_not_reused_when_cartridge_ram_may_contend():
 
 
 def test_conflicting_ram_selection_at_callers_stays_unknown_in_the_callee():
-    found = follow({0: bytes.fromhex("3e05 32ffff 3e08 32fcff cd0002 3e00 32fcff cd0002 18fe"),
+    found = follow({0: bytes.fromhex("3e05 32ffff 280a 3e08 32fcff cd0002 18fe 3e00 32fcff cd0002 18fe"),
                     0x200: bytes.fromhex("cd0080 c9"), 0x14000: bytes.fromhex("3e05 c9")})
-    assert 0x14000 not in found.starts
     assert {state.control for state in found.entered[0x200]} == {0, 8}
+    assert found.unresolved[0x200]  # the shared callee cannot choose ROM for its joined context
+    # Evaluation of the specific ROM-selected caller still establishes this conditional target.
+    assert all(state.control_flag(8) is False for state in found.entered[0x14000])
 
 
 def test_instruction_after_self_paging_is_fetched_from_the_new_bank():

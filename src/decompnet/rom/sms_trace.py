@@ -7,7 +7,8 @@ remain separate from device registers. Isolated symbols and sweep seeds establis
 the reset recipe applies only to the reset root.
 
 Function extents and dispatch tables remain heuristic. Path visitation retains distinct facts under explicit
-per-function budgets. General callee effects, physical stack accesses and interrupt restoration still need qualification.
+per-function budgets. A separate bounded evaluator propagates ordinary callee effects; physical stack accesses
+and interrupt restoration remain unqualified.
 These limits are separate from preserving full bus state on the paths this tracer follows.
 """
 
@@ -16,10 +17,11 @@ from __future__ import annotations
 import bisect
 import re
 
-from . import sms_effects, sms_registers, sms_seeds, sms_trace_writes, z80
-from .sms_mapping import BusState, Mapper, entry_state, join, wram_address
+from . import sms_calls, sms_effects, sms_registers, sms_seeds, sms_trace_writes, z80
+from .sms_mapping import BusState, Mapper, entry_state, join
 from .sms_mapping import REGISTERS as MAPPER
 from .sms_mapping import bank_mask as bank_mask  # preserve the previous helper import
+from .sms_decode import decode as _decode, can_start as can_start, plausible as plausible
 from .sms_paths import Limits, Paths
 from .sms_registers import _WRITES_HL as _WRITES_HL
 from .sms_registers import _WRITES_DE as _WRITES_DE
@@ -28,7 +30,6 @@ from .sms_state import ARG, Found, State
 
 BANK = 0x4000
 VECTORS = (0x0000, 0x0008, 0x0010, 0x0018, 0x0020, 0x0028, 0x0030, 0x0038, 0x0066)
-
 
 
 def resolve(target: int, here_flat: int, here_cpu: int, s1, s2, size: int, s0=0, *,
@@ -46,43 +47,10 @@ def resolve(target: int, here_flat: int, here_cpu: int, s1, s2, size: int, s0=0,
     return Mapper(mapper, size).resolve(target, mapping).rom_offset
 
 
-def _decode(data: bytes, flat: int, cpu: int) -> tuple[str, int]:
-    end = min(len(data), (flat // BANK + 1) * BANK)
-    return z80.decode(data[flat:min(end, flat + 4)], cpu)
-
-
-def can_start(data: bytes, flat: int, cpu: int) -> bool:
-    """Where a call or jump can land: an instruction, and not the $FF filler of an empty bank (`rst $38` again and
-    again)."""
-    if not 0 <= flat < len(data) or data[flat:flat + 2] == b"\xff\xff":
-        return False
-    return not _decode(data, flat, cpu)[0].startswith("db ")
-
-
-_ODD_START = re.compile(r"^(?:nop|ld \(bc\), a|ld \(de\), a|ex af|halt|rst |daa|ccf|scf|di$|ei$|ld ([a-e]), \1$)")
-
-
-def plausible(data: bytes, flat: int, cpu: int, limit: int = 64) -> bool:
-    """For an address that's only a guess (a word in a table): code that reads like a function's start: no filler or
-    undefined opcodes, not what tables of numbers decode to first, and a return or jump within `limit` instructions
-    in the bank."""
-    if not can_start(data, flat, cpu) or data[flat:flat + 2] == b"\x00\x00":
-        return False
-    for k in range(limit):
-        text, ln = _decode(data, flat, cpu)
-        if text.startswith("db ") or text == "rst $38" or (k == 0 and _ODD_START.match(text)):
-            return False
-        if z80.flow(text)[0] in ("ret", "jump"):
-            return True
-        flat, cpu = flat + max(1, ln), cpu + max(1, ln)
-        if flat % BANK == 0:
-            return False
-    return False
-
-
 class Tracer:
     def __init__(self, data: bytes, paged: set[int] | None = None, hints: dict | None = None, *,
-                 mapper: str = "sega", reset: BusState | None = None, limits: Limits | None = None):
+                 mapper: str = "sega", reset: BusState | None = None, limits: Limits | None = None,
+                 call_limits: Limits | None = None, call_depth: int = 8):
         """Trace under an explicit mapper/reset recipe; isolated seeds establish only their own ROM window.
         `paged` remains accepted for callers of the previous tracer; absence of writes never establishes banks.
         `hints`: data spans, inline operands and nonreturning routines (see sms.functions).
@@ -101,9 +69,10 @@ class Tracer:
         self.reset = reset if reset is not None else self.model.reset()
         self.mapper = mapper != "mapperless"
         self.limits = limits or Limits()
+        self.calls = sms_calls.Evaluator(data, self.model, hints=self.hints, in_data=self.in_data,
+                                        limits=call_limits, depth=call_depth)
         self.found = Found()
         self.known: set[int] = set()  # function starts as the last round left them (and the seeds)
-        self.prev_starts: set[int] = set()
 
     def follow(self, seeds: dict[int, tuple[int, str]], rounds: int = 8) -> Found:
         """The functions reachable from `seeds` (flat -> (cpu, why)), in rounds until nothing changes: each round
@@ -115,7 +84,6 @@ class Tracer:
         for _ in range(rounds):
             todo = {**more, **seeds}
             self.known = set(todo)
-            self.prev_starts = set(self.found.starts)
             self._round(todo)
             self._returning()
             more = {**self._far_jumps(), **self._tables()}
@@ -167,10 +135,8 @@ class Tracer:
                     changed = True
 
     def _no_return(self, flat: int) -> bool:
-        """A call to it doesn't come back to the next instruction (as the last round saw it)."""
-        f = self.found
-        return flat in self.hints.get("noreturn", ()) or (flat not in f.exhausted and (
-            flat in f.takes_return or flat in self.prev_starts and flat not in f.returns))
+        """An explicit correction, never the absence of a traced return."""
+        return flat in self.hints.get("noreturn", ())
 
     def in_data(self, flat: int) -> bool:
         """In bytes a correction (or coverage) says aren't code."""
@@ -265,24 +231,18 @@ class Tracer:
                     elif kind == "jump":
                         tails.add(None)  # into a bank no one knows, or RAM
                     if kind == "call":
-                        a_before = st.a
-                        st.a, st.hl, st.de, st.bc, st.cmp = None, None, None, None, None  # (the index's bound
-                        # stays: a helper may do the indexing for it)
-                        st.mem = {k: v for k, v in st.mem.items() if k + 0x2000 in MAPPER}
-                        if tflat is not None:
-                            if tflat in f.switchers:
-                                self._map(st, f.switchers[tflat], a_before)
-                                reg = {0: 0xFFFD, 1: 0xFFFE, 2: 0xFFFF}[f.switchers[tflat]]
-                                st.mem[wram_address(reg)] = a_before
-                            if not text.startswith("call ") or "," not in text:  # (an unconditional call)
-                                # it comes back past the bytes a correction says it reads, or doesn't come back here
-                                # (what follows the call isn't this code)
-                                skip = (self.hints.get("inline") or {}).get(tflat, 0)
-                                if not skip and self._no_return(tflat):
-                                    break
+                        conditional = "," in text
+                        skip = (self.hints.get("inline") or {}).get(tflat, 0) if not conditional else 0
+                        st = self._call(entry, target, tflat, st, (cpu + ln) & 65535, out,
+                                        skip=skip, conditional=conditional)
+                        if st is None:
+                            break
                 if kind != "call":
                     self._registers(st, text)
                 if computed is not None:  # back from the computed call: on at the address it pushed
+                    st = self._call(entry, to, tflat, st, computed, out)
+                    if st is None:
+                        break
                     back = self.model.resolve(computed, st.mapping).rom_offset
                     if back is not None and back // BANK == entry // BANK:
                         nxt = st.copy()
@@ -316,8 +276,18 @@ class Tracer:
             out = [(at, pc, entry_state(at, pc, size), how) for at, pc, _mapping, how in out]
         return list(dict.fromkeys(out))
 
-    def _map(self, st: State, slot: int, val) -> None:
-        st.mapping = self.model.write(st.mapping, 0xFFFD + slot, val if type(val) is int else None)
+    def _call(self, entry, target, flat, state, return_cpu, entries, *, skip=0, conditional=False):
+        result = sms_calls.Result() if self._no_return(flat) else \
+            self.calls.evaluate(target, state, return_cpu, skip=skip)
+        if result.reasons:
+            self.found.unresolved.setdefault(entry, set()).update(result.reasons)
+            budgets = {reason for reason in result.reasons if "budget exhausted" in reason}
+            if budgets:
+                self.found.exhausted.setdefault(entry, set()).update(budgets)
+        nested = result.entries[1:] if result.entries and result.entries[0][:2] == (flat, target) else result.entries
+        entries.extend((at, pc, entry_state(at, pc, self.size) if result.reasons else mapping, "call")
+                       for at, pc, mapping in nested)
+        return result.resume(state, conditional=conditional)
 
     def _branch(self, st: State, text: str) -> State:
         out = st.copy()

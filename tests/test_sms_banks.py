@@ -14,6 +14,8 @@ from .test_sms import make_rom
 
 SIZE = 0x20000  # 8 banks: the Sega mapper pages slot 2
 CODE = {
+    **{at: b"\xc9" for at in sms.VECTORS if at},  # independent entries do not inherit reset's banks
+    0x0020: bytes.fromhex("214001 c33001"),       # a second explicit table consumer shares the dispatcher
     0x0000: bytes.fromhex("f3ed56c30001"),        # di · im 1 · jp $0100
     0x0100: bytes.fromhex("3e05" "32ffff" "cd0081"  # ld a,5 · ld ($ffff),a · call $8100   (bank 5, in slot 2)
                           "3e06" "cd0002" "cd0080"  # ld a,6 · call switch · call $8000   (bank 6, through the switcher)
