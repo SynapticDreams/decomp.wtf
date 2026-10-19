@@ -81,7 +81,8 @@ def test_unknown_or_bios_reset_does_not_trace_cartridge_bytes():
 def test_join_retains_only_common_bus_facts_and_keeps_possible_rom_modification():
     base = Mapper("sega", 0x20000).reset()
     mixed = join([base, replace(base, control=8, bios=True, rom_modified=True)])
-    assert mixed.control is None and mixed.bios is None and mixed.banks == base.banks
+    assert mixed.control_bits(255) is None and mixed.control_flag(8) is None
+    assert mixed.bios is None and mixed.banks == base.banks
     assert mixed.cartridge is True and mixed.rom_modified is True
     assert join([base, base]) == base
     assert join([]) == BusState()

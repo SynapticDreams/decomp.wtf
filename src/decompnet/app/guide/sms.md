@@ -25,6 +25,8 @@ and joins incoming mapping facts conservatively. Known mapper-control writes upd
 updates the next instruction's source. The reset root uses an explicit cartridge-only recipe. Isolated seeds
 establish only their own ROM window. General callee effects, unknown stores, multiple paths through one instruction
 and interrupt restoration remain analysis limits; this does not qualify BIOS, cartridge-RAM or peripheral execution.
+Control knowledge is tracked per bit: a Sega ROM entry in slot 2 establishes that RAM is deselected there, without inventing
+shift/write-enable bits or raw register latches. Joins keep agreed bits even when another control bit differs.
 Standalone exports include this shared resolver. Generated reference names require a declared model and established
 instruction geometry; unresolved references remain numeric while the build still verifies whole-image equality.
 Assembly judging uses the same source/bank resolver. A unique routine name at a CPU address cannot establish its
