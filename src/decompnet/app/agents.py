@@ -1864,7 +1864,7 @@ def context_window(client, base: str, options: dict) -> int:
 
 def api_tool_schemas(fork: bool = False) -> list[dict]:
     """OpenAI-style tool definitions for the built-in agent, from the same tools CLI agents get."""
-    from . import correction_tools
+    from . import correction_tools, annotation_tools
 
     s = lambda **props: {"type": "object", "properties": props, "required": [k for k, v in props.items() if v.pop("req", False)]}
     st = lambda desc, req=False: {"type": "string", "description": desc, "req": req}
@@ -1904,7 +1904,7 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
         "read_data": ("Hex dump of the original's data at an address or symbol.", s(what=st("address or symbol", True),
                                                                                     length=it("bytes, up to 512"))),
         "list_functions": ("List functions by status.", s(status=st("open | matched | all"), limit=it("max rows"))),
-        "add_note": ("Leave a note for other agents.", s(text=st("note", True), function=st("function"))),
+        **annotation_tools.schemas(),
         "search_notes": ("Search notes.", s(query=st("text", True))),
         "find_similar": ("Functions that look like this one, matched ones first, with the best one's source.",
                          s(function=st("function", True), limit=it("how many"))),

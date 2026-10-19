@@ -1,14 +1,9 @@
 """Bounded, explicit distinction between research claims, current bindings and active hints."""
 from ..network import NetworkError
-from ..rom.annotations import inspect, validate_annotation, validate_evidence
 from ..rom.sms_locations import coordinate
 from ..rom.sms_mapping import Mapper
 from . import correction_policy as policy, correction_receipts as receipts, sms_annotation_context as context
-
-
-def payloads(row, size):
-    return (inspect(row['annotation'], validate_annotation, rom_size=size),
-            inspect(row['evidence'], validate_evidence))
+from .annotation_payloads import parse as payloads, raw as raw
 
 
 def geometry(row, value, values=None):
@@ -74,14 +69,6 @@ def describe(net, row, cfg, values=None):
     if out['undone']:
         out.update(active=False, application='undone')
     return out
-
-
-def raw(view):
-    value = view.raw
-    if value is None or isinstance(value, str) and len(value) <= 65536 and len(value.encode('utf-8', errors='replace')) <= 65536:
-        return {'status': view.status, 'value': view.value, 'raw': value, 'truncated': False}
-    return {'status': view.status, 'value': None, 'raw': value[:4096] if isinstance(value, str) else None,
-            'truncated': True}
 
 
 def detail(net, row, cfg, values=None):

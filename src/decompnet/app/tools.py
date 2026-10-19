@@ -16,7 +16,7 @@ from pydantic import StrictBool, StrictInt
 from .. import __version__
 from ..network import Agent, NetworkError
 from .engine import RomNetwork
-from . import correction_tools
+from . import correction_tools, annotation_tools
 
 GUIDES = {
     "workflow": "the matching loop, reading diffs, priorities",
@@ -286,8 +286,9 @@ HANDLERS: dict[str, Callable[..., str]] = {
     "read_data": lambda net, agent, slug, what, length=64, unit="": (net.forks.read_data(agent, slug, what, length)
                                                             if net.fork_slug(slug) else net.read_data(slug, what, length, unit)),
     "list_functions": lambda net, agent, slug, status="open", limit=40: net.list_functions(slug, status, limit),
-    "add_note": lambda net, agent, slug, text="", function="", notes="": net.add_note(agent, slug, text or notes,
-                                                                                    function or None),
+    "add_note": annotation_tools.note,
+    "annotate_symbol": annotation_tools.symbol,
+    "inspect_annotations": annotation_tools.inspect,
     "search_notes": lambda net, agent, slug, query: net.search_notes(slug, query),
     "find_similar": lambda net, agent, slug, function, limit=5: net.find_similar(slug, function, limit),
     "guide": lambda net, agent, slug, topic="": _guide(topic),
@@ -301,7 +302,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
         net.forks.split_file(agent, _fork(net, slug, "split_file"), path, at, new_name, data),
 }
 
-ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "merge_function", "correct_split", "inspect_corrections", "probe_compiler", "explain_difference"}
+ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "merge_function", "correct_split", "inspect_corrections", "annotate_symbol", "inspect_annotations", "probe_compiler", "explain_difference"}
 FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file"}
 
 
@@ -478,9 +479,29 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         return await run(ctx, "list_functions", status=status, limit=limit)
 
     @mcp.tool(meta=ALWAYS_LOAD)
-    async def add_note(ctx: Context, text: str = "", function: str = "", notes: str = "") -> str:
-        """Leave a note for other agents, on a function or the whole project."""
-        return await run(ctx, "add_note", text=text or notes, function=function)
+    async def add_note(ctx: Context, text: str = "", function: str = "", notes: str = "", *,
+                       annotation: dict | None = None, evidence: dict | None = None, apply: StrictBool = True,
+                       expected_plan: str | None = None, note_id: StrictInt | None = None) -> str:
+        """Leave a note, or preview/apply bound SMS/GG research metadata. Existing text-only calls work as before.
+        With metadata, preview using apply=false then apply with expected_plan. note_id attaches/replaces metadata
+        on immutable existing text. Research stays pending operator review; RAM declarations do not capture contents."""
+        return await run(ctx, "add_note", text=text or notes, function=function, annotation=annotation, evidence=evidence,
+                         apply=apply, expected_plan=expected_plan, note_id=note_id)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def annotate_symbol(ctx: Context, symbol: str, annotation: dict | None = None, evidence: dict | None = None,
+                              apply: StrictBool = False, expected_plan: str | None = None) -> str:
+        """Preview then apply metadata on an existing SMS/GG symbol. This does not rename it, approve its purpose
+        or affect discovery. Replaced metadata retains its original subject in the private research history."""
+        return await run(ctx, "annotate_symbol", symbol=symbol, annotation=annotation, evidence=evidence,
+                         apply=apply, expected_plan=expected_plan)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def inspect_annotations(ctx: Context, kind: str = "note", key: StrictInt | str | None = None,
+                                  before_id: StrictInt | None = None, after_symbol: str | None = None, limit: StrictInt = 50) -> str:
+        """Inspect note/symbol metadata and original archived subjects. Omit key for a bounded page; continue with
+        next_before for notes or next_symbol for symbols. Inspection never approves or activates a claim."""
+        return await run(ctx, "inspect_annotations", kind=kind, key=key, before_id=before_id, after_symbol=after_symbol, limit=limit)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def search_notes(ctx: Context, query: str) -> str:

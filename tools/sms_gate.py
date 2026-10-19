@@ -11,12 +11,19 @@ import xml.etree.ElementTree as ET
 from decompnet import toolchains
 
 if __package__:
-    from . import sms_gate_annotations as annotation_checks
+    from . import sms_gate_annotations as annotation_checks, sms_gate_research as research_checks
 else:
     import sms_gate_annotations as annotation_checks
+    import sms_gate_research as research_checks
 
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = (
+    "tests/test_store_subjects.py",
+    "tests/test_sms_annotation_subjects.py",
+    "tests/test_sms_symbol_evidence_lifecycle.py",
+    "tests/test_sms_annotation_sources.py",
+    "tests/test_sms_annotation_routes.py",
+    "tests/test_sms_annotation_safety.py",
     "tests/test_sms_correction_facts.py",
     "tests/test_sms_correction_integration.py",
     "tests/test_sms_correction_routes.py",
@@ -210,6 +217,7 @@ def verify_report(report: Path) -> int:
                     'test_stored_inspection_cannot_mix_mapper_contexts_with_the_same_source_bytes')} <= adjacent:
         raise ValueError('SMS gate report is missing declared/pending adjacent-source and legacy recovery checks')
     annotation_checks.verify(cases)
+    research_checks.verify(cases)
     return len(cases)
 
 

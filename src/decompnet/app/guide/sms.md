@@ -263,7 +263,18 @@ does not silently become an assembly acceptance contract. Stored source is retai
   links, observation/static_derivation/interpretation/hypothesis state and confidence. The server derives origin,
   revision, mapping context and subject bindings. Imported accepted/rejected receipts are refused.
   See [version 1 schemas and workflow](https://github.com/SynapticDreams/decomp.wtf/blob/main/docs/sms-annotations.md)
-  for full record/bitfield, near/far/split-pointer and evidence fields. Notes/symbol metadata editing is separate.
+  for full record/bitfield, near/far/split-pointer and evidence fields.
+- `add_note(text, annotation=..., evidence=..., apply=false)` previews bound research on a note; apply with the
+  returned `expected_plan`. Evidence-only prose needs no invented ROM anchor. `note_id` attaches/replaces metadata
+  on existing immutable text. `annotate_symbol(symbol, annotation=..., evidence=..., apply=false)` records research
+  on an existing exact symbol, using the same preview/application pattern. Metadata stays pending; workers cannot
+  approve or clear it. Notes/symbols never seed discovery merely because their metadata was reviewed.
+  `inspect_annotations(kind="note"|"symbol", key=ID_OR_NAME)` shows full geometry, original subject and evidence.
+  Omit key for pages; continue with `before_id=next_before` for notes or `after_symbol=next_symbol` for symbols.
+  Original descriptors survive replacements, renames and boundary changes as explicitly inactive archive notes.
+  RAM layouts record unobserved contents and cannot imply runtime values or lifetimes. New metadata versions
+  reset review; a caller's copied receipt is insufficient. Briefs label tentative research and leave archives out
+  of current instructions; search can point you to their original subjects for inspection and forward recovery.
 - A person can also import what an emulator saw while they played (Settings, a Mesen2 code/data log or a
   `bank:address` trace): splitting the game again then starts functions where calls entered and where code ran that
   wasn't reached, and keeps what was only read as data out of functions.

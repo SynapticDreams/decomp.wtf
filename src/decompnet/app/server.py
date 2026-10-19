@@ -806,12 +806,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         return {"priority": net.set_priority(slug, str(data.get("name", "")), bool(data.get("on", True)))}
 
     def p_note(slug, request, data):
-        """A note from you on a function (or the whole project): agents read notes when they claim it."""
-        agent, _ = net.local_agent("you")
-        text = str(data.get("text", "")).strip()
-        if not text:
-            raise ValueError("write the note first")
-        return {"message": net.add_note(agent, slug, text[:2000], str(data.get("function", "")) or None)}
+        return annotation_routes.handle(net, slug, request, data, 'note')
 
     def p_autopilot(slug, request, data):
         if data.get("action") == "stop":  # the permuter too: the panel shows them as one, and Stop means both
@@ -821,7 +816,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             net.start_autopilot(slug)
         return net.overview(slug)
 
-    from . import correction_routes
+    from . import correction_routes, annotation_routes
 
     routes = {
         "/api/project": (p_overview, ["GET"]),
@@ -840,6 +835,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/give_back": (lambda s, r, d: net.give_to_agents(s, str(d.get("function", ""))), ["POST"]),
         "/api/corrections": (lambda s, r, d: correction_routes.handle(net, s, r, d), ["GET", "POST"]),
         "/api/corrections/undo": (lambda s, r, d: net.undo_correction(s, d.get("id")), ["POST"]),
+        "/api/symbols/annotation": (lambda s, r, d: annotation_routes.handle(net, s, r, d, 'symbol'), ["GET", "POST"]),
         "/api/symbols/import": (lambda s, r, d: net.import_symbols(s, d.get("text", ""), str(d.get("name", "")),
                                    layout=d.get('layout'), apply=d.get('apply', True), expected_plan=d.get('expected_plan'),
                                    source_base64=d.get('source_base64'), offset=d.get('offset', 0)),
@@ -854,7 +850,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/try": (p_try, ["POST"]), "/api/release": (p_release, ["POST"]),
         "/api/autopilot": (p_autopilot, ["POST"]), "/api/instructions": (p_instructions, ["POST"]),
         "/api/claims/clear": (lambda s, r, d: {"cleared": net.clear_claims(s)}, ["POST"]),
-        "/api/priority": (p_priority, ["POST"]), "/api/note": (p_note, ["POST"]),
+        "/api/priority": (p_priority, ["POST"]), "/api/note": (p_note, ["GET", "POST"]),
         "/api/stats": (lambda s, r, d: net.stats(s), ["GET"]),
     }
     for path, (fn, methods) in routes.items():
