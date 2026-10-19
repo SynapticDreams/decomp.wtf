@@ -6,6 +6,7 @@ import json
 import time
 
 from ..rom.symbols import AUTO_NAME
+from ..project import compiler_settings
 from . import sms_resplit_source_check as source_check
 
 MAX_CHECKS = 32
@@ -40,7 +41,9 @@ def affected(before, candidates, regions):
                           {str(k): v for k, v in (getattr(f, 'edges', None) or {}).items()}) for f in candidates}
     data = {(r['rom_offset'], r['size'], r['kind']) for r in before['tables']['data_regions']}
     if layout == proposed and data == {(lo, count, kind) for lo, count, kind, *_ in regions}:
-        return []
+        cfg = json.loads(before['project']['config'])
+        return [row for row in old if row['status'] == 'matched' and
+                compiler_settings(cfg, row.get('unit')).get('include_dirs')]
     # A changed entry can change a retained caller's symbol binding or instruction/data interpretation too.
     return [r for r in old if r['status'] in ('matched', 'documented')]
 
@@ -90,7 +93,10 @@ def apply(db, old, new_ids, kept, results, before_digest):
             meta['edges'] = current['edges']
         if result.kind == 'asm':
             meta['sample'] = True
+        target = db.execute('SELECT target FROM functions WHERE id=?', (fid,)).fetchone()['target']
         meta['resplit_validation'] = {**result.report(), 'semantic_review': 'pending',
+            'checked_source_sha256': hashlib.sha256(result.source.encode()).hexdigest(),
+            'checked_target_sha256': hashlib.sha256(target or b'').hexdigest(),
             'origin': {'snapshot': before_digest, 'function_id': row['id'],
                        'target_sha256': hashlib.sha256(row['target'] or b'').hexdigest()}}
         accepted = result.state == 'passed'

@@ -70,8 +70,14 @@ def test_c_resplit_rechecks_bytes_and_unit_header_and_preserves_provenance(proje
     assert not net.store.one('SELECT 1 FROM attempts WHERE function_id=?', current['id'])
     assert net.store.one('SELECT function_id FROM notes WHERE text=?', 'retain authored evidence')['function_id'] == current['id']
     assert result['source_revalidation'][check['state']] == 1
-    net.undo_resplit(slug, result['history_id'])
-    assert capture(net, slug) == before
+    if context_changed:
+        current_state = capture(net, slug)
+        with pytest.raises(NetworkError, match='does not revalidate'):
+            net.undo_resplit(slug, result['history_id'])
+        assert capture(net, slug) == current_state
+    else:
+        net.undo_resplit(slug, result['history_id'])
+        assert capture(net, slug) == before
 
 
 @pytest.mark.skipif(not sms_asm.available(), reason='needs WLA-DX')
@@ -165,3 +171,26 @@ def test_changed_layout_revalidates_retained_row_and_respects_its_claim(project,
         assert current['id'] == fn['id'] and current['status'] == 'matched' and result['matched_kept'] == 1
         assert json.loads(current['meta'])['resplit_validation']['state'] == 'passed'
         assert capture(net, slug)['tables']['attempts'] == before['tables']['attempts']
+
+
+@pytest.mark.skipif(not gb_build.available('z80'), reason='needs GBDK/SDCC')
+def test_changed_entry_retains_its_named_unit_header_for_later_normal_judging(project):
+    net, slug = project
+    fn = row(net, slug)
+    source = C.replace('return 7', 'return AUTHORED_VALUE')
+    with net.store.tx() as db:
+        db.execute('UPDATE functions SET unit=? WHERE id=?', ('render', fn['id']))
+        db.execute('UPDATE context_versions SET header=? WHERE project_id=?',
+                   ('#define AUTHORED_VALUE 8\n', fn['project_id']))
+        db.execute('INSERT INTO context_versions(project_id,version,unit,header) VALUES(?,2,?,?)',
+                   (fn['project_id'], 'render', '#define AUTHORED_VALUE 7\n'))
+    agent, _ = net.local_agent('fixture_writer')
+    assert net.attempt(agent, fn['name'], source, slug)['matched']
+    with net.store.tx() as db:
+        db.execute('UPDATE functions SET vram=33280 WHERE id=?', (fn['id'],))
+    result = net.resplit_banked(slug, apply=True, log=lambda *_: None)
+    current = row(net, slug)
+    assert result['source_revalidation']['passed'] == 1 and current['status'] == 'matched'
+    # A retained match must still compile in the unit that the live row now selects.
+    assert net.attempt(agent, current['name'], source, slug)['score'] == 0
+    assert current['unit'] == 'render'

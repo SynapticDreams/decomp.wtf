@@ -9,6 +9,7 @@ from ..compiler import SourceRejected
 from ..project import compiler_settings
 from ..rom import gb_build, sms_asm, sms_profile
 from ..rom.sms_mapping import Mapper, rom_coordinate
+from . import sms_resplit_dependency_context as dependencies
 
 SOURCE_BYTES = 65536
 
@@ -69,16 +70,19 @@ def check(before: dict, row: dict, candidate, names: dict[int, str], functions, 
                       verdict.text if verdict.ok else source)
     if not gb_build.available("z80"):
         return unresolved("GBDK/SDCC is unavailable; retained C remains an unaccepted reference")
-    selected = compiler_settings(cfg, row.get("unit") or "")
-    if selected.get("include_dirs"):
-        return unresolved("compiler include inputs need a captured dependency context before automatic revalidation")
+    selected = compiler_settings(cfg, row.get("unit"))
+    if dependencies.extra_inputs(selected):
+        return unresolved('compiler recipe has unqualified tool or additional include inputs')
     contexts = [r for r in before["tables"]["context_versions"] if r["unit"] in (row.get("unit") or "", "")]
     context = max(contexts, key=lambda r: (r["unit"] == (row.get("unit") or ""), r["version"]), default=None)
     try:
         flags = selected.get("flags")
-        built = gb_build.compile_function(source, names[candidate.rom], context_header=context["header"] if context else "",
-                                          symbols=symbols, arch="z80", timeout=timeout,
-                                          **({} if flags is None else {"opt": list(flags)}))
+        with dependencies.materialize(before, selected, row.get('unit')) as include_dirs:
+            built = gb_build.compile_function(source, names[candidate.rom], context_header=context["header"] if context else "",
+                                              symbols=symbols, arch="z80", timeout=timeout, include_dirs=include_dirs,
+                                              **({} if flags is None else {"opt": list(flags)}))
+    except dependencies.DependencyError as exc:
+        return unresolved(str(exc))
     except (gb_build.RomError, SourceRejected) as exc:
         if 'timed out' in str(exc):
             return unresolved('C source revalidation exceeded its time budget')

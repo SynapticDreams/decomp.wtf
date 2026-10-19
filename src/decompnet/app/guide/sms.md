@@ -109,17 +109,45 @@ Failed or unresolved source remains an unaccepted draft at the same physical ent
 it remains in history. Old attempts and scores stay with their original target. Applicable names and review
 metadata survive; documented source is returned to the review sample. Revalidation checks at most 32 functions,
 64 KiB per source, with a 30-second batch budget and bounded individual tool runs. Exhausted checks, missing tools,
-removed named entries, unsupported mapping and external compiler includes remain unresolved and unaccepted.
+removed named entries, unsupported mapping and unqualified compiler recipes remain unresolved and unaccepted.
 The preview reports the number requiring checks; apply reports passed/failed/unresolved counts and bounded
-metadata-only details. External include dependency capture remains pending; changed C using external includes stays unaccepted.
+metadata-only details. Configured compiler include trees are captured as described below; this does not establish
+original toolchain identity, ABI correctness or linked replacement behavior.
 Snapshot retention does not establish source validity under changed boundaries/context.
 SMS classification, data changes and history are committed in one SQLite transaction, including rollback on
 commit failure. Unchanged work and applicable claims remain attached to their original function rows; applying
 changes to an actively claimed function requires releasing that claim first.
 
+Configured include directories are captured privately before discovery/validation, preserving ordered overlays,
+nested files, empty directories, read/write/execute permission bits, modification times, symlink aliases and
+missing-directory state. Retained C using these inputs is
+rechecked even when the function layout stays unchanged. The compiler receives materialized captured files;
+it does not use live project includes for that validation. Source/target hashes bind the resplit result to the
+specific checked text and bytes. A concurrent dependency edit invalidates apply, and a later edit blocks undo.
+An existing entry retains its compiler unit, including named units and legacy project defaults, so later
+ordinary judging selects the context that was validated. Stored unit headers still override copied context.h,
+matching ordinary compilation. Additional include paths,
+response files, external peephole files and unsupported compiler commands remain unqualified for automatic
+revalidation. Full toolchain/ABI and linked replacement qualification is separate from these C-byte references.
+
+Dependency capture is bounded to 32 MiB total, 4 MiB per file, 8,192 files, 16,384 traversal nodes, 64 roots,
+64 levels and 1,024 recipes, within the existing snapshot encoding budget. Cyclic/unreadable trees and exhausted
+budgets stop resplitting before work commits. Existing no-include records retain their snapshot digest format and remain eligible for guarded undo.
+Older records with configured includes but no captured dependency contents remain inspectable; whole undo is
+refused with a recovery message because their historical compiler inputs are unknown. Snapshot capture records
+the context at resplit time and cannot retroactively establish the context of an earlier accepted attempt.
+The archive's **Compiler dependency manifest** and selected **Dependency** items recover the captured tree/order.
+UTF-8 text preserves original bytes; other files use base64 text with an explicit encoding and original content
+SHA-256. These private dependency records are historical references, not a claim of prior acceptance validity.
+
 **Resplit history** in Settings lists metadata in pages of 50. Undo restores the latest active snapshot only if
 the current project work and inputs still match its recorded result. New notes, attempts, claims, annotations,
 headers, settings or sidecar edits block undo; a saved ID reused outside the project is an explicit conflict.
+Before restoring changed accepted source or interpretation context, undo checks the old target against the frozen
+input and rejudges its source in the saved mapping, symbols, data and captured unit context, outside the database
+transaction. Failed/unresolved source or exhausted source-check budgets refuse undo; the archive remains available.
+Identical accepted work in an unchanged context can retain its acceptance. History records counts for the undo
+checks, and source-check limits are shared with resplitting. Edits during these checks invalidate the final restore.
 History remains available after a conflict. Repeated resplits undo in reverse order. Deleting a project removes
 its private history. The operator API uses `/api/resplit` GET (`before` for pagination) and POST (`undo` with a
 history ID); existing POST preview/apply calls remain available. History responses contain counts rather than
