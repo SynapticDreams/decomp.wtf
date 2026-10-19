@@ -41,12 +41,13 @@ class BusState:
     # Effective ROM banks and raw register selections differ when bank shifting is active.
     banks: tuple[int | None, ...] = (None, None, None)
     registers: tuple[int | None, ...] = (None, None, None)
-    control: int | None = None
+    control: int | None = None  # values only for control_known bits; use control_bits(255) for a complete byte
     cartridge: bool | None = None
     bios: bool | None = None
     wram: bool | None = None
     other_source: bool | None = None
     rom_modified: bool = False
+    control_known: int | None = None  # known bits of control; unknown bit values are not raw register facts
 
     def __post_init__(self):
         for values in (self.banks, self.registers):
@@ -54,15 +55,30 @@ class BusState:
                 raise ValueError("a mapping state has three byte-sized bank selections or unknown values")
         if self.control is not None and (type(self.control) is not int or not 0 <= self.control <= 255):
             raise ValueError("mapper control is a byte or unknown")
+        if self.control_known is not None and (type(self.control_known) is not int or not 0 <= self.control_known <= 255):
+            raise ValueError("known control bits form a byte-sized mask")
+        known = (255 if self.control is not None else 0) if self.control_known is None else self.control_known
+        known = known if self.control is not None else 0
+        object.__setattr__(self, "control_known", known)
+        object.__setattr__(self, "control", self.control & known if known else None)
         if any(v is not None and type(v) is not bool for v in (self.cartridge, self.bios, self.wram, self.other_source)):
             raise ValueError("bus selections are true, false or unknown")
         if type(self.rom_modified) is not bool:
             raise ValueError("modified cartridge state is a boolean")
 
     @classmethod
-    def cartridge_only(cls, banks=(None, None, None), *, control=0, registers=(None, None, None)):
+    def cartridge_only(cls, banks=(None, None, None), *, control=0, registers=(None, None, None), control_known=None):
         """An explicitly cartridge-only analysis context, not an assertion about every console boot."""
-        return cls(tuple(banks), tuple(registers), control, True, False, True, False)
+        return cls(banks=tuple(banks), registers=tuple(registers), control=control, cartridge=True,
+                   bios=False, wram=True, other_source=False, control_known=control_known)
+
+    def control_bits(self, mask: int) -> int | None:
+        """Return requested bits only when every one is established."""
+        return (self.control or 0) & mask if self.control_known & mask == mask else None
+
+    def control_flag(self, mask: int) -> bool | None:
+        value = self.control_bits(mask)
+        return bool(value) if value is not None else None
 
 
 @dataclass(frozen=True)
@@ -90,7 +106,7 @@ class Mapper:
             if state.other_source is not False:
                 return Address(cpu, "unknown", reason="other device/RAM selection is unresolved")
             high_ram = False if self.kind == "mapperless" or state.cartridge is False else \
-                bool(state.control & 0x10) if state.cartridge is True and state.control is not None else None
+                state.control_flag(0x10) if state.cartridge is True else None
             if high_ram is True:
                 if state.wram is not False:
                     return Address(cpu, "unknown", reason="cartridge RAM may contend with system RAM")
@@ -114,10 +130,13 @@ class Mapper:
             flat, bank = cpu, 0
         else:
             if cpu >= 0x8000:
-                if state.control is None:
+                ram = state.control_flag(8)
+                if ram is None:
                     return Address(cpu, "unknown", reason="slot 2 RAM selection is unresolved")
-                if state.control & 8:
-                    return Address(cpu, "cart_ram", reason="cartridge RAM size/wiring is not declared", bank=(state.control >> 2) & 1)
+                if ram:
+                    selected = state.control_bits(4)
+                    return Address(cpu, "cart_ram", reason="cartridge RAM size/wiring is not declared",
+                                   bank=selected >> 2 if selected is not None else None)
             bank = state.banks[cpu // BANK]
             if bank is None:
                 return Address(cpu, "unknown", reason="ROM bank is unresolved")
@@ -137,15 +156,16 @@ class Mapper:
             if state.cartridge is not True:
                 return replace(state, banks=(None, None, None), registers=(None, None, None), control=None)
             if cpu == 0xFFFC:
-                return replace(state, control=value)  # bank shifting takes effect on the next bank-register write
+                return replace(state, control=value, control_known=None)  # shifting waits for a bank-register write
             registers = list(state.registers)
             registers[REGISTERS[cpu]] = value
-            shift = None if state.control is None else (0, 0x18, 0x10, 8)[state.control & 3]
+            shift_bits = state.control_bits(3)
+            shift = None if shift_bits is None else (0, 0x18, 0x10, 8)[shift_bits]
             if shift and self.size != 0x80000:
                 shift = None  # documented only for the 512 KiB mapper variant
             banks = tuple((v + shift) & bank_mask(self.size) if v is not None and shift is not None else None for v in registers)
             return replace(state, banks=banks, registers=tuple(registers))
-        if 0 <= cpu < 0xC000 and state.cartridge is not False and (state.control is None or state.control & 0x80):
+        if 0 <= cpu < 0xC000 and state.cartridge is not False and state.control_flag(0x80) is not False:
             return replace(state, rom_modified=True)
         return state
 
@@ -155,7 +175,10 @@ def entry_state(flat: int, cpu: int, size: int) -> BusState:
     banks: list[int | None] = [None, None, None]
     if 0 <= flat < size and 0 <= cpu < 0xC000 and flat % BANK == cpu % BANK and cpu >= 0x0400:
         banks[cpu // BANK] = flat // BANK
-    return BusState.cartridge_only(banks, registers=tuple(banks))
+    # ROM in slot 2 establishes only that RAM is not selected there. It does not establish shift,
+    # write-enable, upper RAM selection or raw bank latches. Entry geometry is not a reset recipe.
+    known = 8 if banks[2] is not None else 0
+    return BusState.cartridge_only(banks, control=0 if known else None, control_known=known)
 
 
 def join(states) -> BusState:
@@ -168,10 +191,14 @@ def join(states) -> BusState:
         values = set(values)
         return next(iter(values)) if len(values) == 1 else None
 
+    control, known = states[0].control or 0, 255
+    for state in states:
+        known &= state.control_known & ~(control ^ (state.control or 0)) & 255
+
     return BusState(
         banks=tuple(agreed(s.banks[k] for s in states) for k in range(3)),
         registers=tuple(agreed(s.registers[k] for s in states) for k in range(3)),
-        control=agreed(s.control for s in states),
+        control=control & known if known else None, control_known=known,
         cartridge=agreed(s.cartridge for s in states), bios=agreed(s.bios for s in states),
         wram=agreed(s.wram for s in states), other_source=agreed(s.other_source for s in states),
         rom_modified=any(s.rom_modified for s in states),

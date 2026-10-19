@@ -153,7 +153,8 @@ def test_unsupported_models_are_rejected(kind, size):
 
 
 def test_malformed_bus_facts_and_writes_are_rejected():
-    for kwargs in ({"banks": (0, 1)}, {"banks": (0, 1, True)}, {"control": 256}, {"cartridge": 1}):
+    for kwargs in ({"banks": (0, 1)}, {"banks": (0, 1, True)}, {"control": 256}, {"cartridge": 1},
+                   {"control_known": 256}, {"control_known": True}):
         with pytest.raises(ValueError):
             BusState(**kwargs)
     model = Mapper("sega", SIZE)

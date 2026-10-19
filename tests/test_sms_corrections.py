@@ -49,9 +49,11 @@ def _starts(net, slug) -> set[int]:
 def test_splitting_again_uses_the_corrections(game):
     net, slug, agent = game
     before = _starts(net, slug)
-    assert 0x18000 in before and 0x14000 not in before and 0x0250 in before  # (what the split got wrong)
+    assert 0x14000 not in before and 0x0250 in before  # inline operands still block the reset path
     net.correct_split(agent, slug, "operands", "00:0300", "it pops its return address, steps over one byte, pushes it",
                       count=1)
+    net.resplit_banked(slug, apply=True, log=lambda *_: None)
+    assert {0x14000, 0x18000} <= _starts(net, slug)  # both calls reached with established reset mapping
     net.correct_split(agent, slug, "noreturn", "00:0400", "it's the reset routine: it jumps to the start, never back")
     net.correct_split(agent, slug, "table", "00:0500", WHY, count=2)
     net.correct_split(agent, slug, "code", "00:0700", "the state table at 00:0500 points here when the game starts")
