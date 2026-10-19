@@ -117,11 +117,11 @@ def test_banks_sit_where_the_power_on_mapping_puts_them():
 
 def test_a_call_reaches_the_bank_that_is_mapped_where_it_points():
     small, big = 0xC000, 0x40000
-    assert sms.target_flat(0x0123, 3, big) == 0x0123          # slot 0 is bank 0 from anywhere
-    assert sms.target_flat(0x4123, 0, big) == 0x4123          # from bank 0 into slot 1: bank 1
-    assert sms.target_flat(0x4123, 3, big) == 3 * 0x4000 + 0x123  # from bank 3 (shown in slot 1): its own bank
-    assert sms.target_flat(0x8123, 0, small) == 0x8000 + 0x123    # slot 2 holds bank 2
-    assert sms.target_flat(0x4123, 2, small) == 0x4123        # from bank 2 (shown in slot 2): slot 1 is bank 1
+    assert sms.target_flat(0x0123, 3, big) == 0x0123          # only the first KiB is fixed
+    assert sms.target_flat(0x4123, 0, big) is None           # reset state was not established
+    assert sms.target_flat(0x4123, 3, big, 0x4100) == 3 * 0x4000 + 0x123
+    assert sms.target_flat(0x8123, 0, small) is None         # size is not mapper selection or reset evidence
+    assert sms.target_flat(0x4123, 2, small, 0x8100) is None
     assert sms.target_flat(0xC000, 0, big) is None and sms.target_flat(0xFFFF, 0, big) is None  # RAM and mapper
 
 

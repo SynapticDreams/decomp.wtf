@@ -34,6 +34,7 @@ import bisect
 import re
 
 from . import z80
+from .sms_mapping import BusState, Mapper, bank_mask, wram_address
 from .sms_state import ARG, Found, State
 
 BANK = 0x4000
@@ -65,37 +66,19 @@ _WRITES_HL = re.compile(r"^(?:ld hl,|ld h,|ld l,|pop hl|ex de, hl|exx|add hl,|ad
                         r"rlc [hl]$|rrc [hl]$|rl [hl]$|rr [hl]$|sla [hl]$|sra [hl]$|srl [hl]$)")
 
 
-def bank_mask(size: int) -> int:
-    """The mapper reads only as many bank bits as the ROM needs (`ld a,$82 / ld ($ffff),a` maps bank 2 of 512 KiB)."""
-    banks = 1
-    while banks * BANK < size:
-        banks <<= 1
-    return banks - 1
+def resolve(target: int, here_flat: int, here_cpu: int, s1, s2, size: int, s0=0, *,
+            mapping: BusState | None = None, mapper: str = "sega") -> int | None:
+    """Compatibility adapter for trace bank tuples; explicit bus state takes precedence.
 
-
-def resolve(target: int, here_flat: int, here_cpu: int, s1, s2, size: int, s0=0) -> int | None:
-    """The ROM offset a call or jump to CPU address `target` reaches from code at `here_flat` (running at
-    `here_cpu`) while slots 1 and 2 hold banks `s1` and `s2`, and slot 0 above 0x0400 bank `s0` (None: not known).
-    None for RAM, an unknown bank, or past the ROM's end."""
-    if target >= 0xC000:
-        return None
-    if target < 0x4000:
-        if target < 0x0400:
-            return target if target < size else None  # (the first KiB is always bank 0)
-        bank = here_flat // BANK if here_cpu < 0x4000 and here_flat >= BANK else s0  # (code paged into slot 0)
-        if not isinstance(bank, int):
-            return None
-        flat = bank * BANK + target
-        return flat if flat < size else None
-    slot = target >> 14
-    if here_cpu >= 0x4000 and here_cpu >> 14 == slot:
-        bank = here_flat // BANK  # into the slot the code runs from: its own bank
-    else:
-        bank = s1 if slot == 1 else s2
-    if not isinstance(bank, int):
-        return None
-    flat = bank * BANK + (target & (BANK - 1))
-    return flat if flat < size else None
+    The tuple adapter describes cartridge-only execution with RAM selection off. Full bus contexts
+    must be passed as `mapping`; in that case the source instruction never overrides updated banks.
+    """
+    if mapping is None:
+        banks = [s0, s1, s2]
+        if 0x0400 <= here_cpu < 0xC000 and 0 <= here_flat < size and here_flat % BANK == here_cpu % BANK:
+            banks[here_cpu // BANK] = here_flat // BANK
+        mapping = BusState.cartridge_only([v if type(v) is int else None for v in banks])
+    return Mapper(mapper, size).resolve(target, mapping).rom_offset
 
 
 def _decode(data: bytes, flat: int, cpu: int) -> tuple[str, int]:
@@ -256,7 +239,7 @@ class Tracer:
                 st.n += 1
                 skip = 0  # bytes after a call that the routine called reads (a correction says how many)
                 kind, target = z80.flow(text)
-                # the mapper (and its mirror in RAM, which reads back the bank last mapped)
+                # Device writes select banks and also write WRAM. WRAM aliases never select a bank.
                 slot_reg, val = None, None
                 if (m := _LD_MEM_A.match(text)) and int(m.group(1), 16) in MAPPER:
                     slot_reg, val = int(m.group(1), 16), st.a
@@ -271,13 +254,13 @@ class Tracer:
                     if val == ARG:
                         f.switchers.setdefault(entry, slot)
                     self._map(st, slot, val)
-                    st.mem[slot_reg] = st.mem[slot_reg - 0x2000] = val
+                    st.mem[wram_address(slot_reg)] = val
                 elif (m := _LD_MEM_A.match(text)) and 0xC000 <= int(m.group(1), 16) < 0x10000:
-                    st.mem[int(m.group(1), 16)] = st.a  # (a bank kept in RAM, say)
+                    st.mem[wram_address(int(m.group(1), 16))] = st.a  # (a bank kept in RAM, say)
                 elif text == "ld (hl), a" and st.hl is not None and st.hl >= 0xC000:
-                    st.mem[st.hl] = st.a
+                    st.mem[wram_address(st.hl)] = st.a
                 elif (m := _LD_HLP_N.match(text)) and st.hl is not None and st.hl >= 0xC000:
-                    st.mem[st.hl] = int(m.group(1), 16)
+                    st.mem[wram_address(st.hl)] = int(m.group(1), 16)
                 if text.startswith("push "):
                     pushes += 1
                     reg = text[5:]
@@ -332,12 +315,12 @@ class Tracer:
                         a_before = st.a
                         st.a, st.hl, st.de, st.bc, st.cmp = None, None, None, None, None  # (the index's bound
                         # stays: a helper may do the indexing for it)
-                        st.mem = {k: v for k, v in st.mem.items() if k in MAPPER or k - 0x2000 in MAPPER}
+                        st.mem = {k: v for k, v in st.mem.items() if k + 0x2000 in MAPPER}
                         if tflat is not None:
                             if tflat in f.switchers:
                                 self._map(st, f.switchers[tflat], a_before)
                                 reg = {0: 0xFFFD, 1: 0xFFFE, 2: 0xFFFF}[f.switchers[tflat]]
-                                st.mem[reg] = st.mem[reg - 0x2000] = a_before
+                                st.mem[wram_address(reg)] = a_before
                             if not text.startswith("call ") or "," not in text:  # (an unconditional call)
                                 # it comes back past the bytes a correction says it reads, or doesn't come back here
                                 # (what follows the call isn't this code)
@@ -421,9 +404,9 @@ class Tracer:
             st.a = 0
         elif m := _LD_A_MEM.match(text):
             addr = int(m.group(1), 16)
-            st.a = st.mem.get(addr, self._mirror(st, addr))
+            st.a = st.mem.get(wram_address(addr))
         elif text == "ld a, (hl)" and st.hl is not None and st.hl >= 0xC000:
-            st.a = st.mem.get(st.hl, self._mirror(st, st.hl))
+            st.a = st.mem.get(wram_address(st.hl))
         elif _WRITES_A.match(text):
             st.a = None
         if m := _LD_RR_NN.match(text):
@@ -442,12 +425,6 @@ class Tracer:
                 st.de = None
             if _WRITES_BC.match(text):
                 st.bc = None
-
-    @staticmethod
-    def _mirror(st: State, addr: int):
-        """A mapper register, or its mirror in RAM, read back: the bank last mapped there, if known."""
-        slot = MAPPER.get(addr, MAPPER.get(addr + 0x2000) if 0xDFFD <= addr <= 0xDFFF else None)
-        return None if slot is None else (st.s0, st.s1, st.s2)[slot]
 
     # -- what a round teaches the next
 
