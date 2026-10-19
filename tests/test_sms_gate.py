@@ -6,10 +6,15 @@ import pytest
 from tools import sms_gate
 
 
-def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True):
+def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True):
     suite = ET.Element("testsuite")
     modules = sms_gate.TESTS[:-1] if missing_module else sms_gate.TESTS
     for name in modules:
+        if name.endswith("test_sms_resplit_history.py") and recovery:
+            for platform in ("sms", "gg"):
+                ET.SubElement(suite, "testcase", classname="tests.test_sms_resplit_history", name=
+                    f"test_changed_documented_source_and_attempts_are_recoverable_and_rebuild_after_undo[{platform}]")
+            continue
         if name.endswith("test_sms_mapper_integration.py") and mapper_matrix:
             for mapper in ("sega", "mapperless", "codemasters"):
                 for platform in ("sms", "gg"):
@@ -45,7 +50,7 @@ def test_gate_rejects_an_install_manifest_without_binaries(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("kwargs", [{"skipped": True}, {"failed": True}, {"missing_module": True}, {"gg": False},
-                                    {"mapper_matrix": False}])
+                                    {"mapper_matrix": False}, {"recovery": False}])
 def test_gate_rejects_incomplete_or_unsuccessful_execution(tmp_path, kwargs):
     with pytest.raises(ValueError):
         sms_gate.verify_report(report(tmp_path, **kwargs))
@@ -58,4 +63,4 @@ def test_gate_requires_a_valid_report_with_executed_tests(tmp_path):
     path.write_text("<testsuite />")
     with pytest.raises(ValueError, match="executed, passing tests"):
         sms_gate.verify_report(path)
-    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 5
+    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 6

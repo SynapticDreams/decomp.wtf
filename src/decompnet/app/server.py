@@ -717,8 +717,16 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     def p_resplit(slug, request, data):
         """Split a Game Boy, Master System or NES game again with this version's splitter, keeping the work done on
         it (engine.resplit_banked): a preview by default, `apply` to do it, with the project's helpers stopped."""
+        if request.method == "GET":
+            cursor = request.query_params.get("before")
+            if cursor is not None and (not cursor.isdecimal() or len(cursor) > 18):
+                raise NetworkError("history cursor must be a positive integer")
+            return net.resplit_history(slug, int(cursor) if cursor is not None else None)
+        undo = data.get("undo")
         apply = data.get("apply") is True
-        if apply:
+        if undo is not None and apply:
+            raise NetworkError("choose either resplit apply or undo")
+        if apply or undo is not None:
             if any(s.slug == slug and s.state in ("starting", "working", "waiting") and not s.stop.is_set()
                    for s in manager.sessions.values()):
                 raise NetworkError("stop this project's helpers first: splitting again changes the functions they hold")
@@ -726,7 +734,9 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             net.stop_autopilot(slug)
 
         def work(log):
-            return net.resplit_banked(slug, apply=apply, log=log)
+            if undo is not None:
+                return net.undo_resplit(slug, undo)
+            return net.resplit_banked(slug, apply=apply, log=log, expected_plan=data.get("plan"))
         return {"job": jobs.start("resplit", work)}
 
     def p_sms_profile(slug, request, data):
@@ -814,7 +824,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/compiler/small-data": (lambda s, r, d: net.small_data_evidence(s), ["POST"]),
         "/api/libraries/psyq": (p_psyq, ["POST"]),
         "/api/debug/psx": (p_psx_debug, ["POST"]),
-        "/api/resplit": (p_resplit, ["POST"]),
+        "/api/resplit": (p_resplit, ["GET", "POST"]),
         "/api/give_back": (lambda s, r, d: net.give_to_agents(s, str(d.get("function", ""))), ["POST"]),
         "/api/corrections": (lambda s, r, d: net.corrections(s), ["GET"]),
         "/api/corrections/undo": (lambda s, r, d: net.undo_correction(s, int(d.get("id") or 0)), ["POST"]),

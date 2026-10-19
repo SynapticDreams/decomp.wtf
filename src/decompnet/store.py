@@ -57,6 +57,12 @@ CREATE TABLE IF NOT EXISTS corrections(
 CREATE TABLE IF NOT EXISTS twin_misses(
   function_id INTEGER NOT NULL, source_hash TEXT NOT NULL, project_id INTEGER, at REAL, why TEXT,
   PRIMARY KEY(function_id, source_hash));
+-- Private project work retained before a banked resplit; API history exposes metadata only.
+CREATE TABLE IF NOT EXISTS resplit_history(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, created_at REAL NOT NULL,
+  before_state BLOB NOT NULL, before_digest TEXT NOT NULL, after_digest TEXT NOT NULL,
+  summary TEXT NOT NULL, undone_at REAL);
+CREATE INDEX IF NOT EXISTS idx_resplit_history_project ON resplit_history(project_id, id);
 """
 
 # Columns added after the first release; applied in place to existing databases.
@@ -137,10 +143,11 @@ class Store:
             self.conn.execute("BEGIN IMMEDIATE")
             try:
                 yield self.conn
+                self.conn.execute("COMMIT")
             except BaseException:
-                self.conn.execute("ROLLBACK")
+                if self.conn.in_transaction:
+                    self.conn.execute("ROLLBACK")
                 raise
-            self.conn.execute("COMMIT")
 
     def one(self, sql: str, *args) -> sqlite3.Row | None:
         with self.lock:
