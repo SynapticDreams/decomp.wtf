@@ -29,6 +29,7 @@ class State:
     # `and $7f` (False)): an index
     index: tuple | None = None  # the same, for the index once A is copied into another register (`ld e, a`)
     base: tuple | None = None  # (n, the last ROM address loaded into a register pair: a table to index)
+    pushed: bool = False  # whether this path has pushed before inspecting its incoming return address
 
     def copy(self) -> State:
         return replace(self, mem=dict(self.mem), stack=list(self.stack))
@@ -59,3 +60,4 @@ class Found:
     anchors: set[int] = field(default_factory=set)  # starts reached by something other than a jump (a call...)
     slot_writes: dict[int, int] = field(default_factory=dict)  # 0 | 1 | 2 -> mapper writes seen for that slot
     bank_base: dict[int, int] = field(default_factory=dict)  # bank -> the CPU address its code was found running at
+    exhausted: dict[int, set[str]] = field(default_factory=dict)  # entry -> bounded traversal limits reached

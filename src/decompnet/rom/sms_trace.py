@@ -6,8 +6,8 @@ carries all mapping fields, and joined entries retain only facts their callers s
 remain separate from device registers. Isolated symbols and sweep seeds establish only their own ROM window;
 the reset recipe applies only to the reset root.
 
-Function extents and dispatch tables remain heuristic. General callee effects, unknown stores, multiple paths
-through one instruction and interrupt restoration still need conservative summaries and analysis budgets.
+Function extents and dispatch tables remain heuristic. Path visitation retains distinct facts under explicit
+per-function budgets. General callee effects, unknown stores and interrupt restoration still need qualification.
 These limits are separate from preserving full bus state on the paths this tracer follows.
 """
 
@@ -20,6 +20,7 @@ from . import sms_seeds, z80
 from .sms_mapping import BusState, Mapper, entry_state, join, wram_address
 from .sms_mapping import REGISTERS as MAPPER
 from .sms_mapping import bank_mask as bank_mask  # preserve the previous helper import
+from .sms_paths import Limits, Paths
 from .sms_state import ARG, Found, State
 
 BANK = 0x4000
@@ -101,7 +102,7 @@ def plausible(data: bytes, flat: int, cpu: int, limit: int = 64) -> bool:
 
 class Tracer:
     def __init__(self, data: bytes, paged: set[int] | None = None, hints: dict | None = None, *,
-                 mapper: str = "sega", reset: BusState | None = None):
+                 mapper: str = "sega", reset: BusState | None = None, limits: Limits | None = None):
         """Trace under an explicit mapper/reset recipe; isolated seeds establish only their own ROM window.
         `paged` remains accepted for callers of the previous tracer; absence of writes never establishes banks.
         `hints`: data spans, inline operands and nonreturning routines (see sms.functions).
@@ -119,6 +120,7 @@ class Tracer:
         self.model = Mapper(mapper, self.size)
         self.reset = reset if reset is not None else self.model.reset()
         self.mapper = mapper != "mapperless"
+        self.limits = limits or Limits()
         self.found = Found()
         self.known: set[int] = set()  # function starts as the last round left them (and the seeds)
         self.prev_starts: set[int] = set()
@@ -187,8 +189,8 @@ class Tracer:
     def _no_return(self, flat: int) -> bool:
         """A call to it doesn't come back to the next instruction (as the last round saw it)."""
         f = self.found
-        return flat in f.takes_return or flat in self.hints.get("noreturn", ()) or (
-            flat in self.prev_starts and flat not in f.returns)
+        return flat in self.hints.get("noreturn", ()) or (flat not in f.exhausted and (
+            flat in f.takes_return or flat in self.prev_starts and flat not in f.returns))
 
     def in_data(self, flat: int) -> bool:
         """In bytes a correction (or coverage) says aren't code."""
@@ -202,14 +204,15 @@ class Tracer:
         out: list[tuple[int, int, BusState, str]] = []
         tails = f.tails.setdefault(entry, set())
         work = [(entry, entry_cpu, st)]
-        visited: set[int] = set()
-        pushes = 0
+        paths = Paths(self.limits)
+        tables_at, indexed_at = len(f.with_hl), len(f.indexed)
         while work:
             flat, cpu, st = work.pop()
-            while flat not in visited and 0 <= flat < size and not self.in_data(flat):
+            while 0 <= flat < size and not self.in_data(flat):
                 if self.model.resolve(cpu, st.mapping).rom_offset != flat:
                     break
-                visited.add(flat)
+                if not paths.admit(flat, cpu, st):
+                    break
                 text, ln = _decode(data, flat, cpu)
                 if text.startswith("db "):
                     break
@@ -239,11 +242,11 @@ class Tracer:
                         else:
                             st.mem.pop(alias, None)
                 if text.startswith("push "):
-                    pushes += 1
+                    st.pushed = True
                     reg = text[5:]
                     st.stack.append(st.a if reg == "af" else st.hl if reg == "hl" else st.de if reg == "de"
                                     else st.bc if reg == "bc" else None)
-                if (text == "pop hl" or text.startswith("ex (sp), ")) and pushes == 0 and len(visited) <= 3:
+                if (text == "pop hl" or text.startswith("ex (sp), ")) and not st.pushed and st.n <= 3:
                     f.takes_return.add(entry)  # its return address, first thing: the table that follows its call
                 computed = None  # a computed call: the address pushed to come back to (`push de / jp (hl)`)
                 if text in ("jp (hl)", "jp (ix)", "jp (iy)"):
@@ -260,7 +263,7 @@ class Tracer:
                         out.append((tflat, to, st.mapping, "call" if computed is not None else "jump"))
                     if computed is None:
                         tails.add(tflat if to is not None else None)
-                elif text == "ret" and st.stack and isinstance(st.stack[-1], int) and pushes:
+                elif text == "ret" and st.stack and isinstance(st.stack[-1], int) and st.pushed:
                     to = st.stack.pop()  # `push rr / ret`: a jump to what it pushed, not a return
                     tflat = self.model.resolve(to, st.mapping).rom_offset
                     if tflat is not None and tflat != entry:
@@ -329,7 +332,16 @@ class Tracer:
                 if nxt // BANK != flat // BANK:
                     break  # ran off the end of the bank
                 flat, cpu = mapped, next_cpu
-        return out
+        if paths.exhausted:
+            f.exhausted.setdefault(entry, set()).update(paths.exhausted)
+        if entry in f.exhausted:
+            # Missing paths cannot supply complete mapper/helper or dispatch summaries. Keep known target
+            # coordinates as conditional entries, without carrying singleton caller facts into their bodies.
+            f.switchers.pop(entry, None)
+            del f.with_hl[tables_at:]
+            del f.indexed[indexed_at:]
+            out = [(at, pc, entry_state(at, pc, size), how) for at, pc, _mapping, how in out]
+        return list(dict.fromkeys(out))
 
     def _map(self, st: State, slot: int, val) -> None:
         st.mapping = self.model.write(st.mapping, 0xFFFD + slot, val if type(val) is int else None)
