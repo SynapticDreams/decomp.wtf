@@ -37,14 +37,25 @@ port writes now invalidate affected facts. Word stores apply both bytes in CPU o
 RAM aliases still do not select a mapper bank. An unknown destination discards sparse RAM and virtual-stack values.
 Known VDP/PSG/I/O-control output ports preserve mapping; unknown outputs and possible memory-control mirrors
 leave bus sources unresolved. Hardware/mode-specific port enable values are not interpreted as a new mapping.
-The virtual stack does not qualify physical SP placement, interrupt interleaving or stack/device aliasing.
+An explicit SP is tracked through ordinary pushes, pops and calls. Known physical stack accesses require
+unambiguous work RAM away from mapper registers; active stack aliases, including RAM mirrors, are guarded
+within a 512-byte window. Writes into that active storage, unqualified destinations and tracking exhaustion
+stop interpretation with a reason. Pushes discard stale sparse-RAM facts at their destinations; pushed physical
+bytes are not supplied as new RAM-readback values. Unknown SP keeps an explicitly conditional ordinary virtual-stack
+contract; this does not qualify all physical stack placement, asynchronous writes or interrupt interleaving.
 Explicit SP changes discard saved virtual values; popping an untracked index register still consumes its value.
+Saved register widths are retained: A alone does not establish a full AF return address, pair-to-AF pops use
+the high byte for A, and unknown saved flag bytes cannot justify a comparison bound.
 Ordinary callees are evaluated with actual incoming registers, mapping and sparse RAM. Conditional calls include
 the uncalled path, and returned mapping/RAM facts are joined across all known return paths. Evaluation has a shared
 2,048-instruction budget across nested calls, depth limit eight and per-address/stack/memory limits. Unknown sources,
 unqualified writes or returns, SP changes, interrupt returns, EI/HALT and exhausted budgets leave caller effects
 unresolved. `analysis_unresolved` reports caller entry offsets and reasons in split logs and resplit results.
 Computed continuations with known pushed addresses and declared inline-return adjustments use the same evaluator.
+EI and interrupt returns are reported as unqualified boundaries on directly followed paths as well as in callees.
+HALT stops discovery until a wake-up context is qualified. An interrupted save/change/restore sequence therefore
+remains conditional, even when its uninterrupted stack/bank restoration can be followed. DI does not establish
+NMI preservation. Assembly references after these boundaries or SP relocation remain pending without a contract.
 Known nested call targets are retained as conditional static discovery evidence even when another path is unresolved;
 they do not establish a complete target set or execution observations.
 Whole-discovery accounting is shared across retracing passes: at most 4,000 distinct physical/CPU entries,
@@ -58,8 +69,8 @@ Function-entry back-edges revisit changed path facts without replaying reset sta
 A run within budget remains heuristic and subject to unqualified sources and execution-coverage limits.
 The resplit preview includes these diagnostics before work is applied.
 Explicit nonreturn corrections apply; an incomplete trace never supplies a preserving or nonreturning contract.
-This remains static analysis under an ordinary virtual-stack contract; asynchronous interrupt preservation and
-complete inter-function expansion/round qualification remain pending. Neither adapter is a CPU emulator.
+This remains static analysis under an ordinary virtual-stack contract; asynchronous interrupt preservation,
+physical byte/flag stack emulation and complete execution qualification remain pending. Neither adapter is a CPU emulator.
 Instruction forms follow the [Zilog Z80 manual](https://www.zilog.com/docs/z80/um0080.pdf); source-selection
 limits follow the [memory-control reference](https://www.smspower.org/Development/Port3E) and
 [hardware notes](https://github.com/drhelius/Gearsystem/blob/master/skills/gearsystem-debugging/references/smstech.md).

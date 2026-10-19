@@ -448,7 +448,7 @@ def functions(data: bytes, log=lambda *_: None, labels: dict | None = None,
         for row in exhausted[:10]:
             log(f"ROM offset {row['rom_offset']:x}: {', '.join(row['reasons'])}")
     if unresolved := report["analysis_unresolved"]:
-        log(f"callee effects remain unresolved in {len(unresolved)} entries")
+        log(f"execution effects remain unresolved in {len(unresolved)} entries")
         for row in unresolved[:10]:
             log(f"ROM offset {row['rom_offset']:x}: {', '.join(row['reasons'])}")
     if not found:

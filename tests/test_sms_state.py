@@ -9,13 +9,16 @@ def test_branch_copy_preserves_facts_and_isolates_mutable_state():
     assert sms_trace.State is State  # existing trace callers keep the same import
     original = State(BusState.cartridge_only((4, 1, 5)), a=3, hl=0x500, de=2, bc=1,
                      mem={0xC100: 5}, stack=[7], n=12, cmp=(3, 3), low=(4, 1),
-                     bound=(5, 3, True), index=(6, 3, True), base=(7, 0x500))
+                     bound=(5, 3, True), index=(6, 3, True), base=(7, 0x500),
+                     sp=0xDFEE, stack_top=0xDFF0)
     branch = original.copy()
     assert branch == original
     branch.mem[0xC100] = 6
     branch.stack.append(8)
+    branch.sp = 0xDFEC
     branch.mapping = replace(branch.mapping, banks=(4, 1, 6))
     assert original.mem == {0xC100: 5} and original.stack == [7] and original.mapping.banks == (4, 1, 5)
+    assert original.sp == 0xDFEE and original.stack_top == 0xDFF0
 
 
 def test_branch_mutations_do_not_leak_into_a_sibling():

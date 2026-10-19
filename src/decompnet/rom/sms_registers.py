@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-from . import sms_effects
+from . import sms_effects, sms_stack
 from .sms_mapping import Mapper, wram_address
 from .sms_state import State
 
@@ -44,10 +44,13 @@ def apply(st: State, text: str, model: Mapper) -> None:
     elif re.match(r"^ld [bcdehl], a$", text) and (b := st.fresh(st.bound)):
         st.index = (st.n, *b)  # the index goes on in another register: what A does next doesn't change it
     if text == "pop af":
-        st.a = st.stack.pop() if st.stack else None
+        value, kind = sms_stack.take(st)
+        st.a = value if kind in (None, "af") else value >> 8 if type(value) is int else None
+        st.cmp = st.low = st.bound = None  # no saved flag-byte proof
         return
     if text in ("pop hl", "pop de", "pop bc"):
-        val = st.stack.pop() if st.stack else None
+        val, kind = sms_stack.take(st)
+        val = None if kind == "af" else val
         reg = text[4:]
         st.hl, st.de, st.bc = (val if reg == "hl" else st.hl, val if reg == "de" else st.de,
                                val if reg == "bc" else st.bc)
@@ -56,11 +59,20 @@ def apply(st: State, text: str, model: Mapper) -> None:
         st.de, st.hl = st.hl, st.de
         return
     if text in ("pop ix", "pop iy"):
-        if st.stack:
-            st.stack.pop()
+        sms_stack.take(st)
         return
     if text.startswith("ld sp, ") or text in ("inc sp", "dec sp"):
         st.stack.clear()
+        operand = text[7:] if text.startswith("ld sp, ") else ""
+        if re.fullmatch(r"\$[0-9a-f]{4}", operand):
+            st.sp = int(operand[1:], 16)
+        elif operand == "hl":
+            st.sp = st.hl if type(st.hl) is int else None
+        elif text in ("inc sp", "dec sp"):
+            st.sp = (st.sp + (1 if text == "inc sp" else -1)) & 65535 if st.sp is not None else None
+        else:
+            st.sp = None
+        st.stack_top = st.sp
     if m := _LD_A_N.match(text):
         st.a = int(m.group(1), 16)
     elif text == "xor a":

@@ -7,8 +7,8 @@ remain separate from device registers. Isolated symbols and sweep seeds establis
 the reset recipe applies only to the reset root.
 
 Function extents and dispatch tables remain heuristic. Path visitation retains distinct facts under explicit
-per-function budgets. A separate bounded evaluator propagates ordinary callee effects; physical stack accesses
-and interrupt restoration remain unqualified.
+per-function budgets. A separate bounded evaluator propagates ordinary callee effects.
+Physical stack byte/flag emulation and interrupt restoration remain unqualified.
 These limits are separate from preserving full bus state on the paths this tracer follows.
 """
 
@@ -17,7 +17,7 @@ from __future__ import annotations
 import bisect
 import re
 
-from . import sms_calls, sms_effects, sms_registers, sms_seeds, sms_trace_writes, z80
+from . import sms_calls, sms_effects, sms_registers, sms_seeds, sms_stack, sms_trace_writes, z80
 from .sms_mapping import BusState, Mapper, entry_state, join
 from .sms_mapping import REGISTERS as MAPPER
 from .sms_mapping import bank_mask as bank_mask  # preserve the previous helper import
@@ -182,10 +182,21 @@ class Tracer:
                 st.n += 1
                 skip = 0  # bytes after a call that the routine called reads (a correction says how many)
                 kind, target = z80.flow(text)
+                if reason := sms_effects.interrupt_limit(text):
+                    self._unresolved(entry, reason)
+                    if text == "halt":
+                        break  # wake-up requires an interrupt/context this tracer has not qualified
+                if reason := sms_stack.instruction(st, text, kind, self.model):
+                    self._unresolved(entry, reason)
+                    break
                 # Device writes select banks and also write WRAM. WRAM aliases never select a bank.
                 writes = sms_effects.memory_writes(text, {"a": st.a, "hl": st.hl, "de": st.de, "bc": st.bc})
                 source_change = sms_effects.port_may_change_source(text, st.bc)
+                if reason := sms_stack.write_alias(st, writes):
+                    self._unresolved(entry, reason)
+                    break
                 if source_change or any(write.cpu is None for write in writes):
+                    self._unresolved(entry, "explicit memory or source-control write is unqualified")
                     f.unknown_writes.add(entry)
                     f.switchers.pop(entry, None)
                 for slot_reg, val in ((write.cpu, write.value) for write in writes):
@@ -199,14 +210,17 @@ class Tracer:
                 if text.startswith("push "):
                     st.pushed = True
                     reg = text[5:]
-                    st.stack.append(st.a if reg == "af" else st.hl if reg == "hl" else st.de if reg == "de"
-                                    else st.bc if reg == "bc" else None)
+                    st.stack.append(sms_stack.StackWord(reg, st.a if reg == "af" else st.hl if reg == "hl" else st.de
+                                                       if reg == "de" else st.bc if reg == "bc" else None))
                 if (text == "pop hl" or text.startswith("ex (sp), ")) and not st.pushed and st.n <= 3:
                     f.takes_return.add(entry)  # its return address, first thing: the table that follows its call
                 computed = None  # a computed call: the address pushed to come back to (`push de / jp (hl)`)
                 if text in ("jp (hl)", "jp (ix)", "jp (iy)"):
-                    if st.stack and isinstance(st.stack[-1], int):
-                        computed = st.stack.pop()
+                    if st.stack:
+                        if (computed := sms_stack.address(st)) is not None:
+                            sms_stack.take(st)
+                        else:
+                            self._unresolved(entry, "pushed value does not establish a complete return address")
                     to = st.hl if text == "jp (hl)" else None
                     tflat = self.model.resolve(to, st.mapping).rom_offset if to is not None else None
                     if to is None:
@@ -218,8 +232,11 @@ class Tracer:
                         out.append((tflat, to, st.mapping, "call" if computed is not None else "jump"))
                     if computed is None:
                         tails.add(tflat if to is not None else None)
-                elif text == "ret" and st.stack and isinstance(st.stack[-1], int) and st.pushed:
-                    to = st.stack.pop()  # `push rr / ret`: a jump to what it pushed, not a return
+                elif text == "ret" and st.stack and st.pushed:
+                    if (to := sms_stack.address(st)) is None:
+                        self._unresolved(entry, "pushed value does not establish a complete return address")
+                        break
+                    sms_stack.take(st)  # `push rr / ret`: a jump to what it pushed, not a return
                     tflat = self.model.resolve(to, st.mapping).rom_offset
                     if tflat is not None and tflat != entry:
                         out.append((tflat, to, st.mapping, "jump"))
@@ -257,7 +274,7 @@ class Tracer:
                 if kind != "call":
                     self._registers(st, text)
                 if computed is not None:  # back from the computed call: on at the address it pushed
-                    st = self._call(entry, to, tflat, st, computed, out)
+                    st = self._call(entry, to, tflat, st, computed, out, already_pushed=True)
                     if st is None:
                         break
                     back = self.model.resolve(computed, st.mapping).rom_offset
@@ -293,14 +310,16 @@ class Tracer:
             out = [(at, pc, entry_state(at, pc, size), how) for at, pc, _mapping, how in out]
         return list(dict.fromkeys(out))
 
-    def _call(self, entry, target, flat, state, return_cpu, entries, *, skip=0, conditional=False):
+    def _unresolved(self, entry, reason):
+        self.found.unresolved.setdefault(entry, set()).add(reason)
+        if "budget exhausted" in reason:
+            self.found.exhausted.setdefault(entry, set()).add(reason)
+
+    def _call(self, entry, target, flat, state, return_cpu, entries, *, skip=0, conditional=False, already_pushed=False):
         result = sms_calls.Result() if self._no_return(flat) else \
-            self.calls.evaluate(target, state, return_cpu, skip=skip)
-        if result.reasons:
-            self.found.unresolved.setdefault(entry, set()).update(result.reasons)
-            budgets = {reason for reason in result.reasons if "budget exhausted" in reason}
-            if budgets:
-                self.found.exhausted.setdefault(entry, set()).update(budgets)
+            self.calls.evaluate(target, state, return_cpu, skip=skip, already_pushed=already_pushed)
+        for reason in result.reasons:
+            self._unresolved(entry, reason)
         nested = result.entries[1:] if result.entries and result.entries[0][:2] == (flat, target) else result.entries
         entries.extend((at, pc, entry_state(at, pc, self.size) if result.reasons else mapping, "call")
                        for at, pc, mapping in nested)

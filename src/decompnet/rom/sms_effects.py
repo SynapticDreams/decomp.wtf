@@ -69,3 +69,11 @@ def copied_register(text: str) -> str | None:
     """Indexed CB writes can also replace an ordinary register with an unknown result."""
     match = re.fullmatch(r"(?:rlc|rrc|rl|rr|sla|sra|sll|srl|res \d,|set \d,) \(i[xy][^)]+\), ([abcdehl])", text)
     return match[1] if match else None
+
+
+def interrupt_limit(text: str) -> str | None:
+    if text in ("ei", "halt"):
+        return "asynchronous interrupt-dependent continuation is unqualified"
+    if text in ("reti", "retn"):
+        return "interrupt return and bank/stack preservation are unqualified"
+    return None
