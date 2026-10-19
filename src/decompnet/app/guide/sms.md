@@ -111,7 +111,7 @@ metadata survive; documented source is returned to the review sample. Revalidati
 64 KiB per source, with a 30-second batch budget and bounded individual tool runs. Exhausted checks, missing tools,
 removed named entries, unsupported mapping and external compiler includes remain unresolved and unaccepted.
 The preview reports the number requiring checks; apply reports passed/failed/unresolved counts and bounded
-metadata-only details. External include dependency capture and forward recovery from history remain pending.
+metadata-only details. External include dependency capture remains pending; changed C using external includes stays unaccepted.
 Snapshot retention does not establish source validity under changed boundaries/context.
 SMS classification, data changes and history are committed in one SQLite transaction, including rollback on
 commit failure. Unchanged work and applicable claims remain attached to their original function rows; applying
@@ -126,6 +126,27 @@ history ID); existing POST preview/apply calls remain available. History respons
 stored source. Each snapshot is bounded to 100,000 rows and 64 MiB of encoded work; sidecar verification is capped
 at 64 MiB per file. Exceeding a budget stops the apply before it commits. Existing databases gain history storage
 without rewriting existing work. This recovery path currently covers local SMS/GG projects.
+
+**Browse saved work** in each history entry provides forward recovery when newer work blocks undo. It shows
+saved function names, revision hashes, CPU/physical coordinates and target digests, then separately lists saved
+accepted/best sources, attempts with their author IDs/scores/header versions, notes, headers, compiler settings,
+symbols and review metadata. Old and undone snapshots remain inspectable. These are historical references;
+copying or downloading them never changes current functions, accepted source, drafts, claims or annotations.
+Review recovered text and submit it through the usual source checks against the current target/context.
+The browser verifies complete text against its SHA-256 and character count before enabling copy/download.
+A separate download includes the selected text and its snapshot/function/item provenance. The **Full saved
+provenance** item recovers complete original metadata when a listing reports clipped fields.
+
+The private operator GET route is `/api/resplit/archive`, with `slug` and `history`. Without a `function` ID it
+pages saved functions; with one it pages available `items`. Metadata pages contain at most 25 entries, with
+`next_offset` for subsequent requests and explicit clipping flags on long metadata strings. Selecting `item`
+returns text, its SHA-256, character count and `next_start`; pass that as `start` until it is null. Offsets count
+Unicode code points. Text chunks default to 16,384 characters and accept `limit` up to 262,144 (at most 1 MiB of
+UTF-8 text, excluding JSON escaping/metadata). Lists contain no source bodies. Text recovery shares the 64 MiB
+snapshot/text and 100,000-row budgets. Unknown projects, snapshots, functions or items, corrupt/over-budget
+snapshots and invalid cursors fail visibly. This read-only API needs operator authentication; it is not a worker
+tool or a way to accept archived source. Access to the current original input is not needed just to inspect history.
+
 Explicit nonreturn corrections apply; an incomplete trace never supplies a preserving or nonreturning contract.
 This remains static analysis under an ordinary virtual-stack contract; asynchronous interrupt preservation,
 physical byte/flag stack emulation and complete execution qualification remain pending. Neither adapter is a CPU emulator.

@@ -1,7 +1,7 @@
 "use strict";
 /* Local recovery history. All project values are rendered as text. */
 window.ResplitHistoryUI = {
-  async render(panel, load, undo) {
+  async render(panel, load, undo, archive) {
     const token = Symbol();
     panel.historyToken = token;
     panel.replaceChildren();
@@ -24,7 +24,7 @@ window.ResplitHistoryUI = {
         if (panel.historyToken !== token) return;
         if (!report.history.length && cursor === null) status.textContent = "No saved resplits yet.";
         for (const item of report.history) {
-          const row = document.createElement("p");
+          const row = document.createElement("div");
           row.className = "small";
           const summary = item.summary;
           const text = document.createElement("span");
@@ -45,6 +45,17 @@ window.ResplitHistoryUI = {
               finally { button.disabled = false; }
             };
             row.append(button);
+          }
+          if (archive) {
+            const browse = document.createElement("button"), saved = document.createElement("div");
+            browse.type = "button";
+            browse.textContent = "Browse saved work";
+            browse.onclick = () => {
+              browse.disabled = true;
+              window.ResplitArchiveUI.render(saved, params => archive(item.id, params),
+                () => panel.historyToken === token && panel.isConnected && !panel.hidden);
+            };
+            row.append(browse, saved);
           }
           entries.append(row);
         }
