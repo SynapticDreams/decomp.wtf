@@ -811,6 +811,7 @@ class RomNetwork(Network):
                "removed": len(gone), "notes_moved": len(noted), "bank_base": report.get("bank_base", {}),
                "analysis_exhausted": report.get("analysis_exhausted", []),
                "analysis_unresolved": report.get("analysis_unresolved", []),
+               "analysis_limits": report.get("analysis_limits", {}),
                "data_before": self.store.one("SELECT COALESCE(SUM(size), 0) AS n FROM data_regions WHERE project_id=?",
                                              proj["id"])["n"],
                "data_after": sum(r[1] for r in regions),

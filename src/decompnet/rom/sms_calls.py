@@ -13,6 +13,7 @@ from .sms_decode import decode
 from .sms_mapping import BusState, Mapper, join
 from .sms_paths import Limits, Paths
 from .sms_state import State
+from .sms_analysis import Budget
 
 
 @dataclass(frozen=True)
@@ -46,12 +47,13 @@ class Result:
 
 class Evaluator:
     def __init__(self, data: bytes, model: Mapper, *, hints=None, in_data=lambda _flat: False,
-                 limits: Limits | None = None, depth: int = 8):
+                 limits: Limits | None = None, depth: int = 8, budget: Budget | None = None):
         if type(depth) is not int or not 1 <= depth <= 64:
             raise ValueError("call depth must be between 1 and 64")
         self.data, self.model = data, model
         self.hints, self.in_data = hints or {}, in_data
         self.limits, self.depth = limits or Limits(steps=2048), depth
+        self.budget = budget
 
     def evaluate(self, target: int, caller: State, return_cpu: int, *, skip: int = 0) -> Result:
         return self._frame(target, caller, return_cpu, skip, 0, [self.limits.steps])
@@ -60,6 +62,9 @@ class Evaluator:
         result = Result()
         if (flat := self.model.resolve(target, caller.mapping).rom_offset) is not None and not self.in_data(flat):
             result.entries.append((flat, target, caller.mapping))
+            if self.budget is not None and not self.budget.enter(flat, target):
+                result.reasons.update(self.budget.exhausted)
+                return result
         if depth >= self.depth:
             result.reasons.add("call depth budget exhausted")
             return result
@@ -78,6 +83,9 @@ class Evaluator:
                     break
                 if fuel[0] <= 0:
                     result.reasons.add("call instruction budget exhausted")
+                    break
+                if self.budget is not None and not self.budget.step(call=True):
+                    result.reasons.update(self.budget.exhausted)
                     break
                 fuel[0] -= 1
                 text, length = decode(self.data, flat, cpu)

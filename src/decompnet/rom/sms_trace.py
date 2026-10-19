@@ -23,6 +23,7 @@ from .sms_mapping import REGISTERS as MAPPER
 from .sms_mapping import bank_mask as bank_mask  # preserve the previous helper import
 from .sms_decode import decode as _decode, can_start as can_start, plausible as plausible
 from .sms_paths import Limits, Paths
+from .sms_analysis import Budget, CONVERGENCE_ROUNDS
 from .sms_registers import _WRITES_HL as _WRITES_HL
 from .sms_registers import _WRITES_DE as _WRITES_DE
 from .sms_registers import _WRITES_BC as _WRITES_BC
@@ -50,7 +51,7 @@ def resolve(target: int, here_flat: int, here_cpu: int, s1, s2, size: int, s0=0,
 class Tracer:
     def __init__(self, data: bytes, paged: set[int] | None = None, hints: dict | None = None, *,
                  mapper: str = "sega", reset: BusState | None = None, limits: Limits | None = None,
-                 call_limits: Limits | None = None, call_depth: int = 8):
+                 call_limits: Limits | None = None, call_depth: int = 8, budget: Budget | None = None):
         """Trace under an explicit mapper/reset recipe; isolated seeds establish only their own ROM window.
         `paged` remains accepted for callers of the previous tracer; absence of writes never establishes banks.
         `hints`: data spans, inline operands and nonreturning routines (see sms.functions).
@@ -69,20 +70,25 @@ class Tracer:
         self.reset = reset if reset is not None else self.model.reset()
         self.mapper = mapper != "mapperless"
         self.limits = limits or Limits()
+        self.budget = budget or Budget()
         self.calls = sms_calls.Evaluator(data, self.model, hints=self.hints, in_data=self.in_data,
-                                        limits=call_limits, depth=call_depth)
+                                        limits=call_limits, depth=call_depth, budget=self.budget)
         self.found = Found()
         self.known: set[int] = set()  # function starts as the last round left them (and the seeds)
 
-    def follow(self, seeds: dict[int, tuple[int, str]], rounds: int = 8) -> Found:
+    def follow(self, seeds: dict[int, tuple[int, str]], rounds: int = CONVERGENCE_ROUNDS) -> Found:
         """The functions reachable from `seeds` (flat -> (cpu, why)), in rounds until nothing changes: each round
         starts again from the seeds with what the last one learned (far jumps and tables that start functions,
         functions that don't return, bank switchers). The reset vector starts with the power-on banks; any other
         seed with what its callers had mapped, as far as they agree (else `unknown`)."""
+        if type(rounds) is not int or not 1 <= rounds <= 64:
+            raise ValueError("convergence rounds must be between 1 and 64")
         more: dict[int, tuple[int, str]] = {}  # far jumps and tables, as the last round found them
         before = None
         for _ in range(rounds):
-            todo = {**more, **seeds}
+            if not self.budget.round():
+                break
+            todo = self.budget.seeds({**more, **seeds})
             self.known = set(todo)
             self._round(todo)
             self._returning()
@@ -93,6 +99,9 @@ class Tracer:
             if now == before:
                 break
             before = now
+        else:
+            self.budget.note("convergence round budget exhausted")
+        self.budget.qualify(self.found, self.size)
         self._bank_bases()
         return self.found
 
@@ -102,17 +111,22 @@ class Tracer:
         f = self.found
         prev, f.entered, f.starts, f.with_hl, f.jumps, f.anchors = f.entered, {}, {}, [], [], set()
         f.indexed, f.tails, f.code = [], {}, {}
-        queue = [(flat, cpu, why, self.reset if flat == 0 else None) for flat, (cpu, why) in sorted(seeds.items())]
+        queue = [(flat, cpu, why, self.reset if flat == 0 else None)
+                 for flat, (cpu, why) in sorted(seeds.items(), reverse=True)]  # reset before isolated entries
         for flat, _cpu, _why, m in queue:
             if m is not None:
                 f.entered.setdefault(flat, set()).add(m)
         seen: set[int] = set()
         while queue:
+            if self.budget.stopped:
+                break
             flat, cpu, why, mapping = queue.pop()
             if why != "jump" and can_start(self.data, flat, cpu):
                 f.anchors.add(flat)
             if flat in seen or not can_start(self.data, flat, cpu) or self.in_data(flat):
                 continue
+            if not self.budget.enter(flat, cpu):
+                break
             seen.add(flat)
             f.starts.setdefault(flat, (cpu, why))
             # a slot's bank holds inside a function only when everything that enters it agrees on it
@@ -152,12 +166,14 @@ class Tracer:
         work = [(entry, entry_cpu, st)]
         paths = Paths(self.limits)
         tables_at, indexed_at = len(f.with_hl), len(f.indexed)
-        while work:
+        while work and not self.budget.stopped:
             flat, cpu, st = work.pop()
             while 0 <= flat < size and not self.in_data(flat):
                 if self.model.resolve(cpu, st.mapping).rom_offset != flat:
                     break
                 if not paths.admit(flat, cpu, st):
+                    break
+                if not self.budget.step():
                     break
                 text, ln = _decode(data, flat, cpu)
                 if text.startswith("db "):
@@ -215,8 +231,9 @@ class Tracer:
                 if target is not None and kind in ("call", "jump", "cjump"):
                     tflat = self.model.resolve(target, st.mapping).rom_offset
                     if tflat is not None:
-                        inside = (tflat // BANK == entry // BANK and target >> 14 == cpu >> 14 and tflat != entry
-                                  and tflat not in self.known)
+                        inside = (tflat == entry and target == entry_cpu) or (
+                            tflat // BANK == entry // BANK and target >> 14 == cpu >> 14 and tflat != entry
+                            and tflat not in self.known)
                         if kind != "call" and tflat != entry:  # every jump: the next round sees which are far
                             f.jumps.append((entry, tflat, target, st.mapping))
                         if kind == "call" or not inside:

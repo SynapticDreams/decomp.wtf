@@ -47,6 +47,16 @@ unresolved. `analysis_unresolved` reports caller entry offsets and reasons in sp
 Computed continuations with known pushed addresses and declared inline-return adjustments use the same evaluator.
 Known nested call targets are retained as conditional static discovery evidence even when another path is unresolved;
 they do not establish a complete target set or execution observations.
+Whole-discovery accounting is shared across retracing passes: at most 4,000 distinct physical/CPU entries,
+1,000,000 followed instructions including 262,144 callee instructions, and 64 tracer rounds by default.
+Each tracer additionally needs convergence within eight rounds; gap discovery has eight passes. Exhausting
+these bounds, dropping excess entry seeds or truncating candidate output is disclosed in `analysis_limits`,
+with configured limits, usage and reasons. Partial discovered entries remain available, with conditional
+entry-window facts instead of complete incoming mapping claims. `analysis_exhausted` also marks affected entries.
+Instruction counters cover tracing/evaluation; cold scans keep their separate input-size and extent bounds.
+Function-entry back-edges revisit changed path facts without replaying reset state; unchanged loops converge.
+A run within budget remains heuristic and subject to unqualified sources and execution-coverage limits.
+The resplit preview includes these diagnostics before work is applied.
 Explicit nonreturn corrections apply; an incomplete trace never supplies a preserving or nonreturning contract.
 This remains static analysis under an ordinary virtual-stack contract; asynchronous interrupt preservation and
 complete inter-function expansion/round qualification remain pending. Neither adapter is a CPU emulator.
