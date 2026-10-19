@@ -27,6 +27,7 @@ from pathlib import Path
 
 from . import gb, sms_trace, z80
 from .n64 import RomError
+from .sms_identity import strip_copier_header as strip_copier_header
 
 BANK_SIZE = 0x4000
 MAGIC = b"TMR SEGA"
@@ -40,13 +41,6 @@ PLATFORMS = {"sms": "Sega Master System", "gg": "Sega Game Gear"}
 #: Where the CPU starts looking: the reset vector, the RST handlers (0x38 is also the interrupt), and the NMI.
 VECTORS = tuple(range(0x00, 0x40, 0x08)) + (0x66,)
 MAX_FUNCTION = 0x800  # a function longer than this is more likely a run of code the sweep never ended
-
-
-def strip_copier_header(data: bytes) -> bytes:
-    """Dumps from old copiers start with 512 bytes that are not part of the ROM."""
-    if _size_ok(len(data) - COPIER_HEADER) and header_offset(data[COPIER_HEADER:]) is not None:
-        return data[COPIER_HEADER:]
-    return data
 
 
 def header_offset(data: bytes) -> int | None:

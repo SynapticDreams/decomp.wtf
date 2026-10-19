@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "tools"))
 import z80  # noqa: E402  (decomp.wtf's Z80 disassembler, next to this file)
-from sms_identity import verify_normalized  # noqa: E402
+from sms_identity import strip_copier_header, verify_normalized  # noqa: E402
 
 B = json.loads((ROOT / "build.json").read_text(encoding="utf-8"))
 L = json.loads((ROOT / "layout.json").read_text(encoding="utf-8"))
@@ -279,9 +279,7 @@ def main(argv: list[str]) -> int:
     image = ROOT / B["image"]
     if not image.exists():
         fail(f"put your own copy of the game here as {B['image']}")
-    data = image.read_bytes()
-    if len(data) % BANK == 0x200:
-        data = data[0x200:]  # (a copier's header in front)
+    data = strip_copier_header(image.read_bytes())
     if hashlib.sha1(data).hexdigest() != B["sha1"]:
         fail(f"{B['image']} isn't the version this project is for (its sha1 differs)")
     try:

@@ -6,6 +6,16 @@ import hashlib
 VERSION = 1
 
 
+def strip_copier_header(data: bytes) -> bytes:
+    """Normalize only a valid-sized image with a recognized header after the copier prefix."""
+    size = len(data) - 512
+    if 0x2000 <= size <= 0x400000 and size % 0x2000 == 0:
+        at = 0x7FF0 if size >= 0x8000 else 0x3FF0 if size >= 0x4000 else 0x1FF0
+        if data[512 + at:512 + at + 8] == b"TMR SEGA":
+            return data[512:]
+    return data
+
+
 def verify_normalized(rom: bytes, identity: dict | None, legacy_sha1: str | None = None) -> None:
     """Refuse a replacement comparison target before generating or deleting export artifacts."""
     if identity is not None:

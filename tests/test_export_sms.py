@@ -114,3 +114,18 @@ def test_standalone_build_enforces_normalized_identity(exported):
     path.write_text(json.dumps(manifest))
     proc = subprocess.run([sys.executable, "build.py"], cwd=out, capture_output=True, text=True)
     assert proc.returncode != 0 and "frozen normalized identity" in proc.stderr
+
+
+@pytest.mark.parametrize("size", [0x2000, 0x4000, 0xC000])
+@pytest.mark.parametrize("region, platform", [(4, "sms"), (6, "gg")])
+def test_standalone_build_normalizes_small_copier_inputs(tmp_path, size, region, platform):
+    net = RomNetwork(tmp_path / "state.db", tmp_path / "projects")
+    rom = make_rom(size=size, region=region, code={0: bytes.fromhex("18fe")})
+    slug = net.import_rom(rom, confirmed=True, name=f"input.{platform}", log=lambda *_: None)
+    res = net.export_rom(slug, log=lambda *_: None)
+    assert res["identical"], res["log"]
+    out = Path(res["path"])
+    (out / f"baserom.{platform}").write_bytes(bytes(512) + rom)
+    proc = subprocess.run([sys.executable, "build.py"], cwd=out, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert (out / "build" / f"game.{platform}").read_bytes() == rom
