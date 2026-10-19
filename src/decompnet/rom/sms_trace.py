@@ -7,7 +7,7 @@ remain separate from device registers. Isolated symbols and sweep seeds establis
 the reset recipe applies only to the reset root.
 
 Function extents and dispatch tables remain heuristic. Path visitation retains distinct facts under explicit
-per-function budgets. General callee effects, unknown stores and interrupt restoration still need qualification.
+per-function budgets. General callee effects, physical stack accesses and interrupt restoration still need qualification.
 These limits are separate from preserving full bus state on the paths this tracer follows.
 """
 
@@ -16,39 +16,19 @@ from __future__ import annotations
 import bisect
 import re
 
-from . import sms_seeds, z80
+from . import sms_effects, sms_registers, sms_seeds, sms_trace_writes, z80
 from .sms_mapping import BusState, Mapper, entry_state, join, wram_address
 from .sms_mapping import REGISTERS as MAPPER
 from .sms_mapping import bank_mask as bank_mask  # preserve the previous helper import
 from .sms_paths import Limits, Paths
+from .sms_registers import _WRITES_HL as _WRITES_HL
+from .sms_registers import _WRITES_DE as _WRITES_DE
+from .sms_registers import _WRITES_BC as _WRITES_BC
 from .sms_state import ARG, Found, State
 
 BANK = 0x4000
 VECTORS = (0x0000, 0x0008, 0x0010, 0x0018, 0x0020, 0x0028, 0x0030, 0x0038, 0x0066)
 
-_LD_A_N = re.compile(r"^ld a, \$([0-9a-f]{2})$")
-_LD_A_MEM = re.compile(r"^ld a, \(\$([0-9a-f]{4})\)$")
-_LD_MEM_A = re.compile(r"^ld \(\$([0-9a-f]{4})\), a$")
-_LD_HL_NN = re.compile(r"^ld hl, \$([0-9a-f]{4})$")
-_LD_RR_NN = re.compile(r"^ld (hl|de|bc), \$([0-9a-f]{4})$")
-_LD_HLP_N = re.compile(r"^ld \(hl\), \$([0-9a-f]{2})$")
-_CP_N = re.compile(r"^cp \$([0-9a-f]{2})$")
-_AND_N = re.compile(r"^and \$([0-9a-f]{2})$")
-_SUB_N = re.compile(r"^sub \$([0-9a-f]{2})$")
-# what changes A's value (so an index bounded before isn't any more): not `or a`/`and a` (tests), not doubling it
-_CHANGES_A = re.compile(r"^(?:add a, (?!a$)|adc a,|sub |sbc a,|inc a$|dec a$|neg|cpl|or (?!a$)|xor |and (?!a$)|rra|"
-                        r"rla|rrca|srl a|sra a|rr a|rl a|rrc a|daa|ld a,|in a,|pop af|ex af)")
-_WRITES_DE = re.compile(r"^(?:ld de,|ld d,|ld e,|pop de|exx|inc de|dec de|inc d$|dec d$|inc e$|dec e$|ldi|ldd|ldir|"
-                        r"lddr|ex de, hl|rlc [de]$|rrc [de]$|rl [de]$|rr [de]$|sla [de]$|sra [de]$|srl [de]$)")
-_WRITES_BC = re.compile(r"^(?:ld bc,|ld b,|ld c,|pop bc|exx|inc bc|dec bc|inc b$|dec b$|inc c$|dec c$|djnz|ldi|ldd|"
-                        r"ldir|lddr|cpi|cpd|cpir|cpdr|ini|ind|inir|indr|outi|outd|otir|otdr|in [bc],|"
-                        r"rlc [bc]$|rrc [bc]$|rl [bc]$|rr [bc]$|sla [bc]$|sra [bc]$|srl [bc]$)")
-# what else changes A or HL (so what was known about them isn't any more)
-_WRITES_A = re.compile(r"^(?:ld a,|in a,|inc a$|dec a$|add a,|adc a,|sub |sbc a,|and |xor |or |rlca|rrca|rla|rra|"
-                       r"cpl|neg|daa|pop af|ex af|rlc a|rrc a|rl a|rr a|sla a|sra a|sll a|srl a|res \d, a|set \d, a)")
-_WRITES_HL = re.compile(r"^(?:ld hl,|ld h,|ld l,|pop hl|ex de, hl|exx|add hl,|adc hl,|sbc hl,|ex \(sp\), hl|inc h$|"
-                        r"dec h$|inc l$|dec l$|ldi|ldd|ldir|lddr|cpi|cpd|cpir|cpdr|ini|ind|inir|indr|outi|outd|otir|otdr|"
-                        r"rlc [hl]$|rrc [hl]$|rl [hl]$|rr [hl]$|sla [hl]$|sra [hl]$|srl [hl]$)")
 
 
 def resolve(target: int, here_flat: int, here_cpu: int, s1, s2, size: int, s0=0, *,
@@ -221,26 +201,19 @@ class Tracer:
                 skip = 0  # bytes after a call that the routine called reads (a correction says how many)
                 kind, target = z80.flow(text)
                 # Device writes select banks and also write WRAM. WRAM aliases never select a bank.
-                slot_reg, val = None, None
-                if m := _LD_MEM_A.match(text):
-                    slot_reg, val = int(m.group(1), 16), st.a
-                elif text == "ld (hl), a" and st.hl is not None:
-                    slot_reg, val = st.hl, st.a
-                elif (m := _LD_HLP_N.match(text)) and st.hl is not None:
-                    slot_reg, val = st.hl, int(m.group(1), 16)
-                if slot_reg is not None:
+                writes = sms_effects.memory_writes(text, {"a": st.a, "hl": st.hl, "de": st.de, "bc": st.bc})
+                source_change = sms_effects.port_may_change_source(text, st.bc)
+                if source_change or any(write.cpu is None for write in writes):
+                    f.unknown_writes.add(entry)
+                    f.switchers.pop(entry, None)
+                for slot_reg, val in ((write.cpu, write.value) for write in writes):
                     if self.mapper and slot_reg in MAPPER:
                         slot = MAPPER[slot_reg]
                         if not (slot == 1 and val == 1) and not (slot == 0 and val == 0):
                             f.slot_writes[slot] = f.slot_writes.get(slot, 0) + 1
-                        if val == ARG:
+                        if val == ARG and entry not in f.unknown_writes:
                             f.switchers.setdefault(entry, slot)
-                    st.mapping = self.model.write(st.mapping, slot_reg, val if type(val) is int else None)
-                    if (alias := wram_address(slot_reg)) is not None:
-                        if self.model.resolve(slot_reg, st.mapping).space == "wram":
-                            st.mem[alias] = val
-                        else:
-                            st.mem.pop(alias, None)
+                sms_trace_writes.apply(st, writes, source_change, self.model)
                 if text.startswith("push "):
                     st.pushed = True
                     reg = text[5:]
@@ -365,58 +338,7 @@ class Tracer:
             st.low = (st.n, n)
 
     def _registers(self, st: State, text: str) -> None:
-        """What an instruction does to what's known about A, HL, DE, BC, the stack and the flags."""
-        if m := _CP_N.match(text):
-            st.cmp = (st.n, int(m.group(1), 16) or None)
-        elif (m := _AND_N.match(text)) and ((v := int(m.group(1), 16)) + 1) & v == 0 and v:
-            st.bound = (st.n, v + 1, False)  # `and 7`: one of 8 at most (a table may be shorter)
-        elif (m := _SUB_N.match(text)) and (b := st.fresh(st.bound)) and b[1] and (lo := st.fresh(st.low)) is not None \
-                and lo >= int(m.group(1), 16):
-            k = int(m.group(1), 16)  # `cp 3 / jr c / cp 8 / jr nc / sub 3`: one of 5
-            st.bound, st.low = (st.n, b[0] - k, True), (st.n, lo - k)
-        elif _CHANGES_A.match(text):
-            st.bound = st.low = None
-        elif re.match(r"^ld [bcdehl], a$", text) and (b := st.fresh(st.bound)):
-            st.index = (st.n, *b)  # the index goes on in another register: what A does next doesn't change it
-        if text == "pop af":
-            st.a = st.stack.pop() if st.stack else None
-            return
-        if text in ("pop hl", "pop de", "pop bc"):
-            val = st.stack.pop() if st.stack else None
-            reg = text[4:]
-            st.hl, st.de, st.bc = (val if reg == "hl" else st.hl, val if reg == "de" else st.de,
-                                   val if reg == "bc" else st.bc)
-            return
-        if text == "ex de, hl":
-            st.de, st.hl = st.hl, st.de
-            return
-        if m := _LD_A_N.match(text):
-            st.a = int(m.group(1), 16)
-        elif text == "xor a":
-            st.a = 0
-        elif m := _LD_A_MEM.match(text):
-            addr = int(m.group(1), 16)
-            st.a = st.mem.get(wram_address(addr)) if self.model.resolve(addr, st.mapping).space == "wram" else None
-        elif text == "ld a, (hl)" and st.hl is not None and st.hl >= 0xC000:
-            st.a = st.mem.get(wram_address(st.hl)) if self.model.resolve(st.hl, st.mapping).space == "wram" else None
-        elif _WRITES_A.match(text):
-            st.a = None
-        if m := _LD_RR_NN.match(text):
-            value = int(m.group(2), 16)
-            setattr(st, m.group(1), value)
-            if 0x0100 <= value < 0xC000:
-                st.base = (st.n, value)
-        else:
-            if text == "inc hl" and st.hl is not None:
-                st.hl = (st.hl + 1) & 0xFFFF
-            elif text == "dec hl" and st.hl is not None:
-                st.hl = (st.hl - 1) & 0xFFFF
-            elif _WRITES_HL.match(text):
-                st.hl = None
-            if _WRITES_DE.match(text):
-                st.de = None
-            if _WRITES_BC.match(text):
-                st.bc = None
+        sms_registers.apply(st, text, self.model)
 
     # -- what a round teaches the next
 

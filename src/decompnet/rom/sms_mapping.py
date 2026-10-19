@@ -169,6 +169,14 @@ class Mapper:
             return replace(state, rom_modified=True)
         return state
 
+    def unknown_write(self, state: BusState) -> BusState:
+        """An unqualified byte store may select any register or change writable cartridge contents."""
+        if self.kind == "mapperless":
+            return state
+        return replace(state, banks=(None, None, None), registers=(None, None, None), control=None,
+                       rom_modified=state.rom_modified or (
+                           state.cartridge is not False and state.control_flag(0x80) is not False))
+
 
 def entry_state(flat: int, cpu: int, size: int) -> BusState:
     """Conditional ROM entry evidence establishes its own window, never the other pageable windows."""
