@@ -71,6 +71,17 @@ def report(project: Path, out: Path) -> dict:
 
 
 @dataclass
+class TableMismatch:
+    target: str
+    base: str
+    percent: float
+
+    def describe(self) -> str:
+        return (f"jump-table data {self.target} -> {self.base} matches {self.percent:g}%; "
+                "check every table entry, not just the first loaded word")
+
+
+@dataclass
 class FunctionDiff:
     symbol: str | None
     match_percent: float | None  # None: the function isn't in the base object (not written yet)
@@ -82,7 +93,7 @@ class FunctionDiff:
     # (original, yours) symbol names of references that point at differently named things: objdiff's rules accept
     # them, but the game's link resolves names, so they're worth fixing before the code goes upstream
     renamed: list[tuple[str, str]] = field(default_factory=list)
-    literals: list = field(default_factory=list)  # literals.Mismatch: constants that differ although the code matches
+    literals: list = field(default_factory=list)  # literals.Mismatch or TableMismatch: referenced data differs
 
     data_pairs: list[dict] = field(default_factory=list)  # objdiff's unit-level data symbol pairings
 
@@ -94,7 +105,7 @@ class FunctionDiff:
         if not self.literals:
             return ""
         listing = "\n".join(f"- {m.describe()}" for m in self.literals[:6])
-        return ("NOT A MATCH YET: every instruction matches, but constants it loads differ from the original's:\n"
+        return ("NOT A MATCH YET: every instruction matches, but constants or jump-table data differ from the original's:\n"
                 f"{listing}\nWrite the literal with the original's value (float vs double, the exact digits).")
 
     def target_asm(self) -> str:
@@ -229,5 +240,11 @@ def diff(target: Path | None, base: Path | None, symbol: str | None, cwd: Path, 
                 insns.append((at, ins["formatted"].split(None, 1)[0]))
             at += int(ins.get("size") or 4)
         wrong = literals.mismatches(target, base, symbol, insns, base_symbol=right["name"] if right else None)
+    pairs = data_pairings(data)
+    if pct is not None and float(pct) >= 100.0 and right is not None:
+        references = {_reloc_name(data.get("left"), row) for row in lrows}
+        wrong += [TableMismatch(p["target"], p["base"], p["match_percent"]) for p in pairs
+                  if p["target"] in references and re.match(r"(?i)(?:jtbl|jpt|jump_table)[_$]?", p["target"])
+                  and p["base"] is not None and p["match_percent"] is not None and p["match_percent"] < 100.0]
     return FunctionDiff(symbol, float(pct) if pct is not None else None, rows, int(left.get("size", 0)), scores, order, ops,
-                        renamed, wrong, data_pairings(data))
+                        renamed, wrong, pairs)
