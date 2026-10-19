@@ -8,6 +8,8 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
+from .store_ids import upgrade as upgrade_function_ids
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agents(
   id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL, owner TEXT, token_hash TEXT UNIQUE NOT NULL,
@@ -19,7 +21,7 @@ CREATE TABLE IF NOT EXISTS context_versions(
   project_id INTEGER, version INTEGER, header TEXT, agent_id INTEGER, message TEXT, created_at REAL,
   PRIMARY KEY(project_id, version));
 CREATE TABLE IF NOT EXISTS functions(
-  id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, name TEXT NOT NULL, size INTEGER, n_insns INTEGER,
+  id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER NOT NULL, name TEXT NOT NULL, size INTEGER, n_insns INTEGER,
   target BLOB, relocs TEXT, asm TEXT, seed TEXT,
   status TEXT NOT NULL DEFAULT 'open',
   best_score INTEGER, best_source TEXT, best_agent_id INTEGER,
@@ -98,6 +100,7 @@ class Store:
             cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
             if column not in cols:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        upgrade_function_ids(self.conn)
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_attempts_agent_time ON attempts(agent_id, created_at)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_functions_unit ON functions(project_id, unit, status)")
         # the progress the GUI asks for every second (totals, the map's "anything new?"), answered from this narrow
