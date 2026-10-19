@@ -82,6 +82,19 @@ def test_a_table_of_jumps_is_read_as_code():
     assert 0x0400 in found and 0x0420 in found
 
 
+def test_a_conditional_branch_keeps_the_table_base_and_index_bound_distinct():
+    rom = make_rom(size=SIZE, code={
+        0x0000: bytes.fromhex("cd0002" "18fe"),
+        # Bound the index, compute a table address, then branch over a return to read the handler.
+        0x0200: bytes.fromhex("3a00c0" "fe03d0" "875f1600" "210005" "19" "2801" "c9" "7e23666f" "e9"),
+        0x0500: bytes.fromhex("0004" "2004" "4004" "6004"),
+        **HANDLERS, 0x0460: bytes.fromhex("3e04c9"),
+    })
+    found = sms_trace.Tracer(rom).follow({0: (0, "vector")})
+    assert all(found.starts[at][1] == "table" for at in HANDLERS)
+    assert 0x0460 not in found.starts  # a valid-looking pointer immediately after the bounded table
+
+
 def test_slot_0_is_paged_above_its_first_kib():
     found = starts({0x0100: bytes.fromhex("3e04" "32fdff" "cd0010" "18fe"),  # ld a,4 · ld ($fffd),a · call $1000
                     0x11000: bytes.fromhex("3e04c9")})  # bank 4's $1000

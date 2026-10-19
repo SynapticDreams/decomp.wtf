@@ -32,13 +32,12 @@ from __future__ import annotations
 
 import bisect
 import re
-from dataclasses import dataclass, field
 
 from . import z80
+from .sms_state import ARG, Found, State
 
 BANK = 0x4000
 VECTORS = (0x0000, 0x0008, 0x0010, 0x0018, 0x0020, 0x0028, 0x0030, 0x0038, 0x0066)
-ARG = "arg"  # A as the function was entered with it: a function that maps it is a bank switcher
 
 _LD_A_N = re.compile(r"^ld a, \$([0-9a-f]{2})$")
 _LD_A_MEM = re.compile(r"^ld a, \(\$([0-9a-f]{4})\)$")
@@ -53,7 +52,6 @@ _SUB_N = re.compile(r"^sub \$([0-9a-f]{2})$")
 _CHANGES_A = re.compile(r"^(?:add a, (?!a$)|adc a,|sub |sbc a,|inc a$|dec a$|neg|cpl|or (?!a$)|xor |and (?!a$)|rra|"
                         r"rla|rrca|srl a|sra a|rr a|rl a|rrc a|daa|ld a,|in a,|pop af|ex af)")
 MAPPER = {0xFFFD: 0, 0xFFFE: 1, 0xFFFF: 2}  # the Sega mapper's bank registers -> the slot each pages
-FRESH = 16  # instructions within which a bound or a table base belongs to the dispatch that follows it
 _WRITES_DE = re.compile(r"^(?:ld de,|ld d,|ld e,|pop de|exx|inc de|dec de|inc d$|dec d$|inc e$|dec e$|ldi|ldd|ldir|"
                         r"lddr|ex de, hl|rlc [de]$|rrc [de]$|rl [de]$|rr [de]$|sla [de]$|sra [de]$|srl [de]$)")
 _WRITES_BC = re.compile(r"^(?:ld bc,|ld b,|ld c,|pop bc|exx|inc bc|dec bc|inc b$|dec b$|inc c$|dec c$|djnz|ldi|ldd|"
@@ -98,57 +96,6 @@ def resolve(target: int, here_flat: int, here_cpu: int, s1, s2, size: int, s0=0)
         return None
     flat = bank * BANK + (target & (BANK - 1))
     return flat if flat < size else None
-
-
-@dataclass
-class State:
-    s1: object
-    s2: object
-    a: object = None   # an int, ARG, or None
-    hl: int | None = None
-    s0: object = 0  # slot 0's bank above 0x0400 (0 unless the code pages it: 0xFFFD)
-    de: int | None = None
-    bc: int | None = None
-    mem: dict = field(default_factory=dict)  # RAM this function stored a known value to (a bank kept in RAM)
-    stack: list = field(default_factory=list)  # what it pushed: values (an int, ARG or None)
-    n: int = 0  # instructions so far on this path
-    cmp: tuple | None = None  # (n, the number A was just compared with)
-    low: tuple | None = None  # (n, the least A can be here: `cp 5 / jr c` passed)
-    bound: tuple | None = None  # (n, how many values A can have here, exactly so: `cp 5 / jr nc` (True) or at most:
-    # `and $7f` (False)): an index
-    index: tuple | None = None  # the same, for the index once A is copied into another register (`ld e, a`)
-    base: tuple | None = None  # (n, the last ROM address loaded into a register pair: a table to index)
-
-    def copy(self) -> State:
-        return State(self.s1, self.s2, self.a, self.hl, self.s0, self.de, self.bc, dict(self.mem), list(self.stack),
-                     self.n, self.cmp, self.low, self.bound, self.base, self.index)
-
-    def fresh(self, mark: tuple | None):
-        """What a comparison, a bound or a table base says, while it still belongs to what follows it."""
-        if mark is None or self.n - mark[0] > FRESH:
-            return None
-        return mark[1] if len(mark) == 2 else mark[1:]
-
-
-@dataclass
-class Found:
-    starts: dict[int, tuple[int, str]] = field(default_factory=dict)  # flat -> (cpu it runs at, how it was found)
-    entered: dict[int, set] = field(default_factory=dict)  # flat -> every (s1, s2) it was entered with
-    returns: set[int] = field(default_factory=set)  # functions a path of which reaches a return
-    takes_return: set[int] = field(default_factory=set)  # functions that pop their return address (a table follows)
-    switchers: dict[int, int] = field(default_factory=dict)  # function -> the slot it maps the A it's given into
-    dispatchers: set[int] = field(default_factory=set)  # functions that jump through HL to an address they read
-    # calls and tail jumps made with a known address in HL: (from flat, from cpu, HL, the slots then, to flat, the
-    # index's bound or None): a table, when what they go to is a dispatcher
-    with_hl: list[tuple[int, int, int, tuple, int, int | None]] = field(default_factory=list)
-    # tables a function indexes itself before `jp (hl)`: (from flat, from cpu, table, the slots then, bound or None)
-    indexed: list[tuple[int, int, int, tuple, int | None]] = field(default_factory=list)
-    tails: dict[int, set] = field(default_factory=dict)  # function -> where its tail jumps go (None: not known)
-    code: dict[int, int] = field(default_factory=dict)  # every instruction followed: flat -> its length
-    jumps: list[tuple[int, int, int, tuple]] = field(default_factory=list)  # (function, to flat, to cpu, slots)
-    anchors: set[int] = field(default_factory=set)  # starts reached by something other than a jump (a call...)
-    slot_writes: dict[int, int] = field(default_factory=dict)  # 1 | 2 -> mapper writes seen that pick that slot's bank
-    bank_base: dict[int, int] = field(default_factory=dict)  # bank -> the CPU address its code was found running at
 
 
 def _decode(data: bytes, flat: int, cpu: int) -> tuple[str, int]:
