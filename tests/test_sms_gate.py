@@ -6,10 +6,21 @@ import pytest
 from tools import sms_gate
 
 
-def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True, revalidation=True, archive=True, dependencies=True, undo=True, migration=True, inspection=True):
+def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True, revalidation=True, archive=True, dependencies=True, undo=True, migration=True, inspection=True, project_archive=True, legacy=True):
     suite = ET.Element("testsuite")
     modules = sms_gate.TESTS[:-1] if missing_module else sms_gate.TESTS
     for name in modules:
+        if name.endswith('test_sms_project_archive.py') and project_archive:
+            for platform in ('sms', 'gg'):
+                ET.SubElement(suite, 'testcase', classname='tests.test_sms_project_archive', name=
+                    f'test_project_note_context_and_binary_dependencies_are_recoverable_after_new_work_blocks_undo[{platform}]')
+            continue
+        if name.endswith('test_sms_resplit_legacy_integration.py') and legacy:
+            for platform in ('sms', 'gg'):
+                for kind in ('c', 'asm'):
+                    ET.SubElement(suite, 'testcase', classname='tests.test_sms_resplit_legacy_integration', name=
+                        f'test_old_schema_source_is_migrated_revalidated_and_restored_without_losing_work[{platform}-{kind}]')
+            continue
         if name.endswith('test_sms_resplit_inspection.py') and inspection:
             for platform in ('sms', 'gg'):
                 for migrate in ('False', 'True'):
@@ -93,7 +104,7 @@ def test_gate_rejects_an_install_manifest_without_binaries(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("kwargs", [{"skipped": True}, {"failed": True}, {"missing_module": True}, {"gg": False},
-                                    {"mapper_matrix": False}, {"recovery": False}, {"revalidation": False}, {"archive": False}, {"dependencies": False}, {"undo": False}, {"migration": False}, {"inspection": False}])
+                                    {"mapper_matrix": False}, {"recovery": False}, {"revalidation": False}, {"archive": False}, {"dependencies": False}, {"undo": False}, {"migration": False}, {"inspection": False}, {"project_archive": False}, {"legacy": False}])
 def test_gate_rejects_incomplete_or_unsuccessful_execution(tmp_path, kwargs):
     with pytest.raises(ValueError):
         sms_gate.verify_report(report(tmp_path, **kwargs))
@@ -106,7 +117,7 @@ def test_gate_requires_a_valid_report_with_executed_tests(tmp_path):
     path.write_text("<testsuite />")
     with pytest.raises(ValueError, match="executed, passing tests"):
         sms_gate.verify_report(path)
-    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 34
+    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 38
 
 
 def test_gate_rejects_gbdk_from_path_without_the_pinned_install(monkeypatch):
