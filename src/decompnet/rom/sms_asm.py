@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import re
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -195,10 +196,16 @@ def _labels(r: Routine, labels: dict[int, str], delta: int) -> str:
 
 
 def _assemble(tmp: Path, r: Routine, lines: list[str], symbols: dict[str, int], at: int, hw_moved: bool,
-              labels: dict[int, str] | None = None, delta: int = 0) -> bytes:
+              labels: dict[int, str] | None = None, delta: int = 0, deadline: float | None = None) -> bytes:
     """The text assembled at CPU address `at` in the routine's bank: the bytes of its section. `labels`: the
     project's functions to define as labels (ROM offset -> name), moved by `delta`."""
     from .gb_build import _run
+
+    def run(argv):
+        remaining = 30 if deadline is None else min(30, deadline - time.monotonic())
+        if remaining <= 0:
+            raise AsmError("source revalidation exceeded its time budget")
+        return _run(argv, tmp, timeout=remaining)
 
     asm, link = _tools()
     head = _wrapper(r, symbols, at, hw_moved)
@@ -208,13 +215,13 @@ def _assemble(tmp: Path, r: Routine, lines: list[str], symbols: dict[str, int], 
     (tmp / "link.txt").write_text("[objects]\nroutine.o\nnames.o\n", encoding="utf-8")
     for f in ("routine.o", "names.o", "out.sms", "out.sym"):
         (tmp / f).unlink(missing_ok=True)
-    rc, log = _run([asm, "-o", "routine.o", "routine.asm"], tmp, timeout=30)
+    rc, log = run([asm, "-o", "routine.o", "routine.asm"])
     if rc != 0:
         raise AsmError(_clean(log, offset))
-    rc, log = _run([asm, "-o", "names.o", "names.asm"], tmp, timeout=30)
+    rc, log = run([asm, "-o", "names.o", "names.asm"])
     if rc != 0:
         raise AsmError(_clean(log, offset))
-    rc, log = _run([link, "-S", "-r", "link.txt", "out.sms"], tmp, timeout=30)
+    rc, log = run([link, "-S", "-r", "link.txt", "out.sms"])
     if rc != 0:
         raise AsmError(_clean(log, offset))
     size = 0
@@ -280,8 +287,9 @@ def _hardware(role: str, value: int, mapper: str = "sega") -> bool:
     return role == "port" or value in sms_hw.mapper_names(mapper, write=role == "write") or (role == "write" and value < 0xC000)
 
 
-def judge(r: Routine, text: str, tmp_root: Path | None = None) -> Verdict:
+def judge(r: Routine, text: str, tmp_root: Path | None = None, *, timeout: float | None = None) -> Verdict:
     """Whether `text` documents the routine (see the module's six checks)."""
+    deadline = None if timeout is None else time.monotonic() + timeout
     items, labels, header, problems = parse(text)
     globals_ = [name for _n, name in labels if re.fullmatch(_IDENT, name) and name != "__"]
     label = globals_[0] if globals_ else ""
@@ -311,7 +319,7 @@ def judge(r: Routine, text: str, tmp_root: Path | None = None) -> Verdict:
     with tempfile.TemporaryDirectory(prefix="sms-asm-", dir=tmp_root) as tmp:
         tmp = Path(tmp)
         try:
-            got = _assemble(tmp, r, lines, symbols, r.cpu, hw_moved=False, labels=placed)
+            got = _assemble(tmp, r, lines, symbols, r.cpu, hw_moved=False, labels=placed, deadline=deadline)
         except AsmError as e:
             return Verdict(False, 0, 0, [f"1. it doesn't assemble: {e}"], label)
         same = next((k for k, (a, b) in enumerate(zip(got, r.code)) if a != b), min(len(got), len(r.code)))
@@ -340,8 +348,8 @@ def judge(r: Routine, text: str, tmp_root: Path | None = None) -> Verdict:
                 moved_lines[it.line - 1] = f".DEFINE {name} ${_moved(value, delta, r.mapper) & 0xFFFF:04X}"
         try:
             shifted = _assemble(tmp, r, moved_lines, {n: _moved(v, delta, r.mapper) for n, v in symbols.items()}, r.cpu + delta,
-                                hw_moved=False, labels=placed, delta=delta)
-            hw_shifted = _assemble(tmp, r, lines, symbols, r.cpu, hw_moved=True, labels=placed)
+                                hw_moved=False, labels=placed, delta=delta, deadline=deadline)
+            hw_shifted = _assemble(tmp, r, lines, symbols, r.cpu, hw_moved=True, labels=placed, deadline=deadline)
         except AsmError as e:
             return Verdict(False, len(r.code), len(got), [f"2. it doesn't assemble moved (the shift test): {e}"], label)
     problems += _shift_checks(r, layout, shifted, hw_shifted)

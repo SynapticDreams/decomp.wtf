@@ -12,7 +12,7 @@ from pathlib import Path
 
 from ..network import NetworkError
 from ..rom.symbols import AUTO_NAME
-from . import banked_resplit_checks as checks
+from . import banked_resplit_checks as checks, sms_resplit_revalidate as revalidate
 from .banked_resplit_changes import describe, plan_digest
 from . import banked_resplit_history as history, banked_resplit_state as snapshots
 from .banked_import import BANKED_TOOLS, segments, with_edges
@@ -21,7 +21,7 @@ from .banked_import import BANKED_TOOLS, segments, with_edges
 def resplit(net, slug: str, apply: bool = False, log=print, *, expected_plan: str | None = None) -> dict:
     """Split a Game Boy, Master System or NES game again with this version's splitter, keeping the work done on
     it: a function whose start, address and bytes don't change keeps its row (name, status, attempts, notes);
-    a matched function is never removed (new functions that would overlap it are left out); notes on a function
+    SMS/GG changed accepted source is revalidated; other lanes protect matched ranges. Notes on a function
     that goes move to the new function that covers its start (else to the project). Without `apply`, only says
     what would change."""
     from ..rom import gb, nes, sms
@@ -64,9 +64,9 @@ def resplit(net, slug: str, apply: bool = False, log=print, *, expected_plan: st
         else:
             fresh.append(f)
     held = [(r["rom_offset"], r["rom_offset"] + (r["size"] or 0)) for r in old
-            if r["status"] == "matched" and r["id"] not in kept and r["rom_offset"] is not None]
+            if before is None and r["status"] == "matched" and r["id"] not in kept and r["rom_offset"] is not None]
     fresh = [f for f in fresh if not any(lo < f.rom + len(f.code) and f.rom < hi for lo, hi in held)]
-    gone = [r for r in old if r["id"] not in kept and r["status"] != "matched"]
+    gone = [r for r in old if r["id"] not in kept and (before is not None or r["status"] != "matched")]
     if before is not None:
         noted = {row["function_id"] for row in before["tables"]["notes"]} & {row["id"] for row in gone}
     else:
@@ -74,7 +74,7 @@ def resplit(net, slug: str, apply: bool = False, log=print, *, expected_plan: st
     regions = [r for r in report.get("regions") or []
                if not any(lo < r[0] + r[1] and r[0] < hi for lo, hi in held)]  # a matched function keeps its bytes
     out = {"before": len(old), "after": len(kept) + len(held) + len(fresh), "kept": len(kept),
-           "matched_kept": len([r for r in old if r["status"] == "matched"]), "added": len(fresh),
+           "matched_kept": len([r for r in old if r["status"] == "matched" and (before is None or r["id"] in kept)]), "added": len(fresh),
            "removed": len(gone), "notes_moved": len(noted), "bank_base": report.get("bank_base", {}),
            "analysis_exhausted": report.get("analysis_exhausted", []),
            "analysis_unresolved": report.get("analysis_unresolved", []),
@@ -83,23 +83,33 @@ def resplit(net, slug: str, apply: bool = False, log=print, *, expected_plan: st
                                          proj["id"])["n"],
            "data_after": sum(r[1] for r in regions),
            "bytes_before": sum(r["size"] or 0 for r in old),
-           "bytes_after": sum((r["size"] or 0) for r in old if r["id"] in kept or r["status"] == "matched")
+           "bytes_after": sum((r["size"] or 0) for r in old if r["id"] in kept or (before is None and r["status"] == "matched"))
            + sum(f.size for f in fresh),
            "corrections": net.store.one("SELECT COUNT(*) AS n FROM corrections WHERE project_id=? AND undone_at IS "
                                          "NULL", proj["id"])["n"]}
     if before is not None:
         out.update(describe(before, fns, kept))
+        out.update(revalidate.preview(before, fns, regions))
         out["plan"] = plan_digest(before_digest, fns, report)
         if apply and expected_plan is not None and expected_plan != out["plan"]:
             raise NetworkError("resplit preview is stale; preview again before applying")
+    proposed_names = revalidate.names_for(old, fns, kept) if before is not None else {}
     if not apply:
         return out
-    if before is not None and any(row["function_id"] in {r["id"] for r in gone} and row["expires_at"] > time.time()
+    changed_ids = {r['id'] for r in gone}
+    if before is not None:
+        changed_ids.update(row['id'] for row in revalidate.affected(before, fns, regions))
+    if before is not None and any(row["function_id"] in changed_ids and row["expires_at"] > time.time()
                                   for row in before["tables"]["claims"]):
         raise NetworkError("release claims on changed functions before applying this resplit")
+    results = revalidate.prepare(before, fns, regions, proposed_names) if before is not None else {}
+    if before is not None:
+        out.update(revalidate.report(results))
+        out['matched_kept'] -= sum(row['status'] == 'matched' and row['id'] in kept and
+                                  results[row['id']].state != 'passed' for row in old if row['id'] in results)
     spans = [(f.rom, f.rom + len(f.code), f) for f in fresh] + [
-        (r["rom_offset"], r["rom_offset"] + (r["size"] or 0), r) for r in old if r["id"] in kept or r["status"] == "matched"]
-    names = {r["name"] for r in old if r["id"] in kept or r["status"] == "matched"}
+        (r["rom_offset"], r["rom_offset"] + (r["size"] or 0), r) for r in old if r["id"] in kept or (before is None and r["status"] == "matched")]
+    names = {r["name"] for r in old if r["id"] in kept or (before is None and r["status"] == "matched")}
     renamed = {r["rom_offset"]: r["name"] for r in gone if not AUTO_NAME.match(r["name"])}
     # matched C (and documented assembly) calls functions by name: one that goes keeps its name as a symbol (its
     # address is still the routine's), or those matches would stop compiling
@@ -123,7 +133,7 @@ def resplit(net, slug: str, apply: bool = False, log=print, *, expected_plan: st
                 db.execute("DELETE FROM symbols WHERE project_id=? AND name=?", (proj["id"], r["name"]))
         new_ids = {}
         for f in fresh:
-            name = renamed.get(f.rom, f.name)  # a name someone gave the function that started here stays
+            name = proposed_names.get(f.rom, renamed.get(f.rom, f.name))  # a name someone gave the function that started here stays
             if name in names:
                 name = f"{f.name}_{f.rom:06x}" if f.name in names else f.name
             names.add(name)
@@ -158,11 +168,13 @@ def resplit(net, slug: str, apply: bool = False, log=print, *, expected_plan: st
         checks.verify_input(arch, rom_path, cfg)  # failure rolls back preceding function/region updates
         db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
         if before is not None:
+            revalidate.apply(db, old, new_ids, kept, results, before_digest)
             history.mark_sms(db, proj["id"])
             checks.verify_input(arch, rom_path, cfg)
             summary = {key: out[key] for key in ("before", "after", "kept", "added", "removed")}
             removed_ids = {row["id"] for row in gone}
             summary["archived_attempts"] = sum(row["function_id"] in removed_ids for row in before["tables"]["attempts"])
+            summary['source_revalidation'] = out['source_revalidation']
             summary["archived_documented"] = sum(row["status"] == "documented" for row in gone)
             after = history.capture(net, net._project(slug))
             if after["inputs"] != before["inputs"]:
