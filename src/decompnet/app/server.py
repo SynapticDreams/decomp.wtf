@@ -1129,7 +1129,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             if (proj["arch"] or "") not in ASM_ARCHS or net.fork_slug(slug):
                 return fail(ValueError("the assembly track is for Game Boy, Master System, Game Gear and NES projects"))
             if not agents.Manager._asm_left(net, proj):
-                return fail(ValueError("Nothing to start on: every hand-written routine is documented or being worked on."))
+                return fail(ValueError("Nothing to start on: assembly routines are documented, deferred, or being worked on."))
             options["track"] = "asm"
             options.pop("focus", None)
         options.setdefault("per_session", settings.data.get("per_session", agents.PER_SESSION))

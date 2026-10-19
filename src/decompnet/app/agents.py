@@ -1054,7 +1054,7 @@ class Manager:
                     s.stop.wait(30)
                     continue
             elif not pin and self._left(s.slug, track) == 0:
-                s.push("info", "nothing left on the assembly track here 🎉" if track else "nothing left to decompile here 🎉")
+                s.push("info", "no eligible assembly work here; deferred routines still need attention" if track else "nothing left to decompile here 🎉")
                 break
             if focus and self.net.strategy_left(s.slug, focus[0], agent.id) == 0:
                 s.push("info", f"stopping: {focus[1]}")

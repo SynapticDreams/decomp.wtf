@@ -218,3 +218,13 @@ def test_pinned_assembly_cannot_bypass_its_target_through_direct_tools(work):
     with pytest.raises(NetworkError, match='works on First only'):
         net.document_function(agent, 'authored', 'Second', 'Second: ret')
     assert not net.store.one('SELECT 1 FROM attempts')
+
+
+def test_a_queue_with_only_deferred_work_does_not_report_it_as_documented(work):
+    net, agent, _ = work
+    net.document_function(agent, 'authored', 'First', 'First: ret')
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET status='documented' WHERE name='Second'")
+    message = net.claim_asm(agent, 'authored')
+    assert 'Nothing left on the assembly track' in message and 'deferred' in message
+    assert agents.Manager._asm_left(net, net._project('authored')) == 0

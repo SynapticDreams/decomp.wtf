@@ -2136,7 +2136,7 @@ class RomNetwork(Network):
             asked = self._function(function, proj["slug"])["name"] if function else None
             name = link.claim(agent, asked, "easiest", track="asm")
             if name is None:
-                return "Nothing left on the assembly track in this room: every hand-written routine is documented or being worked on. 🎉"
+                return "Nothing left on the assembly track in this room: routines are documented, deferred, or being worked on. Review deferred blockers before retrying."
             link.sync()
             if not self.asm_track(self._function(name, proj["slug"])):  # (a host without the track hands out C)
                 try:
@@ -2148,7 +2148,7 @@ class RomNetwork(Network):
             function = name
         fn = self.claim_asm_row(agent, proj["slug"], function)
         if fn is None:
-            return f"Nothing left on the assembly track in {proj['slug']}: every hand-written routine is documented or being worked on. 🎉"
+            return f"Nothing left on the assembly track in {proj['slug']}: routines are documented, deferred, or being worked on. Review deferred blockers before retrying."
         return self._brief(fn, agent, header="CLAIMED")
 
     def claim_asm_row(self, agent: Agent, project: str, function: str | None = None):
