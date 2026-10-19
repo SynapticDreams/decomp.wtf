@@ -54,7 +54,7 @@ def test_mapping_blocker_preserves_source_and_stops_automatic_reclaims(work):
         net.document_function(agent, 'authored', 'First', 'First: ret')
 
 
-@pytest.mark.parametrize('problem', ['2. use a project name', '3. target names the wrong bank', '4. instructions must stay instructions'])
+@pytest.mark.parametrize('problem', ['2. use a project name', '3. target names the wrong bank', '3. pendingHelper is in the wrong bank', '4. instructions must stay instructions'])
 def test_source_errors_are_not_automatically_deferred(work, problem):
     net, agent, verdict = work
     verdict.problems = [problem]

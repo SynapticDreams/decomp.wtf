@@ -70,6 +70,9 @@ def test_compile_error_and_rejection_are_reported(net, agents):
 
 
 def test_claims_are_exclusive_and_scheduler_spreads_work(net, agents):
+    # Exercise scheduling against a deliberate ordering, independent of the host compiler's code generation.
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET n_insns=CASE WHEN name='abs_s32' THEN 1 ELSE 100 END")
     alice, bob = agents
     a = net.claim(alice)
     b = net.claim(bob)

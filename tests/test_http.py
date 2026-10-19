@@ -72,7 +72,7 @@ def test_agent_session_over_http(server):
                 assert "work" in prompts
 
                 assert "demo" in text(await client.call_tool("list_projects", {}))
-                claimed = text(await client.call_tool("claim_function", {}))
+                claimed = text(await client.call_tool("claim_function", {"function": "abs_s32"}))
                 assert "CLAIMED: demo/abs_s32" in claimed
                 assert "Entity" in text(await client.call_tool("get_context", {}))
                 res = await client.call_tool("compile_and_diff",

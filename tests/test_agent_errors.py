@@ -25,11 +25,12 @@ def test_an_empty_account_stops_the_helper_and_ordinary_failures_do_not():
 
 
 def test_a_used_up_plan_waits_for_the_reset_the_agent_names():
-    now = datetime(2026, 10, 18, 15, 0, tzinfo=ZoneInfo("America/Cordoba")).timestamp()
-    hit = plan_limit("You've hit your session limit · resets 6pm (America/Cordoba)", now)
+    # Primary IANA zones are available even when minimal tzdata omits legacy aliases.
+    now = datetime(2026, 10, 18, 15, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+    hit = plan_limit("You've hit your session limit · resets 6pm (America/New_York)", now)
     assert isinstance(hit, PlanLimit) and "resets 6pm" in hit.said
     assert hit.until == now + 3 * 3600 + 60  # 6pm there, and a minute to be sure
-    later = plan_limit("You've hit your session limit · resets 2am (America/Cordoba)", now)
+    later = plan_limit("You've hit your session limit · resets 2am (America/New_York)", now)
     assert later.until == now + 11 * 3600 + 60  # tomorrow's
     codex = plan_limit("You've hit your usage limit. Upgrade to Pro, or try again in 2 hours 13 minutes.", now)
     assert codex.until == now + 2 * 3600 + 13 * 60 + 60

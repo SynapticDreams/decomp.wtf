@@ -74,7 +74,7 @@ class AssemblyWork:
             failures = [p for p in raw if p.startswith(f"{number}. ")]
             if number == 1 and not exact:
                 failures = failures or raw or ["The assembled bytes differ from the target."]
-            pending = number == 3 and failures and all("pending" in p or "unresolved" in p for p in failures)
+            pending = number == 3 and failures and all("keep the reference pending" in p for p in failures)
             state = "pending" if pending else "failed" if failures else "passed" if verdict.ok or reached or (number == 1 and exact) else "not_checked"
             checks.append({"number": number, "label": label, "state": state, "problems": [p[:2000] for p in failures[:12]], "truncated": len(failures) > 12})
         return {"context": self.context(proj, fn, routine), "source": digest(source), "at": time.time(),
