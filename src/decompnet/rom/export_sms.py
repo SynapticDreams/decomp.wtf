@@ -136,7 +136,7 @@ def export_sms(net, slug: str, out: Path, log=print, *, strict_documented=False)
     return {"path": str(out), "identical": identical, "sms_profile": profile,
             "exact_original_intent": profile["exact_original_intent"], "verification": verification,
             "matched": matched, "functions": len(rows),
-            "documented": sum(row.get("inserted") is True for row in source_rows) if not verification["errors"] else 0,
+            "documented": sum(row.get("inserted") is True for row in source_rows) if verification["receipt_valid"] else 0,
             "left_out": left_out, "fallback": [], "log": (proc.stdout + proc.stderr)[-3000:]}
 
 

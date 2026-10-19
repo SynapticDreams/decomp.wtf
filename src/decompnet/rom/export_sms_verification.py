@@ -7,7 +7,7 @@ MAX_REPORT = 16 * 1024 * 1024
 
 
 def verify(out, image, expected, returncode, platform, *, required=False):
-    errors, report = [], None
+    errors, report, receipt_valid = [], None, False
     try:
         path = out / 'build' / 'verification.json'
         with path.open('rb') as stream:
@@ -49,6 +49,7 @@ def verify(out, image, expected, returncode, platform, *, required=False):
         expected_pass = equal and not (required and any(not row['inserted'] for row in rows))
         if type(report.get('passed')) is not bool or report['passed'] is not expected_pass:
             raise ValueError('build_policy_status_differs')
+        receipt_valid = True
         if not equal:
             errors.append('image_differs')
         if required and any(not row['inserted'] for row in rows):
@@ -59,5 +60,6 @@ def verify(out, image, expected, returncode, platform, *, required=False):
     if returncode != 0:
         errors.append('build_process_failed')
     passed = not errors
-    return {'version': 1, 'passed': passed, 'errors': errors, 'build': report if isinstance(report, dict) else None,
+    return {'version': 1, 'passed': passed, 'receipt_valid': receipt_valid, 'errors': errors,
+            'build': report if isinstance(report, dict) else None,
             'scope': 'independent input/output artifact and process check; source receipt is build-reported'}

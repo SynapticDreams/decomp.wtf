@@ -136,6 +136,20 @@ def test_stored_crlf_source_and_emitted_text_use_the_same_declared_hash_normaliz
 
 
 @tools
+def test_strict_failure_keeps_actual_insertion_counts_for_other_source(exported):
+    net, slug, _result, out = exported
+    with net.store.tx() as db:
+        db.execute("UPDATE functions SET status='documented',matched_source=? WHERE project_id=? AND rom_offset=?",
+                   ('; Authored deliberately wrong reconstruction.\nWrongLeaf:\n    ret\n', net.project_row(slug)['id'], 0x14000))
+    result = exporter.export_sms(net, slug, out, log=lambda *_: None, strict_documented=True)
+    assert not result['identical'] and result['documented'] == 1
+    assert result['verification']['receipt_valid'] and result['verification']['build']['image']['equal']
+    rows = result['verification']['build']['documented']['routines']
+    assert len(rows) == 2 and sum(row['inserted'] for row in rows) == 1
+    assert len(result['left_out']) == 1
+
+
+@tools
 @pytest.mark.parametrize('failure', ['missing', 'wrong', 'tool'])
 def test_failed_standalone_run_replaces_old_success_receipts_and_artifacts(exported, failure):
     net, slug, _result, out = exported
