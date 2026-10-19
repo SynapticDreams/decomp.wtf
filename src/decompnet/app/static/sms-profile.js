@@ -1,7 +1,9 @@
 "use strict";
 /* A small project-settings component. Supplied metadata is rendered as text. */
 window.SMSProfileUI = {
-  render(panel, view, save, inspect) {
+  render(panel, view, save, inspect, migration) {
+    const token = Symbol();
+    panel.profileToken = token;
     panel.replaceChildren();
     if (!view) return;
     const body = document.createElement("div");
@@ -77,5 +79,12 @@ window.SMSProfileUI = {
     };
     body.append(label, button);
     panel.append(body);
+    if (migration) window.SMSProfileMigrationUI.render(body,
+      () => ({ mapper: mapper.value, variant: variant.value, reason: reason.value }), migration.run,
+      () => panel.profileToken === token && panel.isConnected && !panel.hidden && migration.current(),
+      migration.applied, (busy, commit) => {
+        button.disabled = busy;
+        if (commit) mapper.disabled = variant.disabled = reason.disabled = busy;
+      });
   }
 };

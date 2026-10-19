@@ -32,6 +32,11 @@ window.ResplitHistoryUI = {
             `${summary.removed} removed; ${summary.archived_attempts} attempts and ` +
             `${summary.archived_documented} documented routines retained in history. ` +
             (item.undone_at ? "Undone." : "");
+          if (summary.profile_transition) {
+            const change = summary.profile_transition;
+            text.textContent += ` Profile: ${change.before.mapper} → ${change.proposed.mapper}; ` +
+              `${change.proposed.variant}. `;
+          }
           row.append(text);
           if (item.id === report.latest_active_id) {
             const button = document.createElement("button");

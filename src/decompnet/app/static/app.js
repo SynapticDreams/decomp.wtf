@@ -3016,15 +3016,36 @@ async function renderProjectSettings() {
   if (!ov) return;
   const fork = ov.kind === "fork";
   const smsProfile = $("smsProfilePanel");
+  const profileSlug = S.slug;
   smsProfile.hidden = !ov.sms_profile || fork || ov.room?.role === "guest";
   if (!smsProfile.hidden) window.SMSProfileUI.render(smsProfile, ov.sms_profile, async (choice) => {
     try {
-      await api("/api/sms/profile", { method: "POST", body: { slug: S.slug, ...choice } });
-      S.ov = await api(`/api/project?slug=${encodeURIComponent(S.slug)}`);
+      if (S.slug !== profileSlug) return;
+      await api("/api/sms/profile", { method: "POST", body: { slug: profileSlug, ...choice } });
+      const overview = await api(`/api/project?slug=${encodeURIComponent(profileSlug)}`);
+      if (S.slug !== profileSlug) return;
+      S.ov = overview;
       renderProjectSettings();
       toast("Cartridge profile saved.");
     } catch (e) { toast(esc(e.message), "err"); }
-  }, () => api(`/api/sms/profile?slug=${encodeURIComponent(S.slug)}`));
+  }, () => api(`/api/sms/profile?slug=${encodeURIComponent(profileSlug)}`), {
+    current: () => S.slug === profileSlug,
+    run: async (profile, apply, plan, log) => {
+      if (S.slug !== profileSlug) throw new Error("Project changed; open its settings again.");
+      const { job } = await api("/api/resplit", { method: "POST", body: { slug: profileSlug, profile, apply, plan } });
+      return followJob(job, log);
+    },
+    applied: async () => {
+      const overview = await api(`/api/project?slug=${encodeURIComponent(profileSlug)}`);
+      if (S.slug !== profileSlug) return;
+      S.ov = overview;
+      S.resplitPlan = null;
+      $("resplitApply").hidden = true;
+      renderProjectSettings();
+      poll(false);
+      toast("Cartridge profile and split applied. Saved work is available in resplit history.");
+    }
+  });
   $("compilerPanel").hidden = fork;
   $("compilerDiagnostic").hidden = fork || !["psx", "ps2"].includes(ov.platform);
   if (!fork) {

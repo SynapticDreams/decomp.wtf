@@ -30,7 +30,7 @@ def names_for(old, candidates, kept):
     return names
 
 
-def affected(before, candidates, regions):
+def affected(before, candidates, regions, *, force=False):
     old = before['tables']['functions']
     def signature(offset, cpu, code, asm, refs, edges):
         return offset, cpu, code, asm, json.dumps(refs or [], sort_keys=True), json.dumps(edges or {}, sort_keys=True)
@@ -40,7 +40,7 @@ def affected(before, candidates, regions):
     proposed = {signature(f.rom, f.vram, f.code, f.asm, f.refs,
                           {str(k): v for k, v in (getattr(f, 'edges', None) or {}).items()}) for f in candidates}
     data = {(r['rom_offset'], r['size'], r['kind']) for r in before['tables']['data_regions']}
-    if layout == proposed and data == {(lo, count, kind) for lo, count, kind, *_ in regions}:
+    if not force and layout == proposed and data == {(lo, count, kind) for lo, count, kind, *_ in regions}:
         cfg = json.loads(before['project']['config'])
         return [row for row in old if row['status'] == 'matched' and
                 compiler_settings(cfg, row.get('unit')).get('include_dirs')]
@@ -48,18 +48,18 @@ def affected(before, candidates, regions):
     return [r for r in old if r['status'] in ('matched', 'documented')]
 
 
-def preview(before, candidates, regions):
-    rows = affected(before, candidates, regions)
+def preview(before, candidates, regions, *, force=False):
+    rows = affected(before, candidates, regions, force=force)
     return {'source_revalidation_pending': len(rows),
             'source_revalidation_candidates': [{key: row[key] for key in ('id', 'name', 'rom_offset', 'vram', 'status')}
                                                 for row in rows[:100]],
             'source_revalidation_candidates_truncated': len(rows) > 100}
 
 
-def prepare(before, candidates, regions, names):
+def prepare(before, candidates, regions, names, *, force=False):
     results, deadline = {}, time.monotonic() + SECONDS
     by_offset = {fn.rom: fn for fn in candidates}
-    for index, row in enumerate(affected(before, candidates, regions)):
+    for index, row in enumerate(affected(before, candidates, regions, force=force)):
         fn = by_offset.get(row['rom_offset'])
         kind = 'asm' if row['status'] == 'documented' else 'c'
         reason = 'no proposed entry begins at the retained physical offset' if fn is None else None
@@ -80,7 +80,7 @@ def report(results):
             'source_checks_truncated': len(results) > 100}
 
 
-def apply(db, old, new_ids, kept, results, before_digest):
+def apply(db, old, new_ids, kept, results, before_digest, *, checked_plan=None):
     for row in old:
         result = results.get(row['id'])
         fid = row['id'] if row['id'] in kept else new_ids.get(row['rom_offset'])
@@ -94,7 +94,7 @@ def apply(db, old, new_ids, kept, results, before_digest):
         if result.kind == 'asm':
             meta['sample'] = True
         target = db.execute('SELECT target FROM functions WHERE id=?', (fid,)).fetchone()['target']
-        meta['resplit_validation'] = {**result.report(), 'semantic_review': 'pending',
+        meta['resplit_validation'] = {**result.report(), 'semantic_review': 'pending', 'checked_plan': checked_plan,
             'checked_source_sha256': hashlib.sha256(result.source.encode()).hexdigest(),
             'checked_target_sha256': hashlib.sha256(target or b'').hexdigest(),
             'origin': {'snapshot': before_digest, 'function_id': row['id'],

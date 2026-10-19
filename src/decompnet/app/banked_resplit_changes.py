@@ -6,11 +6,13 @@ LIMIT = 100
 OVERLAPS = 8
 
 
-def plan_digest(before_digest: str, candidates, report: dict) -> str:
+def plan_digest(before_digest: str, candidates, report: dict, *, proposed=None) -> str:
     plan = {"state": before_digest, "regions": report.get("regions"), "bank_base": report.get("bank_base"),
             "splitter": report.get("splitter"), "functions": [
                 [fn.rom, fn.vram, hashlib.sha256(fn.code).hexdigest(), hashlib.sha256((fn.asm or "").encode()).hexdigest(),
                  fn.refs, getattr(fn, "edges", None)] for fn in candidates]}
+    if proposed is not None:
+        plan['proposed_configuration'] = proposed
     return hashlib.sha256(json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
