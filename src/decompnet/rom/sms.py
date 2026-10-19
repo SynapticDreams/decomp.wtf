@@ -27,6 +27,7 @@ from . import gb, sms_seeds, sms_trace, z80
 from .n64 import RomError
 from .sms_identity import strip_copier_header as strip_copier_header
 from .sms_mapping import BusState, Mapper, entry_state
+from .sms_analysis import AnalysisLimits, Budget, Session, GAP_PASSES
 
 BANK_SIZE = 0x4000
 MAGIC = b"TMR SEGA"
@@ -274,7 +275,8 @@ def _swept(data: bytes, bank: int, known: set[int], skip=None, *, mapper: str = 
 
 def candidates(data: bytes, limit: int = 4000, labels: dict | None = None,
                hints: dict | None = None, *, mapper: str | None = None, report: dict | None = None,
-               limits: sms_trace.Limits | None = None) -> tuple[dict[int, tuple[int, str]], dict[int, int]]:
+               limits: sms_trace.Limits | None = None,
+               analysis_limits: AnalysisLimits | None = None) -> tuple[dict[int, tuple[int, str]], dict[int, int]]:
     """({flat offset: (CPU address it runs at, how it was found)}, {bank: CPU address its code runs at}).
 
     Reset and declared entries seed shared-model tracing. Cold scans resolve only unconditional wiring
@@ -285,18 +287,11 @@ def candidates(data: bytes, limit: int = 4000, labels: dict | None = None,
     hints = hints or {}
     mapper = mapper if mapper is not None else hints.get("mapper", "sega")
     Mapper(mapper, len(data))  # reject unsupported explicit model requests rather than silently substituting
-    exhausted: dict[int, set[str]] = {}
-    unresolved: dict[int, set[str]] = {}
-
-    def trace(entries):
-        tracer = sms_trace.Tracer(data, hints=hints, mapper=mapper, limits=limits)
-        found = tracer.follow(entries)
-        for at, reasons in found.exhausted.items():
-            exhausted.setdefault(at, set()).update(reasons)
-        for at, reasons in found.unresolved.items():
-            unresolved.setdefault(at, set()).update(reasons)
-        return tracer, found
-
+    if type(limit) is not int or not 1 <= limit <= 1_000_000:
+        raise ValueError("candidate output limit must be between 1 and 1000000")
+    budget = Budget(analysis_limits)
+    session = Session(lambda account: sms_trace.Tracer(data, hints=hints, mapper=mapper,
+                                                      limits=limits, budget=account), budget)
     size = len(data)
     seeds = {v: (v, "vector") for v in VECTORS if v < size}
     seeds.update({f: (cpu, "hint") for f, cpu in (hints.get("entries") or {}).items() if f < size})
@@ -305,7 +300,7 @@ def candidates(data: bytes, limit: int = 4000, labels: dict | None = None,
     cov = hints.get("coverage")
     in_data = _data_mask(size, list(hints.get("data") or []) + (cov.runs("read") if cov is not None else []))
     seeds.update({f: c for f, c in _swept(data, 0, set(seeds), in_data, mapper=mapper).items() if f not in seeds})
-    tracer, found = trace(seeds)
+    tracer, found = session.follow(seeds)
     bases = dict(found.bank_base)
     for bank in range(1, -(-size // BANK_SIZE)):  # banks nothing was followed into: where they most likely run
         if bank not in bases and (base := tracer.default_base(bank)) is not None:
@@ -316,40 +311,45 @@ def candidates(data: bytes, limit: int = 4000, labels: dict | None = None,
                          and (cpu := _coverage_cpu(cov, f, mapper)) is not None})
     if handlers:  # (the tables corrections name, read in the banks their code was found running at)
         seeds.update(handlers)
-        _, found = trace(seeds)
+        _, found = session.follow(seeds)
         bases = {**bases, **found.bank_base}
     more = dict(found.starts)
     code_banks = {flat // BANK_SIZE for flat in found.starts}
     for bank in range(1, -(-size // BANK_SIZE)):
+        if budget.stopped:
+            break
         if bank in code_banks or _code_like(data, bank):  # (in a bank of graphics or text, CD bytes aren't calls)
             more.update(_swept(data, bank, set(more), in_data, mapper=mapper))
     if len(more) > len(found.starts):
-        _, found = trace({**more, **seeds})
+        _, found = session.follow({**more, **seeds})
         bases = {**bases, **found.bank_base}
-    if cov is not None:  # code that ran but wasn't followed (reached through a pointer): where each run of it starts
+    if cov is not None and not budget.stopped:  # code that ran but wasn't followed: where each run of it starts
         ran = {f: (cpu, "ran") for f in range(size) if cov.code[f] and (f == 0 or not cov.code[f - 1])
                and f not in found.code and f not in more and f not in seeds
                and (cpu := _coverage_cpu(cov, f, mapper)) is not None}
         if ran:
             more.update(ran)
-            _, found = trace({**more, **seeds})
+            _, found = session.follow({**more, **seeds})
             bases = {**bases, **found.bank_base}
     # code nothing points at (called through pointers kept in RAM, which this can't follow): what starts right where
     # a function ends, in a bank that has code, and reads like a function, is the next one. While that finds more.
     seeds = {**more, **seeds}
-    for _ in range(8):
+    for _ in range(GAP_PASSES):
+        if budget.stopped:
+            break
         gaps = _after_functions(data, found.starts, hints.get("inline"), mapper=mapper)
         if not gaps:
             break
         seeds.update(gaps)
-        _, found = trace(seeds)
+        _, found = session.follow(seeds)
         bases = {**bases, **found.bank_base}
+    else:
+        if not budget.stopped and _after_functions(data, found.starts, hints.get("inline"), mapper=mapper):
+            budget.note("gap discovery pass budget exhausted")
     starts = dict(sorted(found.starts.items())[:limit])
+    summary = session.report(found, size, limit)
     if report is not None:
-        report["analysis_exhausted"] = [{"rom_offset": at, "reasons": sorted(reasons)}
-                                        for at, reasons in sorted(exhausted.items())]
-        report["analysis_unresolved"] = [{"rom_offset": at, "reasons": sorted(reasons)}
-                                         for at, reasons in sorted(unresolved.items())]
+        report.update(summary)
     return starts, bases
 
 
@@ -428,7 +428,8 @@ def refs_of(code: bytes, cpu: int, bank: int, size: int, operands: dict | None =
 
 def functions(data: bytes, log=lambda *_: None, labels: dict | None = None,
               report: dict | None = None, seeds: dict | None = None, hints: dict | None = None, *,
-              mapper: str | None = None, limits: sms_trace.Limits | None = None) -> list[gb.GbFunction]:
+              mapper: str | None = None, limits: sms_trace.Limits | None = None,
+              analysis_limits: AnalysisLimits | None = None) -> list[gb.GbFunction]:
     """Every discovered function, disassembled at the address it runs at. (The record type is shared with the Game
     Boy lane.) `labels` ({(bank, address): name}, from a symbol file) name what they label, and with `seeds` (the
     same, with the file's automatic names too) say where code starts; `report` gets {"bank_base": {bank: CPU
@@ -439,7 +440,9 @@ def functions(data: bytes, log=lambda *_: None, labels: dict | None = None,
     report = report if report is not None else {}
     mapper = mapper if mapper is not None else hints.get("mapper", "sega")
     found, bases = candidates(data, labels=seeds if seeds is not None else labels, hints=hints, mapper=mapper,
-                              report=report, limits=limits)
+                              report=report, limits=limits, analysis_limits=analysis_limits)
+    if reasons := report["analysis_limits"]["exhausted"]:
+        log("static discovery is incomplete: " + ", ".join(reasons))
     if exhausted := report["analysis_exhausted"]:
         log(f"static tracing reached a budget in {len(exhausted)} entries; discovery and mapper effects remain incomplete")
         for row in exhausted[:10]:
