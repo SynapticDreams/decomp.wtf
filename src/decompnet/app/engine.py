@@ -2070,7 +2070,8 @@ class RomNetwork(Network):
             source = cfg.get('symbol_file')
             if source is not None and (not isinstance(source, dict) or 'format' in source):
                 hints['symbol_source'] = source
-        for r in self.store.all("SELECT * FROM corrections WHERE project_id=? AND undone_at IS NULL ORDER BY id",
+        for r in self.store.all("SELECT * FROM corrections WHERE project_id=? AND undone_at IS NULL "
+                                "AND annotation IS NULL AND evidence IS NULL ORDER BY id",
                                 proj["id"]):
             flat = r["rom_offset"]
             if r["kind"] == "data":

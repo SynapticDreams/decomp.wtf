@@ -8,6 +8,7 @@ from pathlib import Path
 import zlib
 
 from ..network import NetworkError
+from ..store_annotations import snapshot_row
 
 VERSION = 1
 MAX_BYTES = 64 * 1024 * 1024
@@ -78,7 +79,7 @@ def capture(db, pid: int, inputs: dict) -> dict:
             raise NetworkError("resplit snapshot exceeds the 64 MiB work budget")
         rows = db.execute(f"SELECT * FROM {table} WHERE {where} ORDER BY {order} LIMIT ?",
                           (*args, MAX_ROWS)).fetchall()
-        tables[table] = [dict(row) for row in rows]
+        tables[table] = [snapshot_row(table, row) for row in rows]
     return {"version": VERSION, "project": dict(project), "tables": tables, "inputs": inputs}
 
 
