@@ -10,9 +10,9 @@ from decompnet.rom import sms_asm
 
 pytestmark = pytest.mark.skipif(not sms_asm.available(), reason="needs WLA-DX")
 
-# ld a,($c0a2) · and a · jr z,+15 · ld hl,$3800 · call $0f31 · ld a,$81 · out ($bf),a · ld a,5 · ld ($ffff),a · ret
+# ld a,($c0a2) · and a · jr z,+15 · ld hl,$3800 · call $0031 · ld a,$81 · out ($bf),a · ld a,5 · ld ($ffff),a · ret
 # (bank 5, running at $8A10 in slot 2)
-CODE = bytes.fromhex("3aa2c0 a7 280f 210038 cd310f 3e81 d3bf 3e05 32ffff c9")
+CODE = bytes.fromhex("3aa2c0 a7 280f 210038 cd3100 3e81 d3bf 3e05 32ffff c9")
 HEADER = ("; Clears the name table while a menu is open, then turns the\n"
           "; screen on and maps bank 5 into slot 2. In: nothing. Out: A, HL.\n")
 GOOD = HEADER + """ClearMenuMap:
@@ -32,9 +32,9 @@ GOOD = HEADER + """ClearMenuMap:
 
 def routine(**kw) -> sms_asm.Routine:
     base = dict(name="func_005_8a10", bank=5, cpu=0x8A10, code=CODE,
-                symbols={"wMenuOpen": 0xC0A2, "FillNameTable": 0x0F31, "func_005_8a10": 0x8A10},
-                functions={0x0F31: "FillNameTable", 0x14A10: "func_005_8a10"},
-                runs_at={0x0F31: 0x0F31, 0x14A10: 0x8A10})
+                symbols={"wMenuOpen": 0xC0A2, "FillNameTable": 0x0031, "func_005_8a10": 0x8A10},
+                functions={0x0031: "FillNameTable", 0x14A10: "func_005_8a10"},
+                runs_at={0x0031: 0x0031, 0x14A10: 0x8A10})
     return sms_asm.Routine(**(base | kw))
 
 
@@ -57,7 +57,7 @@ def test_the_bytes_must_be_the_roms():
 
 @pytest.mark.parametrize("old, new, check", [
     ("ld a, (wMenuOpen)", "ld a, ($c0a2)", "2. line 4"),  # a raw RAM address
-    ("call FillNameTable", "call $0f31", "2. line 8"),  # a raw call target
+    ("call FillNameTable", "call $0031", "2. line 8"),  # a raw call target
     ("$3800 ; number: the name table's address in video memory", "$3800", "2. line 7"),  # a constant not marked
     ("out (PortVDPControl), a", "out ($bf), a", "5. line 10"),  # a port by number
     ("ld (MapperSlot2), a", "ld ($ffff), a", "5. line 12"),  # the mapper by address
@@ -69,7 +69,7 @@ def test_addresses_and_hardware_must_be_named(old, new, check):
 
 def test_a_name_defined_for_the_project_moves_with_it():
     text = ".DEFINE wMenuFlag $C0A2\n" + GOOD.replace("wMenuOpen", "wMenuFlag")
-    v = sms_asm.judge(routine(symbols={"FillNameTable": 0x0F31}), text)
+    v = sms_asm.judge(routine(symbols={"FillNameTable": 0x0031}), text)
     assert v.ok, v.problems
     assert v.defines == {"wMenuFlag": 0xC0A2} and ".DEFINE" not in v.text
     assert any("isn't taken here" in p for p in problems(".DEFINE wMenuFlag wMenuOpen+1\n" + GOOD))

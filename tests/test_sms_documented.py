@@ -28,13 +28,13 @@ def game(tmp_path):
         db.execute("INSERT INTO context_versions(project_id,version,header,agent_id,message,created_at,unit) "
                    "VALUES(?,?,?,?,?,?,?)", (pid, 1, "", None, "", 0, ""))
         for name, flat, cpu, code, status, meta in (("func_005_8a10", 0x14A10, 0x8A10, CODE, "asm", HAND),
-                                                     ("FillNameTable", 0x0F31, 0x0F31, b"\xc9", "open", None)):
+                                                     ("FillNameTable", 0x0031, 0x0031, b"\xc9", "open", None)):
             db.execute("INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,unit,vram,rom_offset,status,meta) "
                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (pid, name, len(code), 1, code, "[]", "", "bank005", cpu, flat,
                                                            status, meta))
             db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)", (pid, name, cpu, len(code), "func"))
     from .test_sms import make_rom
-    (tmp_path / "rom.sms").write_bytes(make_rom(size=0x20000, code={0x14A10: CODE, 0x0F31: b"\xc9"}))
+    (tmp_path / "rom.sms").write_bytes(make_rom(size=0x20000, code={0x14A10: CODE, 0x0031: b"\xc9"}))
     net.sms.configure("s", "sega", "annotated-original", "The authored fixture specifies Sega cartridge mapping.")
     return net, net.authenticate(net.register_agent("writer"))
 

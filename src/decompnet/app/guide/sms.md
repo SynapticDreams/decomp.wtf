@@ -24,6 +24,9 @@ establish only their own ROM window. General callee effects, unknown stores, mul
 and interrupt restoration remain analysis limits; this does not qualify BIOS, cartridge-RAM or peripheral execution.
 Standalone exports include this shared resolver. Generated reference names require a declared model and established
 instruction geometry; unresolved references remain numeric while the build still verifies whole-image equality.
+Assembly judging uses the same source/bank resolver. A unique routine name at a CPU address cannot establish its
+physical bank, including slot 0 above the first KiB. Unknown references stay pending. Known stores invalidate
+affected entry-bank facts conservatively; precise values across paths/callees still need qualified summaries.
 
 ## What the importer does with a .sms / .gg file
 

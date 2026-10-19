@@ -2536,9 +2536,15 @@ class RomNetwork(Network):
             "SELECT * FROM data_regions WHERE project_id=? AND rom_offset<? AND rom_offset+size>?",
             proj["id"], flat + size, flat)]
         if proj["arch"] == "z80":
+            from ..rom.sms_profile import describe
+
+            cfg = self.cfg(proj)
+            profile = describe(cfg) or {}
+            mapper = (profile.get("profile") or {}).get("mapper", "unknown")
+            rom_size = int(cfg["rom"].get("size") or 0)
             return sms_asm.Routine(fn["name"], flat // 0x4000, fn["vram"] or 0, bytes(fn["target"] or b""), symbols,
                                    functions, {r["rom_offset"]: r["vram"] for r in rows if r["vram"] is not None}, data,
-                                   max(1, -(-int(self.cfg(proj)["rom"].get("size") or 0) // 0x4000)))
+                                   max(1, -(-rom_size // 0x4000)), mapper=mapper, rom_size=rom_size)
         if proj["arch"] == "mos6502":  # (offsets are the file's; banks count from the PRG's start)
             from ..rom import nes_asm
 
