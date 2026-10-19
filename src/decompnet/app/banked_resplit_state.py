@@ -25,7 +25,7 @@ TABLES = {
 }
 
 
-def external(root: Path, rom_file: str) -> dict:
+def external(root: Path, rom_file: str, *, symbol_source=None) -> dict:
     out = {}
     for suffix in (".sym", ".cdl", ".trace"):
         path = (root / rom_file).with_suffix(suffix)
@@ -42,6 +42,15 @@ def external(root: Path, rom_file: str) -> dict:
             out[suffix] = None
         except OSError:
             raise NetworkError("resplit symbol/coverage input is unavailable") from None
+    if symbol_source is not None and not isinstance(symbol_source, dict):
+        raise NetworkError('stored symbol source metadata is invalid')
+    if isinstance(symbol_source, dict) and symbol_source.get('format') != 'disabled' and 'format' in symbol_source:
+        from ..rom import wla_bundle
+
+        try:
+            out['symbol_bundle'] = hashlib.sha256(wla_bundle.verified(root, symbol_source)).hexdigest()
+        except (OSError, ValueError, TypeError, KeyError):
+            raise NetworkError('stored symbol source is unavailable or differs') from None
     return out
 
 

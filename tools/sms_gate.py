@@ -36,6 +36,10 @@ TESTS = (
     "tests/test_sms_wla_layout.py",
     "tests/test_sms_wla_symbols.py",
     "tests/test_sms_wla_tool.py",
+    "tests/test_sms_wla_bundle.py",
+    "tests/test_sms_symbol_import.py",
+    "tests/test_sms_symbol_routes.py",
+    "tests/test_sms_symbol_preservation.py",
     "tests/test_sms_documented.py",
     "tests/test_export_sms.py",
 )
@@ -164,6 +168,24 @@ def verify_report(report: Path) -> int:
                    'test_nonuniform_banks_aliases_duplicate_cpu_windows_and_automatic_seeds_are_distinct',
                    'test_data_ram_locals_unknown_and_impossible_fixed_prefix_do_not_seed_code'} <= symbols:
         raise ValueError('SMS gate report is missing declared WLA symbol normalization checks')
+    imports = {
+        'tests.test_sms_symbol_import': {
+            f'{test}[{platform}]' for platform in ('sms', 'gg') for test in (
+                'test_preview_apply_reload_resplit_and_undo_preserve_source_identity_and_existing_work',
+                'test_missing_layout_retains_raw_records_without_applying_names_or_seeds',
+                'test_corrupt_bundle_is_visible_and_stops_resplit_without_legacy_fallback',
+                'test_remove_disables_sources_and_keeps_original_provenance_without_legacy_fallback',
+                'test_failed_database_publication_does_not_change_the_active_source_or_functions',
+                'test_inspection_pages_preserve_every_alias_and_reject_a_changed_source')} |
+            {f'test_stale_preview_never_replaces_current_source_or_work[{platform}-{change}]'
+             for platform in ('sms', 'gg') for change in ('source', 'work', 'input')},
+        'tests.test_sms_symbol_routes': {f'test_authenticated_preview_apply_and_inspection_preserve_binary_source_without_exposing_it[{p}]'
+                                         for p in ('sms', 'gg')},
+        'tests.test_sms_symbol_preservation': {f'test_declared_symbol_import_retains_actual_{kind}_and_resplit_undo[{p}]'
+                                               for p in ('sms', 'gg') for kind in ('documented_source', 'c_match')}}
+    for module, required in imports.items():
+        if not required <= {case.get('name') for case in cases if case.get('classname') == module}:
+            raise ValueError(f'SMS gate report is missing project symbol preservation checks: {module}')
     return len(cases)
 
 

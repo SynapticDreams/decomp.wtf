@@ -271,8 +271,25 @@ documented routines, reports omissions and checks the rebuilt image byte for byt
 
 ## The matching lane
 
-The Python splitter also supports `sms.split(..., symbol_layout=declaration)` for explicit WLA source geometry.
-This is a library entry point; project symbol-upload controls still use the historical physical-bank format.
+The Python splitter supports `sms.split(..., symbol_layout=declaration)` for explicit WLA source geometry.
+Project imports also accept that declaration through `/api/symbols/import` POST's `layout` field. Send `text`
+or `source_base64` (one source); the latter preserves exact original bytes, including BOM and line endings.
+`apply: false` previews without writing files or changing project work. Pass its `plan` back as `expected_plan`
+when applying to reject stale previews. Importing a declaration retains existing routine names and accepted
+source; splitting again can use its qualified seeds and names for newly discovered routines.
+
+New SMS/GG uploads without a layout retain records as `requires_layout` suggestions, with no effective names or
+seeds. The current upload control supports storing this pending source; layout controls follow separately.
+Sources live in private immutable bundles selected by project metadata. The original comments and source paths
+stay out of API reports. `/api/symbols/inspect` POST returns at most 50 records, with `next_offset`; send that as
+`offset` and the current `source_id` as `expected_source` to detect a source change between pages. Candidate
+coordinates are bounded to 32 per record with an explicit truncation flag. Counts and source hashes remain visible.
+Changed/missing bundles stop resplitting instead of falling back to another symbol file. Removing a source
+disables it while retaining its private provenance; it does not activate an older adjacent file.
+
+Existing adjacent/legacy `.sym` files retain their historical physical-bank interpretation and are shown as
+unqualified until reimported with a layout. Automatic adjacent-file import and operator declaration controls
+remain separate integration work.
 The version 1 declaration contains `input: {size, sha256}` for the normalized image, `banks` with
 `{id, offset, size}` in physical file order, `slots` with `{id, start, size, space}`, and `views` with
 `{bank, slot, offset, size, role}`. Bank sizes may differ; they must cover the image exactly once. A view's

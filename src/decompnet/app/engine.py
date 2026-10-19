@@ -31,7 +31,7 @@ from ..elfobj import FunctionObj
 from ..network import DISCONNECTED, GIVEN_UP, RELEASE_COOLDOWN, Agent, Network, NetworkError, _ago, _hash_token
 from ..project import compiler_settings
 from ..rom import detect, match, split
-from ..rom.symbols import AUTO_NAME, IDENT, Symbol, SymbolTable
+from ..rom.symbols import IDENT, Symbol, SymbolTable
 
 DEFAULT_TOOLCHAIN = {"KMC": "gcc-2.7.2-kmc", "IDO": "ido-7.1", "PSYQ": "gcc-2.7.2-psx", "EEGCC": "ee-gcc-2.96",
                      "AGBCC": "agbcc"}
@@ -2065,6 +2065,9 @@ class RomNetwork(Network):
         cfg = self.cfg(proj)
         if (cfg.get("arch") or "").lower() == "z80":
             hints["mapper"] = self.sms.model(proj).kind
+            source = cfg.get('symbol_file')
+            if source is not None and (not isinstance(source, dict) or 'format' in source):
+                hints['symbol_source'] = source
         for r in self.store.all("SELECT * FROM corrections WHERE project_id=? AND undone_at IS NULL ORDER BY id",
                                 proj["id"]):
             flat = r["rom_offset"]
@@ -2086,80 +2089,36 @@ class RomNetwork(Network):
             pass  # (a file that can't be read any more: Settings says so)
         return hints
 
-    _SYM_LINE = re.compile(r"^([0-9A-Fa-f]{1,4}):([0-9A-Fa-f]{4})\s+([A-Za-z_][A-Za-z0-9_@#$]*(?:\.[A-Za-z0-9_@#$]+)?|"
-                           r"\.(?:code|data|text|byt|asc|padding):[0-9A-Fa-f]{1,5}(?::[0-9A-Za-z,]{1,40})?)\s*$")
-
     def _sym_path(self, proj) -> Path:
-        cfg = self.cfg(proj)
-        return (Path(proj["root"]) / cfg["rom"]["file"]).with_suffix(".sym")
+        from .symbol_files import path
+
+        return path(self, proj)
 
     def symbol_file(self, slug: str) -> dict | None:
-        path = self._sym_path(self._project(slug))
-        if not path.is_file():
-            return None
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        cfg = self.cfg(self._project(slug))
-        return {"names": sum(1 for x in lines if x.strip() and not x.split()[-1].startswith(".") and not x.startswith(";")),
-                "blocks": sum(1 for x in lines if x.strip() and x.split()[-1].startswith(".")),
-                "from": cfg.get("symbol_file", {}).get("from", path.name)}
+        from . import symbol_files, sms_symbol_import
 
-    def import_symbols(self, slug: str, text: str, name: str = "") -> dict:
-        """A symbol file the user chose (RGBDS / mgbdis / WLA-DX `bank:address Name` lines, with `.data:length` style
-        blocks on the Game Boy), for this project only: kept next to its copy of the game, so splitting again uses its
-        names and blocks, and functions with automatic names at its labels are named after them (not after the
-        file's own automatic ones, `_LABEL_9D9_`: those only say where code starts). Only well-formed lines are kept
-        (comments, headers and anything else, a refusal test string included, never reach an agent); nothing is
-        shared."""
-        proj = self._project(slug)
-        if (self.cfg(proj).get("arch") or "").lower() not in ("sm83", "z80") or self.fork_slug(slug):
-            raise NetworkError("importing a symbol file is for Game Boy and Master System projects for now")
-        if slug in self.links:
-            raise NetworkError("a room member's copy follows its host: the host imports it")
-        if len(text or "") > 8 << 20:
-            raise NetworkError("that file is over 8 MB: a symbol file is much smaller")
-        kept, dropped = [], 0
-        for line in str(text or "").splitlines():
-            line = line.split(";", 1)[0].strip()
-            if not line:
-                continue
-            if (m := self._SYM_LINE.match(line)) and len(m.group(3)) <= 64:
-                kept.append(f"{int(m.group(1), 16):02x}:{m.group(2).lower()} {m.group(3)}")
-            else:
-                dropped += 1
-        if not kept:
-            raise NetworkError("no `bank:address Name` lines in that file: is it an RGBDS, BGB, mgbdis or WLA-DX symbol "
-                               "file?")
-        path = self._sym_path(proj)
-        path.write_text("; imported into decomp.wtf for this project only\n" + "\n".join(kept) + "\n", encoding="utf-8")
-        self._update_cfg(slug, lambda cfg: cfg.update(symbol_file={"from": Path(name).name or path.name,
-                                                                     "at": time.time()}))
-        renamed = 0
-        you, _ = self.local_agent("you")
-        names = {}
-        for line in kept:
-            loc, label = line.split()
-            if not label.startswith((".", "_LABEL_", "_DATA_", "_RAM_")) and "." not in label:
-                bank, cpu = (int(x, 16) for x in loc.split(":"))
-                names[(bank, cpu)] = label
-        taken = {r["name"] for r in self.store.all("SELECT name FROM functions WHERE project_id=?", proj["id"])}
-        for r in self.store.all("SELECT name, rom_offset, vram FROM functions WHERE project_id=?", proj["id"]):
-            label = names.get(((r["rom_offset"] or 0) // 0x4000, r["vram"] or 0))
-            if label and label not in taken and (AUTO_NAME.match(r["name"]) or _GENERATED.search(r["name"])):
-                try:
-                    if self.rename_symbol(you, slug, r["name"], label, "from the imported symbol file").startswith("✅"):
-                        taken.add(label)
-                        renamed += 1
-                except NetworkError:
-                    pass
-        with self.store.tx() as db:
-            self._event(db, proj["id"], you.id, "import", f"symbol file: {len(kept)} lines kept, {dropped} left out")
-        return {"kept": len(kept), "dropped": dropped, "renamed": renamed, "symbol_file": self.symbol_file(slug)}
+        return sms_symbol_import.present(self, slug) if self.cfg(self._project(slug)).get('arch') == 'z80' else symbol_files.present_legacy(self, slug)
+
+    def import_symbols(self, slug: str, text: str, name: str = "", *, layout=None, apply=True,
+                       expected_plan=None, source_base64=None) -> dict:
+        from . import symbol_files, sms_symbol_import
+
+        if self.cfg(self._project(slug)).get('arch') == 'z80':
+            return sms_symbol_import.import_source(self, slug, text, name, layout=layout, apply=apply,
+                                                   expected_plan=expected_plan, source_base64=source_base64)
+        if layout is not None or not apply or expected_plan is not None or source_base64 is not None:
+            raise NetworkError('declared symbol import is for local SMS/GG projects')
+        return symbol_files.import_legacy(self, slug, text, name)
+
+    def inspect_symbols(self, slug: str, *, offset=0, expected_source=None) -> dict:
+        from .sms_symbol_import import inspect
+
+        return inspect(self, slug, offset=offset, expected_source=expected_source)
 
     def remove_symbol_file(self, slug: str) -> dict:
-        path = self._sym_path(self._project(slug))
-        path.unlink(missing_ok=True)
-        self._update_cfg(slug, lambda cfg: cfg.pop("symbol_file", None))
-        return self.corrections(slug)
+        from . import symbol_files, sms_symbol_import
+
+        return sms_symbol_import.remove(self, slug) if self.cfg(self._project(slug)).get('arch') == 'z80' else symbol_files.remove_legacy(self, slug)
 
     def _coverage_path(self, proj) -> Path | None:
         """The project's coverage from an emulator (a code/data log or an execution trace), when it has one."""

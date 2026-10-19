@@ -3154,7 +3154,7 @@ function showCorrections(r) {
     catch (e) { b.disabled = false; toast(esc(e.message), "err"); }
   }; });
   const f = r.symbol_file;
-  $("symStatus").textContent = f ? `${f.from}: ${plural(f.names, "name")}${f.blocks ? `, ${plural(f.blocks, "block")}` : ""}` : "";
+  $("symStatus").textContent = f ? `${f.from}: ${f.state ? `${f.state.replaceAll("_", " ")} · ` : ""}${plural(f.names, "name")}${f.blocks ? `, ${plural(f.blocks, "block")}` : ""}` : "";
   $("symRemove").hidden = !f;
   const c = r.coverage;
   $("covStatus").textContent = !c ? "" : c.error ? `${c.from}: ${c.error}` : `${c.from}: ${bytes(c.code)} ran as code, ${bytes(c.read)} read as data, ${c.entries.toLocaleString()} function ${c.entries === 1 ? "entry" : "entries"}`;
@@ -3183,7 +3183,9 @@ $("symFile").onchange = async () => {
   $("symStatus").textContent = `reading ${file.name}…`;
   try {
     const r = await api("/api/symbols/import", { method: "POST", body: { slug: S.slug, name: file.name, text: await file.text() } });
-    toast(esc(`${plural(r.kept, "line")} kept${r.dropped ? `, ${r.dropped.toLocaleString()} left out` : ""}; ${plural(r.renamed, "function")} named. Split the game again to use its blocks.`));
+    toast(esc(r.symbol_file?.format === "wla-bundle"
+      ? `${plural(r.kept, "record")} stored privately; ${r.symbol_file.state === "declared" ? "declared coordinates ready for resplit" : "layout or format qualification is required before use"}. Existing function names are retained.`
+      : `${plural(r.kept, "line")} kept${r.dropped ? `, ${r.dropped.toLocaleString()} left out` : ""}; ${plural(r.renamed, "function")} named. Split the game again to use its blocks.`));
     loadCorrections();
   } catch (e) { $("symStatus").textContent = ""; toast(esc(e.message), "err"); }
 };

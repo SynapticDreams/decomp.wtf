@@ -6,12 +6,27 @@ import pytest
 from tools import sms_gate
 
 
-def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True, revalidation=True, archive=True, dependencies=True, undo=True, migration=True, inspection=True, project_archive=True, legacy=True, verification=True, progress=True, export_state=True, c_reference=True, progress_routes=True, artifacts=True, wla=True):
+def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True, revalidation=True, archive=True, dependencies=True, undo=True, migration=True, inspection=True, project_archive=True, legacy=True, verification=True, progress=True, export_state=True, c_reference=True, progress_routes=True, artifacts=True, wla=True, symbol_imports=True):
     suite = ET.Element("testsuite")
     modules = sms_gate.TESTS[:-1] if missing_module else sms_gate.TESTS
     for name in modules:
         extra = None
-        if name.endswith('test_sms_wla_tool.py') and wla:
+        if name.endswith('test_sms_symbol_import.py') and symbol_imports:
+            extra = [f'{test}[{p}]' for p in ('sms', 'gg') for test in (
+                'test_preview_apply_reload_resplit_and_undo_preserve_source_identity_and_existing_work',
+                'test_missing_layout_retains_raw_records_without_applying_names_or_seeds',
+                'test_corrupt_bundle_is_visible_and_stops_resplit_without_legacy_fallback',
+                'test_remove_disables_sources_and_keeps_original_provenance_without_legacy_fallback',
+                'test_failed_database_publication_does_not_change_the_active_source_or_functions',
+                'test_inspection_pages_preserve_every_alias_and_reject_a_changed_source')]
+            extra += [f'test_stale_preview_never_replaces_current_source_or_work[{p}-{change}]'
+                      for p in ('sms', 'gg') for change in ('source', 'work', 'input')]
+        elif name.endswith('test_sms_symbol_routes.py') and symbol_imports:
+            extra = [f'test_authenticated_preview_apply_and_inspection_preserve_binary_source_without_exposing_it[{p}]' for p in ('sms', 'gg')]
+        elif name.endswith('test_sms_symbol_preservation.py') and symbol_imports:
+            extra = [f'test_declared_symbol_import_retains_actual_{kind}_and_resplit_undo[{p}]'
+                     for p in ('sms', 'gg') for kind in ('documented_source', 'c_match')]
+        elif name.endswith('test_sms_wla_tool.py') and wla:
             extra = [f'test_actual_nonuniform_wla_symbols_seed_the_right_bytes_and_keep_aliases[{p}]' for p in ('sms', 'gg')]
         elif name.endswith('test_sms_wla_symbols.py') and wla:
             extra = ['test_nonuniform_banks_aliases_duplicate_cpu_windows_and_automatic_seeds_are_distinct',
@@ -148,7 +163,7 @@ def test_gate_rejects_an_install_manifest_without_binaries(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("kwargs", [{"skipped": True}, {"failed": True}, {"missing_module": True}, {"gg": False},
-                                    {"mapper_matrix": False}, {"recovery": False}, {"revalidation": False}, {"archive": False}, {"dependencies": False}, {"undo": False}, {"migration": False}, {"inspection": False}, {"project_archive": False}, {"legacy": False}, {"verification": False}, {"progress": False}, {"export_state": False}, {"c_reference": False}, {"progress_routes": False}, {"artifacts": False}, {"wla": False}])
+                                    {"mapper_matrix": False}, {"recovery": False}, {"revalidation": False}, {"archive": False}, {"dependencies": False}, {"undo": False}, {"migration": False}, {"inspection": False}, {"project_archive": False}, {"legacy": False}, {"verification": False}, {"progress": False}, {"export_state": False}, {"c_reference": False}, {"progress_routes": False}, {"artifacts": False}, {"wla": False}, {"symbol_imports": False}])
 def test_gate_rejects_incomplete_or_unsuccessful_execution(tmp_path, kwargs):
     with pytest.raises(ValueError):
         sms_gate.verify_report(report(tmp_path, **kwargs))
@@ -161,7 +176,7 @@ def test_gate_requires_a_valid_report_with_executed_tests(tmp_path):
     path.write_text("<testsuite />")
     with pytest.raises(ValueError, match="executed, passing tests"):
         sms_gate.verify_report(path)
-    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 96
+    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 117
 
 
 def test_gate_rejects_gbdk_from_path_without_the_pinned_install(monkeypatch):
