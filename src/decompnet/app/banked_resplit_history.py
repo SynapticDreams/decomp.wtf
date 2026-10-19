@@ -10,22 +10,29 @@ from ..network import NetworkError
 from ..rom.sms import MAX_FUNCTION
 from . import banked_resplit_checks as checks, banked_resplit_state as state
 from .banked_resplit_restore import restore
+from . import sms_resplit_dependencies as dependencies
 
 
 def capture(net, proj):
     cfg = net.cfg(proj)
     inputs = state.external(Path(proj["root"]), cfg["rom"]["file"])
+    captured = dependencies.capture(Path(proj['root']), cfg)
+    if captured is not None:
+        inputs['compiler_dependencies'] = captured
     with net.store.lock:
         if net.store.conn.in_transaction:
-            return state.capture(net.store.conn, proj["id"], inputs)
-        with net.store.tx() as db:
-            return state.capture(db, proj["id"], inputs)
+            result = state.capture(net.store.conn, proj["id"], inputs)
+        else:
+            with net.store.tx() as db:
+                result = state.capture(db, proj["id"], inputs)
+    checks.verify_settings(cfg, json.loads(result["project"]["config"]))
+    return result
 
 
 def unchanged(net, proj, expected: str):
     current = capture(net, proj)
     if state.encode(current)[1] != expected:
-        raise NetworkError("project work or symbol/coverage inputs changed during resplit; preview again")
+        raise NetworkError("project work or analysis inputs changed during resplit; preview again")
     return current
 
 
@@ -69,6 +76,9 @@ def undo(net, slug: str, history_id: int) -> dict:
     if type(history_id) is not int or not 0 < history_id < 2**63:
         raise NetworkError("resplit history ID must be a positive integer")
     checks.quiet(net, slug)
+    from .sms_resplit_undo_check import prepare
+
+    before, before_digest, after_digest, validation = prepare(net, proj, history_id, lambda: capture(net, proj))
     with net.store.tx() as db:
         checks.quiet(net, slug)
         row = db.execute("SELECT * FROM resplit_history WHERE project_id=? AND id=?", (proj["id"], history_id)).fetchone()
@@ -76,13 +86,16 @@ def undo(net, slug: str, history_id: int) -> dict:
                             (proj["id"],)).fetchone()[0]
         if row is None or row["undone_at"] is not None or latest != history_id:
             raise NetworkError("undo the latest active resplit first")
+        if row['before_digest'] != before_digest or row['after_digest'] != after_digest:
+            raise NetworkError('resplit history changed during source validation; retry undo')
         current = capture(net, proj)
         if state.encode(current)[1] != row["after_digest"]:
             raise NetworkError("project work or inputs changed after resplit; undo would overwrite newer work")
         checks.verify_input("z80", Path(proj["root"]) / cfg["rom"]["file"], cfg)
-        before = state.decode(row["before_state"], row["before_digest"])
         restore(db, proj["id"], before)
-        db.execute("UPDATE resplit_history SET undone_at=? WHERE id=?", (now, history_id))
+        summary = json.loads(row['summary'])
+        summary['undo_revalidation'] = validation
+        db.execute("UPDATE resplit_history SET undone_at=?,summary=? WHERE id=?", (now, json.dumps(summary), history_id))
         net._event(db, proj["id"], None, "split", "restored the previous resplit snapshot")
     invalidate(net, proj["id"])
     return {"undone": history_id}

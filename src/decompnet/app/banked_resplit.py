@@ -137,11 +137,12 @@ def resplit(net, slug: str, apply: bool = False, log=print, *, expected_plan: st
             if name in names:
                 name = f"{f.name}_{f.rom:06x}" if f.name in names else f.name
             names.add(name)
+            unit = by_off[f.rom]['unit'] if before is not None and f.rom in by_off else f"bank{f.bank:03d}"
             new_ids[f.rom] = db.execute(
                 "INSERT INTO functions(project_id,name,size,n_insns,target,relocs,asm,seed,unit,vram,rom_offset,status,"
                 "meta) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (proj["id"], name, f.size, f.n_insns, f.code, json.dumps([list(x) for x in f.refs or []]), f.asm,
-                 None, f"bank{f.bank:03d}", f.vram, f.rom, "open", with_edges(None, getattr(f, "edges", None)))).lastrowid
+                 None, unit, f.vram, f.rom, "open", with_edges(None, getattr(f, "edges", None)))).lastrowid
             db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind,preview) VALUES(?,?,?,?,?,?)",
                        (proj["id"], name, f.vram, f.size, "func", None))
         for f in fns:  # a function that stays: where its calls into the window go, as this split followed them
@@ -178,7 +179,7 @@ def resplit(net, slug: str, apply: bool = False, log=print, *, expected_plan: st
             summary["archived_documented"] = sum(row["status"] == "documented" for row in gone)
             after = history.capture(net, net._project(slug))
             if after["inputs"] != before["inputs"]:
-                raise NetworkError("symbol/coverage inputs changed during resplit; preview again")
+                raise NetworkError("analysis inputs changed during resplit; preview again")
             out["history_id"] = history.record(db, proj["id"], before, after, summary)
         net._event(db, proj["id"], None, "split", f"split again: {out['kept']} functions unchanged, {out['added']} "
                     f"new, {out['removed']} gone ({out['matched_kept']} matched kept)")

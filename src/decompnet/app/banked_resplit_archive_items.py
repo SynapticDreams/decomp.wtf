@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from ..project import compiler_settings
+from .sms_resplit_dependency_archive import items as dependency_items
 
 
 @dataclass
@@ -80,4 +81,5 @@ def items(snapshot, row):
                                                                               sort_keys=True, separators=(',', ':')), {}, 'json'),
                 Item('symbols', 'Saved symbol context', lambda: json.dumps(tables['symbols'], sort_keys=True, separators=(',', ':')), {}, 'json'),
                 Item('review', 'Saved review metadata', row['meta'] or '{}', {}, 'json')))
+    out.extend(dependency_items(snapshot, row, Item))
     return out

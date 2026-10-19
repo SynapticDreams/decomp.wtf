@@ -7,6 +7,7 @@ import re
 
 from ..network import NetworkError
 from . import banked_resplit_state as state
+from .sms_resplit_dependencies import MAX_FILES
 from .banked_resplit_archive_items import function_info, items, metadata
 
 PAGE = 25
@@ -39,10 +40,10 @@ def read(net, slug, history_id, *, function_id=None, item=None, offset=0, start=
     if net.cfg(proj).get('arch') != 'z80' or slug in net.links or net.fork_slug(slug):
         raise NetworkError('resplit archive recovery is for local SMS/GG projects')
     history_id = integer(history_id, 'history ID', minimum=1)
-    offset = integer(offset, 'archive offset', maximum=state.MAX_ROWS)
+    offset = integer(offset, 'archive offset', maximum=state.MAX_ROWS + MAX_FILES + 10)
     start = integer(start, 'text start', maximum=state.MAX_BYTES)
     limit = integer(limit, 'text chunk limit', minimum=1, maximum=MAX_CHARS)
-    if item is not None and (not isinstance(item, str) or not re.fullmatch(r'(accepted|best|compiler|symbols|review|provenance|(?:attempt|note|header):[0-9]{1,19})', item)):
+    if item is not None and (not isinstance(item, str) or not re.fullmatch(r'(accepted|best|compiler|symbols|review|provenance|dependencies|(?:attempt|note|header|dependency):[0-9]{1,19})', item)):
         raise NetworkError('unknown archive item selector')
     if function_id is None and (item is not None or start):
         raise NetworkError('select a saved function before requesting text')

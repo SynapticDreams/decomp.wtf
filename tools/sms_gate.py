@@ -20,6 +20,9 @@ TESTS = (
     "tests/test_sms_resplit_source_check.py",
     "tests/test_sms_resplit_revalidate.py",
     "tests/test_sms_resplit_archive.py",
+    "tests/test_sms_resplit_dependencies.py",
+    "tests/test_sms_resplit_dependency_integration.py",
+    "tests/test_sms_resplit_undo_validation.py",
     "tests/test_sms_documented.py",
     "tests/test_export_sms.py",
 )
@@ -79,6 +82,16 @@ def verify_report(report: Path) -> int:
     if not all(f'test_saved_source_can_be_recovered_and_rejudged_after_new_work_blocks_undo[{platform}-{kind}]' in archive
                for platform in ('sms', 'gg') for kind in ('c', 'asm')):
         raise ValueError('SMS gate report is missing actual SMS/GG forward recovery checks')
+    dependencies = {case.get('name') for case in cases if case.get('classname') == 'tests.test_sms_resplit_dependency_integration'}
+    if not all(f'test_nested_unit_dependencies_are_revalidated_and_recoverable_without_layout_changes[{platform}-{changed}]'
+               in dependencies for platform in ('sms', 'gg') for changed in ('False', 'True')):
+        raise ValueError('SMS gate report is missing actual SMS/GG compiler dependency checks')
+    undo = {case.get('name') for case in cases if case.get('classname') == 'tests.test_sms_resplit_undo_validation'}
+    required = {f'test_new_edits_during_undo_validation_prevent_restoring_over_them[{platform}-{change}]'
+                for platform in ('sms', 'gg') for change in ('note', 'header', 'claim')}
+    required.update(f'test_old_accepted_bytes_outside_the_frozen_input_cannot_be_restored[{platform}]' for platform in ('sms', 'gg'))
+    if not required <= undo:
+        raise ValueError('SMS gate report is missing actual SMS/GG guarded undo checks')
     return len(cases)
 
 
