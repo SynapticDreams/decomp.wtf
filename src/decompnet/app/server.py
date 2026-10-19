@@ -821,6 +821,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             net.start_autopilot(slug)
         return net.overview(slug)
 
+    from . import correction_routes
+
     routes = {
         "/api/project": (p_overview, ["GET"]),
         "/api/sms/profile": (p_sms_profile, ["GET", "POST"]),
@@ -836,8 +838,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/resplit": (p_resplit, ["GET", "POST"]),
         "/api/resplit/archive": (p_resplit_archive, ["GET"]),
         "/api/give_back": (lambda s, r, d: net.give_to_agents(s, str(d.get("function", ""))), ["POST"]),
-        "/api/corrections": (lambda s, r, d: net.corrections(s), ["GET"]),
-        "/api/corrections/undo": (lambda s, r, d: net.undo_correction(s, int(d.get("id") or 0)), ["POST"]),
+        "/api/corrections": (lambda s, r, d: correction_routes.handle(net, s, r, d), ["GET", "POST"]),
+        "/api/corrections/undo": (lambda s, r, d: net.undo_correction(s, d.get("id")), ["POST"]),
         "/api/symbols/import": (lambda s, r, d: net.import_symbols(s, d.get("text", ""), str(d.get("name", "")),
                                    layout=d.get('layout'), apply=d.get('apply', True), expected_plan=d.get('expected_plan'),
                                    source_base64=d.get('source_base64'), offset=d.get('offset', 0)),

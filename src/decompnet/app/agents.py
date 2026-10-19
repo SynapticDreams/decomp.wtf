@@ -1864,6 +1864,8 @@ def context_window(client, base: str, options: dict) -> int:
 
 def api_tool_schemas(fork: bool = False) -> list[dict]:
     """OpenAI-style tool definitions for the built-in agent, from the same tools CLI agents get."""
+    from . import correction_tools
+
     s = lambda **props: {"type": "object", "properties": props, "required": [k for k, v in props.items() if v.pop("req", False)]}
     st = lambda desc, req=False: {"type": "string", "description": desc, "req": req}
     it = lambda desc: {"type": "integer", "description": desc}
@@ -1898,13 +1900,7 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
                             s(function=st("function", True), reason=st("what a person should look at", True))),
         "merge_function": ("Join a function with its neighbour when the split cut one routine in two.",
                            s(function=st("function", True))),
-        "correct_split": ("Game Boy, Master System: tell the split what it got wrong (used when the game is split again): kind data | "
-                          "code | table | operands | noreturn, at a function, NN:AAAA or an address, count (bytes, "
-                          "entries), and how you know.",
-                          s(kind=st("data | code | table | operands | noreturn", True),
-                            at=st("function, NN:AAAA (bank:address), or address", True),
-                            reason=st("how you know, a sentence", True), count=it("bytes / entries"),
-                            function=st("function whose bank `at` is in"))),
+        **correction_tools.schemas(),
         "read_data": ("Hex dump of the original's data at an address or symbol.", s(what=st("address or symbol", True),
                                                                                     length=it("bytes, up to 512"))),
         "list_functions": ("List functions by status.", s(status=st("open | matched | all"), limit=it("max rows"))),

@@ -6,12 +6,31 @@ import pytest
 from tools import sms_gate
 
 
-def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True, revalidation=True, archive=True, dependencies=True, undo=True, migration=True, inspection=True, project_archive=True, legacy=True, verification=True, progress=True, export_state=True, c_reference=True, progress_routes=True, artifacts=True, wla=True, symbol_imports=True, adjacent=True, annotations=True):
+def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True, revalidation=True, archive=True, dependencies=True, undo=True, migration=True, inspection=True, project_archive=True, legacy=True, verification=True, progress=True, export_state=True, c_reference=True, progress_routes=True, artifacts=True, wla=True, symbol_imports=True, adjacent=True, annotations=True, facts=True):
     suite = ET.Element("testsuite")
     modules = sms_gate.TESTS[:-1] if missing_module else sms_gate.TESTS
     for name in modules:
         extra = None
-        if name.endswith('test_sms_annotation_storage.py') and annotations:
+        if name.endswith('test_sms_correction_facts.py') and facts:
+            extra = [f'{test}[{p}-{kind}]' for p in ('sms', 'gg') for kind in sms_gate.annotation_checks.KINDS for test in (
+                'test_every_kind_is_bound_pending_inspectable_and_undoable_after_reload',
+                'test_operator_review_is_separate_from_recording_and_only_legacy_kinds_feed_hints')]
+        elif name.endswith('test_sms_correction_integration.py') and facts:
+            extra = [f'{test}[{p}-{kind}]' for p in ('sms', 'gg') for kind in ('c', 'asm') for test in (
+                'test_qualified_five_kinds_drive_discovery_and_preserve_real_source_through_resplit_undo',
+                'test_pending_and_forged_data_cannot_override_actual_accepted_source_and_review_refuses_it')]
+            extra += [f'test_changed_original_input_disables_previously_reviewed_hints_without_erasing_evidence[{p}]' for p in ('sms', 'gg')]
+        elif name.endswith('test_sms_correction_authority.py') and facts:
+            extra = [f'{test}[{p}]' for p in ('sms', 'gg') for test in (
+                'test_review_and_inspection_hold_one_database_snapshot_against_other_connections',
+                'test_review_checks_new_work_and_rolls_back_a_failed_authority_event',
+                'test_a_receipt_cannot_authorize_a_different_record_or_restore_superseded_approval',
+                'test_actual_mcp_preview_is_structured_and_rejects_boolean_counts_or_numeric_apply_flags')]
+        elif name.endswith('test_sms_correction_routes.py') and facts:
+            extra = [f'test_authenticated_proposal_inspection_review_and_undo_use_existing_routes[{p}]' for p in ('sms', 'gg')]
+            extra += [f'test_http_does_not_coerce_invalid_correction_arguments[{p}-{field}-{value}]' for p in ('sms', 'gg')
+                      for field, value in (('apply', '1'), ('count', 'True'), ('count', '2'))]
+        elif name.endswith('test_sms_annotation_storage.py') and annotations:
             extra = [f'test_actual_accepted_work_and_old_pending_undo_survive_annotation_migration[{p}-{kind}]'
                      for p in ('sms', 'gg') for kind in ('c', 'asm')]
             extra += [f'test_tagged_corrections_cannot_override_actual_accepted_code_before_qualified_consumption[{p}-{state}-{field}]'
@@ -176,7 +195,7 @@ def test_gate_rejects_an_install_manifest_without_binaries(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("kwargs", [{"skipped": True}, {"failed": True}, {"missing_module": True}, {"gg": False},
-                                    {"mapper_matrix": False}, {"recovery": False}, {"revalidation": False}, {"archive": False}, {"dependencies": False}, {"undo": False}, {"migration": False}, {"inspection": False}, {"project_archive": False}, {"legacy": False}, {"verification": False}, {"progress": False}, {"export_state": False}, {"c_reference": False}, {"progress_routes": False}, {"artifacts": False}, {"wla": False}, {"symbol_imports": False}, {"adjacent": False}, {"annotations": False}])
+                                    {"mapper_matrix": False}, {"recovery": False}, {"revalidation": False}, {"archive": False}, {"dependencies": False}, {"undo": False}, {"migration": False}, {"inspection": False}, {"project_archive": False}, {"legacy": False}, {"verification": False}, {"progress": False}, {"export_state": False}, {"c_reference": False}, {"progress_routes": False}, {"artifacts": False}, {"wla": False}, {"symbol_imports": False}, {"adjacent": False}, {"annotations": False}, {"facts": False}])
 def test_gate_rejects_incomplete_or_unsuccessful_execution(tmp_path, kwargs):
     with pytest.raises(ValueError):
         sms_gate.verify_report(report(tmp_path, **kwargs))
@@ -189,7 +208,7 @@ def test_gate_requires_a_valid_report_with_executed_tests(tmp_path):
     path.write_text("<testsuite />")
     with pytest.raises(ValueError, match="executed, passing tests"):
         sms_gate.verify_report(path)
-    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 158
+    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 220
 
 
 def test_gate_rejects_gbdk_from_path_without_the_pinned_install(monkeypatch):

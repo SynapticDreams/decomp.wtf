@@ -32,6 +32,7 @@ from ..network import DISCONNECTED, GIVEN_UP, RELEASE_COOLDOWN, Agent, Network, 
 from ..project import compiler_settings
 from ..rom import detect, match, split
 from ..rom.symbols import IDENT, Symbol, SymbolTable
+from .correction_policy import KINDS as CORRECTION_KINDS
 
 DEFAULT_TOOLCHAIN = {"KMC": "gcc-2.7.2-kmc", "IDO": "ido-7.1", "PSYQ": "gcc-2.7.2-psx", "EEGCC": "ee-gcc-2.96",
                      "AGBCC": "agbcc"}
@@ -1952,12 +1953,7 @@ class RomNetwork(Network):
     #: corrections to the split an agent may make an hour (each with a reason), so it isn't a way round hard functions
     CORRECTIONS_PER_HOUR = 10
     #: what each kind of correction says, and what its `count` is (0: none)
-    CORRECTION_KINDS = {
-        "data": ("isn't code", "bytes"), "code": ("is where a function starts", ""),
-        "table": ("is a table of handler addresses", "entries"),
-        "operands": ("is a routine that reads bytes after its call", "bytes after each call"),
-        "noreturn": ("is a routine that never returns", ""),
-    }
+    CORRECTION_KINDS = CORRECTION_KINDS
 
     def _banked_at(self, proj, at: str, function: str | None = None) -> tuple[int, int]:
         """Research coordinates. SMS delegates to its mapper/context adapter; GB uses its fixed/switchable windows
@@ -1995,71 +1991,34 @@ class RomNetwork(Network):
         return flat, cpu
 
     def correct_split(self, agent: Agent, project: str | None, kind: str, at: str, reason: str, count: int = 0,
-                      function: str = "") -> str:
-        """An agent says what the split got wrong about the game's code and data (Game Boy, Master System): bytes that
-        aren't code, a function start, a table of handler addresses, a routine that reads bytes after its call, one
-        that never returns. Kept with its reason for a person to see (and undo), and used when the game is split
-        again."""
-        if self._link(project) is not None:
-            raise NetworkError("in a room, leave a note (add_note): the room's host splits the game")
-        proj = self._project(project)
-        if (self.cfg(proj).get("arch") or "").lower() not in ("sm83", "z80") or self.fork_slug(proj["slug"]):
-            raise NetworkError("corrections to the split are for Game Boy and Master System projects for now: leave a "
-                               "note (add_note)")
-        kind = str(kind or "").strip().lower()
-        if kind not in self.CORRECTION_KINDS:
-            raise NetworkError(f"kind is one of {', '.join(self.CORRECTION_KINDS)}")
-        reason = " ".join(str(reason or "").split())
-        if len(reason) < 20:
-            raise NetworkError("say how you know, in a sentence: what reads or calls it, what it holds")
-        count = int(count or 0)
-        limits = {"data": (1, 0x4000), "table": (1, 128), "operands": (1, 8)}
-        if kind in limits and not limits[kind][0] <= count <= limits[kind][1]:
-            raise NetworkError(f"count: the {self.CORRECTION_KINDS[kind][1]}, {limits[kind][0]} to {limits[kind][1]}")
-        flat, cpu = self._banked_at(proj, at, function or None)
-        if kind == "data":
-            if flat // 0x4000 != (flat + count - 1) // 0x4000:
-                raise NetworkError("data stays in its bank: mark each bank's part on its own")
-            held = self.store.one("SELECT name FROM functions WHERE project_id=? AND status='matched' AND rom_offset<? "
-                                  "AND rom_offset+size>?", proj["id"], flat + count, flat)
-            if held is not None:
-                raise NetworkError(f"{held['name']} is matched there: its bytes are code")
-        recent = self.store.one("SELECT COUNT(*) AS n FROM events WHERE agent_id=? AND kind='correction' AND created_at>?",
-                                agent.id, time.time() - 3600)["n"]
-        if recent >= self.CORRECTIONS_PER_HOUR:
-            raise NetworkError(f"you made {recent} corrections in the last hour: leave a note (add_note) for the rest")
-        where = f"{flat // 0x4000:02X}:{cpu:04X}"
-        what = f"{where} {self.CORRECTION_KINDS[kind][0]}" + (f" ({count} {self.CORRECTION_KINDS[kind][1]})" if count else "")
-        owner = self.store.one("SELECT id FROM functions WHERE project_id=? AND rom_offset<=? AND rom_offset+size>?",
-                               proj["id"], flat, flat)
-        now = time.time()
-        with self.store.tx() as db:
-            db.execute("INSERT INTO corrections(project_id,kind,rom_offset,cpu,count,reason,agent_id,created_at) "
-                       "VALUES(?,?,?,?,?,?,?,?)", (proj["id"], kind, flat, cpu, count, reason[:1000], agent.id, now))
-            db.execute("INSERT INTO notes(project_id,function_id,agent_id,text,created_at) VALUES(?,?,?,?,?)",
-                       (proj["id"], owner["id"] if owner else None, agent.id, f"correction: {what}: {reason}", now))
-            self._event(db, proj["id"], agent.id, "correction", what)
-        return (f"✅ noted: {what}. It's used when the game is split again (a person does that from Settings, and can "
-                "undo it). Until then, work on as it is, or release the function with a note.")
+                      function: str = "", *, annotation=None, evidence=None, apply=True, expected_plan=None) -> str | dict:
+        """Existing split corrections, or bound SMS/GG proposals with explicit preview/application."""
+        from . import correction_annotations, correction_legacy
 
-    def corrections(self, slug: str) -> dict:
-        """The corrections to a banked project's split, newest first, and its symbol file (for Settings)."""
-        proj = self._project(slug)
-        rows = self.store.all("SELECT c.*, a.name AS agent FROM corrections c LEFT JOIN agents a ON a.id=c.agent_id "
-                              "WHERE c.project_id=? ORDER BY c.id DESC LIMIT 500", proj["id"])
-        out = [{"id": r["id"], "kind": r["kind"], "where": f"{r['rom_offset'] // 0x4000:02X}:{r['cpu'] or 0:04X}",
-                "count": r["count"], "unit": self.CORRECTION_KINDS.get(r["kind"], ("", ""))[1],
-                "says": self.CORRECTION_KINDS.get(r["kind"], ("", ""))[0], "reason": r["reason"], "by": r["agent"],
-                "at": r["created_at"], "undone": r["undone_at"] is not None} for r in rows]
-        return {"corrections": out, "symbol_file": self.symbol_file(slug), "coverage": self.coverage_file(slug)}
+        if annotation is None and evidence is None and apply is True and expected_plan is None:
+            return correction_legacy.add(self, agent, project, kind, at, reason, count, function)
+        return correction_annotations.add(self, agent, project, kind, at, reason, count, function, annotation, evidence,
+                                          apply=apply, expected_plan=expected_plan)
+
+    def corrections(self, slug: str, *, before_id=None, limit=500) -> dict:
+        from .correction_records import listing
+
+        return listing(self, slug, before_id=before_id, limit=limit)
+
+    def inspect_correction(self, slug: str, cid: int) -> dict:
+        from .correction_records import inspect
+
+        return inspect(self, slug, cid)
+
+    def review_correction(self, slug: str, cid: int, ok: bool, *, apply=False, expected_plan=None) -> dict:
+        from .correction_review import review
+
+        return review(self, slug, cid, ok, apply=apply, expected_plan=expected_plan)
 
     def undo_correction(self, slug: str, cid: int) -> dict:
-        proj = self._project(slug)
-        with self.store.tx() as db:
-            if not db.execute("UPDATE corrections SET undone_at=? WHERE id=? AND project_id=? AND undone_at IS NULL",
-                              (time.time(), int(cid), proj["id"])).rowcount:
-                raise NetworkError("no such correction, or it's undone already")
-        return self.corrections(slug)
+        from .correction_records import undo
+
+        return undo(self, slug, cid)
 
     def _hints(self, proj) -> dict:
         """The project's corrections, as the split takes them (rom/gb_trace.Tracer)."""
@@ -2070,9 +2029,9 @@ class RomNetwork(Network):
             source = cfg.get('symbol_file')
             if source is not None and (not isinstance(source, dict) or 'format' in source):
                 hints['symbol_source'] = source
-        for r in self.store.all("SELECT * FROM corrections WHERE project_id=? AND undone_at IS NULL "
-                                "AND annotation IS NULL AND evidence IS NULL ORDER BY id",
-                                proj["id"]):
+        from .correction_records import active
+
+        for r in active(self, proj):
             flat = r["rom_offset"]
             if r["kind"] == "data":
                 hints["data"].append((flat, r["count"]))

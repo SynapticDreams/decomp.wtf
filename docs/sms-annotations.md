@@ -1,9 +1,52 @@
 # SMS/GG annotation storage, version 1
 
-The annotation foundation stores research metadata on existing corrections, symbols
-and notes. It does not yet expose an editing API or consume these declarations for
-discovery. Corrections with either metadata column populated are held out of legacy
-split hints. The five existing correction kinds continue to work with NULL metadata.
+Versioned research metadata uses existing corrections, symbols and notes. Bound
+SMS/GG correction proposals now support preview, storage, inspection, operator
+review and undo. The five existing untagged correction kinds keep their historical
+meaning, with unknown provenance. New structured facts are pending by default.
+Only current, operator-reviewed facts of those five kinds feed existing split hints.
+Other structured kinds remain stored research until their discovery consumers are
+qualified. Notes/symbol editing and the full annotation UI remain follow-up work.
+
+## Correction workflow
+
+`correct_split` keeps the existing kind/location/reason/count call. Counts must be
+integers; extents must fit the ROM. New writes cannot classify accepted C or
+documented assembly as data, split a verified entry internally, or alter its call
+continuation contract. Existing untagged hints may describe inline data already
+present when source was accepted; they retain their prior behavior.
+
+For a bound SMS/GG proposal, pass `apply=false`. Existing five-kind arguments are
+converted to a version 1 annotation, or supply an `annotation` object and optional
+`evidence` object. Kind must agree with the annotation; omit legacy count when
+providing explicit geometry. Correction targets are ROM; RAM declarations belong
+on notes/symbols. Legacy hint kinds still need an explicit function or `NN:AAAA`
+coordinate. New record/pointer kinds can identify physical ROM without inventing
+a CPU window. Forced numeric values must match the original bytes.
+
+The preview returns `plan` and the proposed `correction`. Apply the same arguments
+with `apply=true, expected_plan=plan`. Missing/stale previews fail. The server binds
+revision, declared mapping/source context and a digest of annotation, CPU placement
+and target bytes. It derives agent origin, rejects supplied reviewed receipts and
+sets review pending. Mutable work has a separate guard so a saved fact does not
+invalidate its own stable binding. Bounds, revision/context mismatches, intervening
+edits, changed inputs and publication failures cannot partially publish a fact.
+
+`inspect_corrections` pages existing records (`limit`, `before_id`), or returns full
+geometry/evidence for `correction_id`. HTTP uses the existing `/api/corrections`
+GET endpoint with optional `id`, `before_id` and `limit`. Responses distinguish
+legacy, pending, stale, unavailable, unsupported, invalid, rejected, conflict,
+untrusted review and awaiting-consumer states. Unsupported/invalid raw metadata
+remains stored verbatim; oversized malformed inspection output is explicitly clipped.
+
+Operator POST `/api/corrections` accepts action `create` (the same preview/apply
+arguments), `inspect` (`id`), or `review` (`id`, boolean `ok`, `apply`,
+`expected_plan`). Review itself requires preview then exact application. The app's
+operator cookie and write header guard these routes. Workers have no review tool.
+Approval is bound to the exact stored row through the latest operator review event;
+a JSON receipt, copied receipt or superseded approval cannot grant authority. Row,
+binding and work reads use one database snapshot. `/api/corrections/undo` retains
+the fact and evidence while disabling it; undo requires a positive integer `id`.
 
 `decompnet.rom.annotations` provides `validate_annotation(value, rom_size=...)`,
 `validate_evidence(value)`, bounded canonical `dump(value)` and
@@ -79,8 +122,8 @@ Review contains `state`, `actor`, `at` and `binding_sha256`. Unknown/pending sta
 require NULL receipt fields. Accepted/rejected shapes require revision, context
 and subject plus a receipt bound to their canonical digest. A caller can compute
 that digest, so passing shape validation does **not** authenticate a review.
-Future mutation/consumption workflows must establish current project bindings and
-operator authority before treating any receipt as acceptance.
+The correction workflow establishes current project bindings and operator-event
+authority before treating a receipt as acceptance. Schema validation alone does not.
 
 ## Bounds and compatibility
 
@@ -100,6 +143,6 @@ columns and unknown future database columns still fail strict restore checks.
 Export context fingerprints use the same NULL-field compatibility rule, preserving
 an unchanged project's historical export context while detecting populated metadata.
 
-The mandatory SMS gate executes schema, migration and real pinned-tool C/assembly
-recovery fixtures on both SMS and GG. These checks qualify the storage foundation;
-they do not claim structured discovery or a complete annotation editor.
+The mandatory SMS gate executes schema, migration, authority and real pinned-tool
+C/assembly recovery fixtures on both SMS and GG. Structured table discovery and a
+complete annotation editor remain separate work.

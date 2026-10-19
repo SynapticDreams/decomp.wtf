@@ -319,7 +319,7 @@ def test_the_api_agent_stays_within_a_small_local_context(app, monkeypatch):
         if request.url.path == "/props":
             return httpx.Response(200, json={"default_generation_settings": {"n_ctx": 16384}})
         size = len(request.content)
-        if size > 30000 and not refused:  # once: the server counts tokens its own way
+        if len(sizes) == 2 and not refused:  # once after two tool results: the server counts context differently
             refused.append(size)
             return httpx.Response(400, json={"error": {"message": "the request exceeds the available context size"}})
         sizes.append(size)
@@ -332,6 +332,7 @@ def test_the_api_agent_stays_within_a_small_local_context(app, monkeypatch):
     assert manager._run_api(s, agent) is True
     assert len(sizes) == len(names) + 1 and max(sizes) < 16384 * 3  # all of it, each within the context
     assert refused  # and it got past a refusal
+    assert sizes[2] <= refused[0]  # retry never grows the request that was refused
 
 
 def test_fit_keeps_the_task_and_the_latest_exchange():
