@@ -31,3 +31,4 @@ jobs:
       - run: uv run decompnet toolchain install wla-dx
       - run: uv run decompnet toolchain install gbdk-2020
       - run: uv run python tools/sms_gate.py
+      - run: uv run python tools/sms_ui_gate.py

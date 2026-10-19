@@ -587,6 +587,7 @@ $("demoBtn").onclick = () => runImport("demo=1", undefined, "Opening Demo Quest 
 
 /* ------------------------------------------------------------------ project */
 async function openProject(slug, tab = "overview") {
+  smsResearch.render(null);
   show("project");
   S.slug = slug; S.e = 0; S.a = 0; S.seq = {}; S.scores = new Map(); S.flash = new Map(); S.sessions = []; S.claims = [];
   S.apFeed = null; S.stats = null; S.map = []; S.mapSig = null; geo = null;
@@ -3131,6 +3132,8 @@ async function renderProjectSettings() {
   for (const id of ["corrIntro", "correctionsList", "symHead", "symText", "symRow", "covHead"]) $(id).hidden = nesOnly;
   if (ov.sms_progress) $("symRow").hidden = true;
   smsSymbols.render(ov);
+  smsResearch.render(ov);
+  if (ov.sms_progress) $("correctionsList").hidden = $("corrIntro").hidden = true;
   $("corrTitle").textContent = nesOnly ? "Coverage from an emulator" : "Corrections to the split";
   if (corrects) loadCorrections();
 }
@@ -3184,6 +3187,10 @@ $("covRemove").onclick = async () => {
 
 const smsSymbols = window.SMSSymbolUI.create($("smsSymbols"), {
   api, getSlug: () => S.slug, refresh: loadCorrections, notify: message => toast(esc(message))
+});
+
+const smsResearch = window.SMSResearchUI.create($("smsResearch"), {
+  api, getSlug: () => S.slug, refresh: loadCorrections
 });
 
 $("symFile").onchange = async () => {

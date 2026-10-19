@@ -7,7 +7,45 @@ meaning, with unknown provenance. New structured facts are pending by default.
 Only current, operator-reviewed facts of those five kinds feed existing split hints.
 Other structured kinds remain stored research until their discovery consumers are
 qualified. Notes and symbols now support the same guarded metadata workflow. The
-full structured authoring/review UI remains follow-up work.
+structured authoring/review UI is available in project Settings.
+
+## Operator UI
+
+In Settings, **Research and split corrections** switches between corrections,
+notes/archives and existing symbols. Lists show 50 records per page. Select a
+record to inspect its geometry, evidence links, alternatives, confidence, original
+subject and review authority. Unsupported or malformed metadata stays readable as
+bounded original text; clipped output is labelled. Evidence references are shown
+as text and are never fetched automatically.
+
+**New proposal** offers all ten declaration kinds, editable address space,
+offset/extent and layout JSON examples. Examples describe geometry rather than
+observed contents. Notes and symbols also allow evidence-only research without a
+typed range. Legacy correction kinds need an explicit CPU placement; physical ROM
+offsets remain separate. Alternatives use one line each; evidence links use a JSON
+array. The editor rejects duplicate JSON keys and inexact integers before preview.
+The server still validates every declaration, binding and protected source range.
+
+**Preview proposal** shows the proposed research. **Apply** publishes exactly that
+preview. Draft edits, subject/project switches and declared mapping/input changes
+discard the preview; intervening work is also checked by the server. Pending
+publication locks the draft. Failed/stale application requires a new preview.
+**Discard draft** clears the proposal/preview without changing stored research.
+
+Current supported subjects offer separate approval/rejection previews. The
+inspection's review-authority status is distinct from the receipt claimed inside
+stored JSON. Notes/symbols remain research after approval; new structured correction
+kinds await qualified consumers. **Edit metadata** preserves existing note prose
+and attachment. **Preview metadata detachment** preserves that prose/symbol and
+archives its old metadata. **Copy to new proposal** creates fresh pending evidence
+with fresh bindings, never transferring origin or approval; review any copied
+interpretation and select a new note's attachment explicitly. Archives are read-only.
+**Undo correction** keeps the existing history record and disables its hint.
+
+Other platforms and room guests retain their existing workflows. UI qualification
+uses authored fixtures over the real authenticated HTTP routes for both SMS and GG;
+`uv run python tools/sms_ui_gate.py` requires a real Chrome/Chromium browser, Node and zero
+skipped required checks. Tool versions are printed with its result.
 
 ## Correction workflow
 

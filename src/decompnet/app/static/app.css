@@ -63,6 +63,15 @@ code, pre, .mono { font-family: var(--mono); }
 .small { font-size: 12.5px; }
 .grow { flex: 1; }
 .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.research-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 18px; }
+.research-grid > div, .research-grid fieldset { min-width: 0; }
+.research-grid fieldset { border: 1px solid var(--line); border-radius: 9px; padding: 12px; }
+.research-field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; font-size: 13px; }
+.research-field input, .research-field select, .research-field textarea { width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--raise); }
+.research-field textarea { resize: vertical; font: 12px/1.5 var(--mono); }
+#smsResearch { overflow-wrap: anywhere; }
+#smsResearch pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; }
+#smsResearch details { margin: 12px 0; }
 .ok { color: var(--match); }
 .warn-text { color: var(--work); }
 .bad { color: var(--miss); }
