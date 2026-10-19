@@ -59,12 +59,14 @@ def _first_address(path: Path) -> tuple[int | None, int | None]:
 def _symbol_lines(net, proj) -> list[str]:
     """symbol_addrs.txt entries for every function and every named symbol, so splat writes the project's names."""
     syms = net.symbols(proj["id"])
-    funcs = {r["vram"]: r for r in net.store.all("SELECT name, vram, size FROM functions WHERE project_id=?", proj["id"])}
+    funcs = net.store.all("SELECT name, vram, size, rom_offset FROM functions WHERE project_id=?", proj["id"])
+    addresses = {r["vram"] for r in funcs}
     lines = []
-    for vram, r in sorted(funcs.items()):
-        lines.append(f"{r['name']} = 0x{vram:08X}; // type:func")
+    for r in sorted(funcs, key=lambda row: (row["vram"], row["rom_offset"] or 0)):
+        placement = f" rom:0x{r['rom_offset']:X}" if r["rom_offset"] is not None else ""
+        lines.append(f"{r['name']} = 0x{r['vram']:08X}; // type:func{placement}")
     for s in sorted(syms.by_name.values(), key=lambda s: s.address):
-        if s.kind == "alias" or s.address in funcs or AUTO_NAME.match(s.name):
+        if s.kind == "alias" or s.address in addresses or AUTO_NAME.match(s.name):
             continue
         lines.append(f"{s.name} = 0x{s.address:08X};")
     return lines
@@ -115,7 +117,13 @@ def export_rom(net, slug: str, out: Path, log=print, translation_units: list[dic
 
     # 1. splat again, with the project's names
     log("writing the assembly with the project's names (splat)")
-    shutil.copyfile(configs[0], out / "splat.yaml")
+    export_config = yaml.safe_load(configs[0].read_text(encoding="utf-8"))
+    for segment in export_config.get("segments", []):
+        if isinstance(segment, dict) and str(segment.get("name", "")).startswith("ovl_"):
+            segment.setdefault("exclusive_ram_id", segment["name"])
+            segment.setdefault("symbol_name_format", "$VRAM_$SEG")
+            segment.setdefault("symbol_name_format_no_rom", "$VRAM_$SEG")
+    (out / "splat.yaml").write_text(yaml.safe_dump(export_config, sort_keys=False), encoding="utf-8")
     shutil.copyfile(work / image_name, out / image_name)
     for extra in ("reloc_addrs.txt",):
         if (work / extra).exists():

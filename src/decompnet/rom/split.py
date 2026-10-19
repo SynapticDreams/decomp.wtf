@@ -451,6 +451,7 @@ def _add_overlays(config: Path, workdir: Path, image: str, found: list[tuple[str
         data += code
         subs = [[start, "data", f"ovl_{name}_header"]] if code_at else []  # what comes before its code: a header
         segs.append({"name": f"ovl_{name}", "type": "code", "start": start, "vram": vram,
+                     "exclusive_ram_id": f"ovl_{name}",
                      "subsegments": subs + [[start + code_at, "c", f"ovl_{name}"]]})
     data += bytes(-len(data) % 0x10)
     segs.append([len(data)])

@@ -40,14 +40,15 @@ def test_invalid_explicit_mapping_never_falls_back_to_equal_name(index):
 
 @pytest.mark.skipif(not toolchains.installed('gcc-2.7.2-psx') or not toolchains.installed('objdiff-cli'),
                     reason='needs pinned PS1 GCC and objdiff')
-def test_native_cli_mapping_still_checks_changed_constants(tmp_path):
+@pytest.mark.parametrize('first,third', [(2, 3), (1, 9)])
+def test_native_cli_mapping_still_checks_changed_constants(tmp_path, first, third):
     tc = toolchains.require('gcc-2.7.2-psx')
-    for side, name, constant in [('target', 'original', 1), ('base', 'renamed', 2)]:
+    for side, name, constant, later in [('target', 'original', 1, 3), ('base', 'renamed', first, third)]:
         assembly = f""".set noreorder
 .section .rodata
 .globl jtbl_{side}
 jtbl_{side}:
-.word {constant},2,3,4
+.word {constant},2,{later},4
 .text
 .globl {name}
 .type {name},@function
@@ -67,5 +68,9 @@ lw $2,%lo(jtbl_{side})($2)
     d = objdiff.diff(tmp_path / 'target.o', tmp_path / 'base.o', 'original', tmp_path,
                      options=objdiff.judge_options(), project=tmp_path, unit='pair')
     assert d.match_percent == 100.0 and not d.matched
-    assert d.literals and d.literals[0].theirs != d.literals[0].yours
+    assert d.literals
+    if first != 1:
+        assert d.literals[0].theirs != d.literals[0].yours
+    else:
+        assert 'every table entry' in d.literals[0].describe()
     assert d.data_pairs[0]['base'] == 'jtbl_base' and d.data_pairs[0]['match_percent'] < 100
