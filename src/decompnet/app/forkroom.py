@@ -24,6 +24,7 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
+from ..forks import policy as contribution_policy
 from ..forks import dtksplits, scratch_dsd, scratch_dtk
 from ..forks.project import EDITABLE, FORBIDDEN_PARTS, ForkError, ForkProject
 from ..network import NetworkError
@@ -361,6 +362,7 @@ def register_member(net, slug: str, root: Path, info: dict, host_title: str) -> 
     cfg = {"kind": "fork", "origin": info.get("origin") if info.get("origin") == "scratch" else None,
            "repo_url": info.get("repo_url"), "platform": info.get("platform") or "", "version": info.get("version"),
            "fork_kind": ForkProject(root).kind(), "ready": False, "compiler": info.get("compiler"),
+           "contribution_policy": contribution_policy.inspect(root),
            "legal": {"basis": "personal-copy", "license": "personal use only",
                      "statement": "joined a room with the member's own copy of the game, confirmed legally obtained"}}
     if info.get("sha1"):

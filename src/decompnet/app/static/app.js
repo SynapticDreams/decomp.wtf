@@ -1433,14 +1433,13 @@ $("repoFork").onclick = () => {
 };
 
 /* What the project's own files say about AI, word for word, before anything is cloned. */
-function policyHtml(pol) {
-  if (pol.error) return `<div class="notice"><span>Couldn't read what the project says about AI (${esc(pol.error)}). Look at its README and contribution rules yourself before you fork it.</span></div>`;
-  const quotes = pol.lines.map((l) => `<blockquote class="policy-line">“${esc(l.text)}” <span class="muted small">${esc(l.file)}</span></blockquote>`).join("");
-  if (pol.lean === "no") return `<div class="notice bad"><span><b>This project says it doesn't want AI-made code.</b> Respect that: keep this fork for yourself, to study the game, and send it nothing your agents wrote.</span></div>${quotes}
-    <label class="check"><input type="checkbox" id="forkOk"><span>I'll keep this fork to myself and won't send AI-made code to this project.</span></label>`;
-  if (pol.lean === "silent") return `<p class="muted small">Its README and contribution files (${esc(pol.files.join(", ") || "none")}) say nothing about AI. Ask the project's team before you send it anything your agents wrote.</p>`;
-  if (pol.lean === "rules") return `<p class="small"><b>This project allows AI, with rules of its own.</b> Follow them in anything you send it:</p>${quotes}`;
-  return `<p class="small"><b>What the project says about AI:</b></p>${quotes}`;
+function policyHtml(pol, acknowledgement = true) {
+  const warning = pol.error ? '<div class="notice"><span>Policy review is incomplete: ' + esc(pol.error) + '. Read the contribution files directly.</span></div>' : "";
+  const quotes = warning + (pol.lines || []).map((l) => '<blockquote class="policy-line">“' + esc(l.text) + '” <span class="muted small">' + esc(l.file) + '</span></blockquote>').join("");
+  if (pol.lean === "no") return '<div class="notice bad"><span><b>This project states restrictions on AI-made code.</b> Read and follow the quoted rules before contributing.</span></div>' + quotes
+    + (acknowledgement ? '<label class="check"><input type="checkbox" id="forkOk"><span>I will follow these contribution rules.</span></label>' : "");
+  if (pol.lean === "silent") return warning || '<p class="muted small">No AI statements were found in the inspected files (' + esc((pol.files || []).join(", ") || "none") + '). Read the project contribution rules before sending work.</p>';
+  return '<p class="small"><b>What the project says about AI and contributions:</b></p>' + quotes;
 }
 
 function openForkDialog(p) {
@@ -2914,6 +2913,15 @@ function renderSource(ov) {
         + (rb ? `<p class="small ${rb.identical ? "ok" : "warn-text"}">${rb.identical ? "✓ The rebuilt game is your copy, byte for byte" + (/padding/.test(rb.detail) ? " (up to the padding at its end: your copy is trimmed)." : ".")
           : `The rebuilt game isn't your copy byte for byte yet: ${esc(rb.detail)}. Decompiling works anyway: every function is compared with your copy's own code.`}</p>` : "")
       : `This project <b>is</b> the source tree${ov.repo_url ? ` (a fork of <a class="link" href="${esc(ov.repo_url)}" target="_blank" rel="noopener">${esc(ov.repo_url.replace(/^https?:\/\//, ""))}</a>)` : ""}. Every match is committed to the <code>decomp-wtf</code> branch, ready to send upstream.`;
+    $("srcText").innerHTML += '<details><summary>Contribution rules (saved review)</summary>'
+      + (ov.contribution_policy ? policyHtml(ov.contribution_policy, false) : '<p>No saved review. Read the project contribution files before sending work.</p>')
+      + '<button class="ghost small-btn" id="refreshPolicy" type="button">Review current local rules</button></details>';
+    $("refreshPolicy").onclick = async () => {
+      try {
+        ov.contribution_policy = await api("/api/fork/policy", { method: "POST", body: { slug: S.slug } });
+        renderSource(ov);
+      } catch (e) { toast(esc(e.message), "err"); }
+    };
     $("srcState").innerHTML = `<div class="row"><button class="ghost small-btn" id="forkMeasure" type="button">Re-measure with objdiff</button>${rb ? `<button class="ghost small-btn" id="romCheck" type="button">Rebuild the game and compare</button>` : ""}</div>`;
     if (rb) $("romCheck").onclick = async () => {
       $("romCheck").disabled = true;
