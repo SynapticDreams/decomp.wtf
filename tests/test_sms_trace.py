@@ -116,6 +116,30 @@ def test_a_bank_saved_from_the_mapper_and_restored_is_followed_through():
     assert found[0x18000] == (0x8000, "call") and found[0x14100] == (0x8100, "call")
 
 
+def test_ram_mirror_readback_can_differ_from_the_selected_bank():
+    found = starts({
+        0x0100: bytes.fromhex("3e05" "32ffff" "3e06" "32ffdf" "cd0080"
+                              "3affff" "32ffff" "cd0080" "18fe"),
+        **BANK5, 0x18000: bytes.fromhex("3e08c9"),
+    })
+    # The alias store changes readback to 6 while bank 5 remains selected for the first call.
+    assert found[0x14000] == (0x8000, "call")
+    assert found[0x18000] == (0x8000, "call")
+
+
+def test_mapper_register_reads_require_ram_evidence_instead_of_reset_bank_fallback():
+    rom = make_rom(size=SIZE, code={0: bytes.fromhex("3affff" "32ffff" "cd0080" "18fe"),
+                                   0x8000: bytes.fromhex("3e02c9")})
+    found = sms_trace.Tracer(rom).follow({0: (0, "vector")})
+    assert 0x8000 not in found.starts
+
+
+def test_indirect_work_ram_writes_and_reads_use_the_same_alias():
+    found = starts({0x0100: bytes.fromhex("2100c1" "3605" "2100e1" "7e" "32ffff" "cd0080" "18fe"),
+                    **BANK5})
+    assert found[0x14000] == (0x8000, "call")
+
+
 def test_ex_sp_hl_first_thing_takes_the_return_address():
     rom = make_rom(size=SIZE, code={0x0000: bytes.fromhex("cd0002" "05" "18fe"),  # call $0200 · db 5 · ...
                                     0x0200: bytes.fromhex("e3" "7e" "23" "e3" "c9")})  # ex (sp),hl · ld a,(hl) · ...

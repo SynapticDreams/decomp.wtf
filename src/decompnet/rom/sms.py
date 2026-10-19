@@ -28,6 +28,7 @@ from pathlib import Path
 from . import gb, sms_trace, z80
 from .n64 import RomError
 from .sms_identity import strip_copier_header as strip_copier_header
+from .sms_mapping import BusState, Mapper, entry_state
 
 BANK_SIZE = 0x4000
 MAGIC = b"TMR SEGA"
@@ -155,23 +156,21 @@ def segment_vram(bank: int, size: int) -> int:
     return slot_base(bank, size)
 
 
-def target_flat(cpu: int, from_bank: int, size: int, here: int | None = None) -> int | None:
-    """The flat ROM offset a call or jump to `cpu` reaches from code in `from_bank`, or None for RAM and ports.
+def target_flat(cpu: int, from_bank: int, size: int, here: int | None = None, *,
+                mapping: BusState | None = None, mapper: str = "sega") -> int | None:
+    """Resolve a ROM reference from explicit mapping or conditional entry evidence.
 
-    Into the slot the code runs from (`here`, its own CPU address, when known), its own bank. Otherwise slot 0 is
-    always bank 0; slot 1 is the caller's own bank when that bank is shown there, else bank 1 (the power-on
-    mapping); slot 2 is bank 2, or the caller's own bank when it is shown there."""
-    if cpu < 0x4000:
-        return cpu
-    if cpu >= 0xC000:
+    An entry establishes only its own CPU window. Display placement does not establish other banks;
+    callers needing reset banks must supply that state explicitly. RAM, BIOS and unknown sources return None.
+    """
+    try:
+        model = Mapper(mapper, size)
+    except ValueError:
         return None
-    if here is not None and here >= 0x4000 and here >> 14 == cpu >> 14:
-        return from_bank * BANK_SIZE + (cpu & (BANK_SIZE - 1))
-    if cpu < 0x8000:
-        bank = from_bank if slot_base(from_bank, size) == 0x4000 else 1
-        return bank * BANK_SIZE + (cpu - 0x4000)
-    bank = from_bank if slot_base(from_bank, size) == 0x8000 else 2
-    return bank * BANK_SIZE + (cpu - 0x8000)
+    if mapping is None:
+        flat = from_bank * BANK_SIZE + (here & (BANK_SIZE - 1)) if here is not None else -1
+        mapping = entry_state(flat, here if here is not None else -1, size)
+    return model.resolve(cpu, mapping).rom_offset
 
 
 def banks(data: bytes) -> list[bytes]:

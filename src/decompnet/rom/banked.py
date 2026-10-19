@@ -9,6 +9,7 @@ header-free image for the Master System, as each lane records `rom_offset`) and 
 from __future__ import annotations
 
 from . import gb, mos6502, nes, sm83, sms, z80
+from .sms_mapping import BusState
 
 
 class Lane:
@@ -42,14 +43,15 @@ class Lane:
             return sms.function_name(flat, self.size, cpu)
         return nes.function_name(flat - self.prg_off, self.layout)
 
-    def flat_of(self, cpu: int, from_flat: int, from_cpu: int | None = None) -> int | None:
+    def flat_of(self, cpu: int, from_flat: int, from_cpu: int | None = None, *,
+                mapping: BusState | None = None) -> int | None:
         """The ROM offset a call or jump to `cpu` reaches from code at `from_flat` (running at `from_cpu`, when
         known): None for RAM, registers, unmapped."""
         bank = self.bank(from_flat)
         if self.arch == "sm83":
             return gb.flat_offset(cpu, bank) if cpu < 0x8000 else None
         if self.arch == "z80":
-            return sms.target_flat(cpu, bank, self.size, from_cpu)
+            return sms.target_flat(cpu, bank, self.size, from_cpu, mapping=mapping)
         p = self.layout.target(cpu, bank)
         return None if p is None else p + self.prg_off
 

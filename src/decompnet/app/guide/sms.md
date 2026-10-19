@@ -13,6 +13,13 @@ Profile changes retain existing work and refuse mapping changes that would reint
 Experimental build intent is recorded separately from original reconstruction; whole-image equality still
 compares against the frozen original input. The local operator API is `/api/sms/profile` (GET or POST).
 
+Reference resolution distinguishes CPU addresses from cartridge offsets. An established code entry identifies
+its own mapped window; its display placement does not establish banks in other windows. Only Sega's first KiB
+is fixed to bank 0. Mapper-register reads see work RAM, including its mirror: writing the other RAM alias can
+change that readback without selecting a new bank. Reset register values are a selected analysis recipe,
+not a guarantee for every mapper revision. Full bus-context propagation and consumer migration are in progress;
+the provisional trace still uses a cartridge-only reset model and cannot establish BIOS or cartridge-RAM execution.
+
 ## What the importer does with a .sms / .gg file
 
 - A Sega header is recognised by content: `TMR SEGA` at 0x7FF0 (0x3FF0 or 0x1FF0 in a ROM of 16 or 8 KiB).
