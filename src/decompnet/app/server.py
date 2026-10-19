@@ -34,7 +34,7 @@ from .. import __version__, hostenv, toolchains
 from ..network import NetworkError
 from ..rom.n64 import RomError
 from . import agents, chat, collab, connect, tools, updates
-from .engine import COMPILERS, MW_VERSIONS, PLATFORM_STATUS, SHORT_NAMES, TOOLS, RomNetwork
+from .engine import ASM_ARCHS, COMPILERS, MW_VERSIONS, PLATFORM_STATUS, SHORT_NAMES, TOOLS, RomNetwork
 
 COOKIE = "decomp_live"
 MAX_DISC = 16 * 1024 * 1024 * 1024  # dual-layer DVD and then some
@@ -1116,8 +1116,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 proj = net.project_row(slug)
             except NetworkError as e:
                 return fail(e)
-            if (proj["arch"] or "") != "sm83" or net.fork_slug(slug):
-                return fail(ValueError("the assembly track is for Game Boy projects"))
+            if (proj["arch"] or "") not in ASM_ARCHS or net.fork_slug(slug):
+                return fail(ValueError("the assembly track is for Game Boy, Master System, Game Gear and NES projects"))
             if not agents.Manager._asm_left(net, proj):
                 return fail(ValueError("Nothing to start on: every hand-written routine is documented or being worked on."))
             options["track"] = "asm"
