@@ -25,13 +25,15 @@ from . import sms, sms_asm, sms_hw
 from .export_gb import NOTE_CHARS, NOTES_PER_LABEL, _documented
 from .sms_identity import verify_normalized
 from .sms_profile import describe
+from .export_sms_verification import verify
+from .export_sms_report import source_digest
 
 LABEL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")  # a name WLA-DX takes as a label
 WORD = re.compile(r"(?<![.@\w])[A-Za-z_]\w*")
 DOCUMENTED = "documented"
 
 
-def export_sms(net, slug: str, out: Path, log=print) -> dict:
+def export_sms(net, slug: str, out: Path, log=print, *, strict_documented=False) -> dict:
     proj = net._project(slug)
     cfg = net.cfg(proj)
     rom_path = Path(proj["root"]) / cfg["rom"]["file"]
@@ -79,6 +81,12 @@ def export_sms(net, slug: str, out: Path, log=print) -> dict:
 
     entries = _write_documented(net, proj, out, [r for r in documented if LABEL.match(r["name"])],
                                 {r["name"] for r in named})
+    omissions = dict(left_out)
+    exported_names = {entry['name'] for entry in entries}
+    expected = [{key: row[key] for key in ('name', 'size')} | {'flat': row['rom_offset'], 'cpu': row['vram'],
+        'source_sha256': source_digest(row['matched_source'] or ''),
+        'omission': omissions.get(row['name']) or ('source_not_exported' if row['name'] not in exported_names else None)}
+        for row in rows if row['status'] == 'documented']
     banks = {int(s["rom_start"]) // sms.BANK_SIZE: int(s["vram"]) for s in cfg.get("segments") or []}
     layout = {"functions": [{"name": r["name"] if r["id"] in named_ids else None, "flat": r["rom_offset"], "cpu": r["vram"],
                              "size": r["size"]} for r in rows],
@@ -94,10 +102,13 @@ def export_sms(net, slug: str, out: Path, log=print) -> dict:
     shutil.copyfile(Path(__file__).with_name("sms_identity.py"), out / "tools" / "sms_identity.py")
     shutil.copyfile(Path(__file__).with_name("sms_mapping.py"), out / "tools" / "sms_mapping.py")
     shutil.copyfile(Path(__file__).with_name("sms_codemasters.py"), out / "tools" / "sms_codemasters.py")
+    for source, target in (('export_sms_report.py', 'sms_export_report.py'), ('export_sms_build_run.py', 'sms_export_build_run.py')):
+        shutil.copyfile(Path(__file__).with_name(source), out / 'tools' / target)
     (out / "build.json").write_text(json.dumps({"title": proj["name"], "platform": platform, "image": base,
                                                 "sha1": hashlib.sha1(image).hexdigest(), "size": len(image),
                                                 "identity": cfg["rom"].get("identity"),
-                                                "sms_profile": profile},
+                                                "sms_profile": profile, "expected_documented": expected,
+                                                "c_reference": {"stored_matches": matched, "verified_by_build": False, "source_linked": False}},
                                                indent=1), encoding="utf-8")
     shutil.copyfile(Path(__file__).with_name("export_sms_build.py"), out / "build.py")
     (out / base).write_bytes(image)
@@ -105,20 +116,27 @@ def export_sms(net, slug: str, out: Path, log=print) -> dict:
     _docs(out, proj["name"], base, matched, len(rows), len(entries))
 
     log("building the exported project to check it rebuilds the game byte for byte")
-    proc = subprocess.run(capped([sys.executable, "build.py"]), cwd=out, capture_output=True, text=True, timeout=3600,
+    proc = subprocess.run(capped([sys.executable, "build.py", *(["--require-documented"] if strict_documented else [])]), cwd=out, capture_output=True, text=True, timeout=3600,
                           encoding="utf-8", errors="replace")
-    identical = proc.returncode == 0 and "identical" in proc.stdout
+    verification = verify(out, image, expected, proc.returncode, platform, required=strict_documented)
+    identical = verification['passed']
     if not identical:
         log((proc.stdout + proc.stderr)[-3000:])
-    for name, why in proc.stdout and re.findall(r"^left as bytes: (\S+): (.+)$", proc.stdout, re.M) or []:
-        left_out.append((name, why))
+    receipt = verification.get('build') or {}
+    source_receipt = receipt.get('documented')
+    source_rows = source_receipt.get('routines', []) if isinstance(source_receipt, dict) else []
+    if not isinstance(source_rows, list) or not all(isinstance(row, dict) and 'name' in row and 'omission' in row for row in source_rows):
+        source_rows = []
+    if not source_rows and expected:
+        source_rows = [dict(row, inserted=False, omission=row.get('omission') or 'source_insertion_unverified') for row in expected]
+    left_out = [(row['name'], row['omission']) for row in source_rows if not row.get('inserted')]
     if left_out:
         log(f"{len(left_out)} documented routines left as the disassembly has them: "
             + "; ".join(f"{n}: {why}" for n, why in left_out[:6]))
     return {"path": str(out), "identical": identical, "sms_profile": profile,
-            "exact_original_intent": profile["exact_original_intent"],
+            "exact_original_intent": profile["exact_original_intent"], "verification": verification,
             "matched": matched, "functions": len(rows),
-            "documented": len(entries) - sum(1 for n, _ in left_out if any(e["name"] == n for e in entries)),
+            "documented": sum(row.get("inserted") is True for row in source_rows) if verification["receipt_valid"] else 0,
             "left_out": left_out, "fallback": [], "log": (proc.stdout + proc.stderr)[-3000:]}
 
 
@@ -165,6 +183,12 @@ in assembly (in `documented/`), and {matched} are also matched in C (in `c/`).
    of its bytes), builds it with [WLA-DX](https://github.com/vhelin/wla-dx), and checks the result against your
    copy. Needs WLA-DX: decomp.wtf's pinned one when decomp.wtf is installed, else `wla-z80` and `wlalink` on `PATH`
    (or `WLA_DX` set to the folder that has them).
+
+Every attempt writes `build/verification.json`: verified input identity, actual image digests/equality,
+documented source emission/insertion and omission reasons, and process/policy results. `python build.py
+--require-documented` fails if expected documented source is left out, even when raw reconstruction is identical.
+`--no-documented` deliberately omits it. C remains reference material; this build does not link C replacements,
+qualify typed data or semantic review, or test runtime parity. Console success words alone are not verification.
 
 The build includes the same cartridge resolver as the application. A declared supported model and an emitted
 instruction's CPU address can establish references within its own window; section placement does not establish

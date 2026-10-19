@@ -27,6 +27,7 @@ TESTS = (
     "tests/test_sms_resplit_inspection.py",
     "tests/test_sms_project_archive.py",
     "tests/test_sms_resplit_legacy_integration.py",
+    "tests/test_sms_export_verification.py",
     "tests/test_sms_documented.py",
     "tests/test_export_sms.py",
 )
@@ -116,6 +117,13 @@ def verify_report(report: Path) -> int:
     if not all(f'test_old_schema_source_is_migrated_revalidated_and_restored_without_losing_work[{platform}-{kind}]'
                in legacy for platform in ('sms', 'gg') for kind in ('c', 'asm')):
         raise ValueError('SMS gate report is missing actual SMS/GG old-database source integration checks')
+    verification = {case.get('name') for case in cases if case.get('classname') == 'tests.test_sms_export_verification'}
+    if not all(f'{test}[{platform}]' in verification for platform in ('sms', 'gg') for test in (
+        'test_standalone_reports_inserted_disabled_and_required_source_separately',
+        'test_changed_assembly_reports_actual_insertion_and_the_image_difference')) or not all(
+            f'test_failed_standalone_run_replaces_old_success_receipts_and_artifacts[{platform}-tool]' in verification
+            for platform in ('sms', 'gg')):
+        raise ValueError('SMS gate report is missing actual SMS/GG structured export verification checks')
     return len(cases)
 
 

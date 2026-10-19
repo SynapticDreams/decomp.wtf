@@ -3,6 +3,7 @@
 
     python build.py                  make the disassembly from your copy, build it, compare
     python build.py --no-documented  without the documented routines (their bytes, as the disassembly has them)
+    python build.py --require-documented  fail if any expected documented source is omitted
 
 Your copy (baserom.sms or baserom.gg) is disassembled into build/disassembly/ on every build: each function in
 layout.json as Z80 instructions (tools/z80.py) at the address it runs at, under its name, with a label at every jump
@@ -26,7 +27,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "tools"))
 import z80  # noqa: E402  (decomp.wtf's Z80 disassembler, next to this file)
-from sms_identity import strip_copier_header, verify_normalized  # noqa: E402
 from sms_mapping import BusState, Mapper  # noqa: E402
 
 B = json.loads((ROOT / "build.json").read_text(encoding="utf-8"))
@@ -116,6 +116,7 @@ class Disassembly:
         self.left: list[tuple[str, str]] = []
         self.placed = 0  # documented routines in place of their bytes
         self.done: dict[int, bool] = {}
+        self.source_hashes: dict[int, str] = {}
 
     def at(self, flat: int) -> int:
         """The address the byte at `flat` has in the build (its bank's slot)."""
@@ -220,6 +221,7 @@ class Disassembly:
             self.defines[name] = self.at(a)
         self.placed += 1
         self.done[flat] = True
+        self.source_hashes[flat] = hashlib.sha256(text.strip().encode()).hexdigest()
         return [f"; documented in assembly: {e['file']}", *text.rstrip().splitlines(), ""]
 
     def bank(self, b: int, notes: dict[str, list[str]]) -> str:
@@ -295,59 +297,9 @@ def hardware() -> None:
 
 
 def main(argv: list[str]) -> int:
-    image = ROOT / B["image"]
-    if not image.exists():
-        fail(f"put your own copy of the game here as {B['image']}")
-    data = strip_copier_header(image.read_bytes())
-    if hashlib.sha1(data).hexdigest() != B["sha1"]:
-        fail(f"{B['image']} isn't the version this project is for (its sha1 differs)")
-    try:
-        verify_normalized(data, B.get("identity"), B["sha1"])
-    except ValueError as exc:
-        fail(str(exc))
-    asm, link = tools()
-    hardware()
-    folder = OUT / "disassembly"
-    shutil.rmtree(folder, ignore_errors=True)
-    folder.mkdir(parents=True)
-    print("disassembling your copy (with the project's names)")
-    d = Disassembly(data, documented="--no-documented" not in argv)
-    d.decode()
-    d.name_targets()
-    d.used_names()
-    notes = comments()
-    banks = [d.bank(b, notes) for b in range(d.banks)]
-    left = {name for name, _ in d.left}
-    for e in d.documented.values():  # (one the walk never reached the start of: inside what came before)
-        if e["name"] not in left and not d.done.get(e["flat"]):
-            d.left.append((e["name"], "its start falls inside what comes before it here"))
-    for name, why in d.left:
-        print(f"left as bytes: {name}: {why}")
-    names = (ROOT / "documented" / "names.inc").read_text(encoding="utf-8") if (ROOT / "documented" / "names.inc").exists() else ""
-    names += "".join(f".DEFINE {n} ${v:04X}\n" for n, v in sorted(d.defines.items()))
-    (folder / "names.inc").write_text(names, encoding="utf-8")
-    shutil.copyfile(ROOT / "include" / "hardware.inc", folder / "hardware.inc")
-    size = BANK if len(data) >= BANK else len(data)
-    game = [".MEMORYMAP", "DEFAULTSLOT 0", "SLOT 0 $0000 $4000", "SLOT 1 $4000 $4000", "SLOT 2 $8000 $4000", ".ENDME",
-            ".ROMBANKMAP", f"BANKSTOTAL {d.banks}", f"BANKSIZE ${size:04X}", f"BANKS {d.banks}", ".ENDRO",
-            '.INCLUDE "hardware.inc"', '.INCLUDE "names.inc"']
-    for b, text in enumerate(banks):
-        (folder / f"bank_{b:03d}.asm").write_text(text, encoding="utf-8")
-        game.append(f'.INCLUDE "bank_{b:03d}.asm"')
-    (folder / "game.asm").write_text("\n".join(game) + "\n", encoding="utf-8")
-    (folder / "link.txt").write_text("[objects]\ngame.o\n", encoding="utf-8")
-    print(f"{d.placed} documented routines in place of their bytes")
-    rom = f"game.{'gg' if B['image'].endswith('.gg') else 'sms'}"
-    run([asm, "-o", "game.o", "game.asm"], folder)
-    run([link, "-S", "-r", "link.txt", rom], folder)
-    built = (folder / rom).read_bytes()
-    shutil.copyfile(folder / rom, OUT / rom)
-    if built == data:
-        print(f"identical: build/{rom} is your copy of the game, byte for byte")
-        return 0
-    at = next((i for i, (a, b) in enumerate(zip(built, data)) if a != b), min(len(built), len(data)))
-    print(f"differs: build/{rom} first differs from your copy at ${at:06x} ({len(built)} vs {len(data)} bytes)")
-    return 1
+    from sms_export_build_run import build
+
+    return build(sys.modules[__name__], argv)
 
 
 if __name__ == "__main__":
