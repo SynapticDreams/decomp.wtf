@@ -97,6 +97,8 @@ Non-NULL metadata survives snapshot/reload/undo byte for byte. NULL optional col
 are omitted from snapshot encoding to retain existing history hashes; restoring
 old snapshots fills only those known optional columns with NULL. Missing required
 columns and unknown future database columns still fail strict restore checks.
+Export context fingerprints use the same NULL-field compatibility rule, preserving
+an unchanged project's historical export context while detecting populated metadata.
 
 The mandatory SMS gate executes schema, migration and real pinned-tool C/assembly
 recovery fixtures on both SMS and GG. These checks qualify the storage foundation;

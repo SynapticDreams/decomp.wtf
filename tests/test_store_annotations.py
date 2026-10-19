@@ -1,5 +1,8 @@
 """Metadata upgrades preserve old work, unknown fields and legacy snapshot identities."""
 import sqlite3
+from contextlib import nullcontext
+from threading import RLock
+from types import SimpleNamespace
 
 import pytest
 
@@ -7,6 +10,7 @@ from decompnet.store import SCHEMA, MIGRATIONS, Store
 from decompnet import store_annotations
 from decompnet.app import banked_resplit_state as snapshots
 from decompnet.app.banked_resplit_restore import restore
+from decompnet.app.sms_export_state import stamp
 from decompnet.network import NetworkError
 from decompnet.rom.annotations import dump
 from .annotation_fixture import annotation, evidence
@@ -83,6 +87,20 @@ def test_old_snapshot_digest_survives_nullable_schema_upgrade_and_restore(tmp_pa
         restore(db, pid, state)
     assert snapshots.encode(snapshots.capture(store.conn, pid, {}))[1] == digest
     assert store.one('SELECT annotation,evidence FROM notes')['evidence'] is None
+
+
+def test_export_context_survives_nullable_upgrade_and_detects_new_metadata(tmp_path):
+    path = tmp_path / 'export-context.db'
+    conn, pid = legacy(path)
+    net = SimpleNamespace(store=SimpleNamespace(conn=conn, lock=RLock(), tx=lambda: nullcontext(conn)))
+    before = stamp(net, {'id': pid})
+    conn.close()
+    net.store = Store(path)
+    assert stamp(net, {'id': pid}) == before
+    net.store.conn.execute('UPDATE notes SET evidence=? WHERE project_id=?', (dump(evidence()), pid))
+    assert stamp(net, {'id': pid}) != before
+    net.store.conn.execute('UPDATE notes SET evidence=NULL WHERE project_id=?', (pid,))
+    assert stamp(net, {'id': pid}) == before
 
 
 @pytest.mark.parametrize('supported', [False, True])
