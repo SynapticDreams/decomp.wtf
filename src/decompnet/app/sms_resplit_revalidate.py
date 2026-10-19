@@ -51,7 +51,9 @@ def affected(before, candidates, regions, *, force=False):
 def preview(before, candidates, regions, *, force=False):
     rows = affected(before, candidates, regions, force=force)
     return {'source_revalidation_pending': len(rows),
-            'source_revalidation_candidates': [{key: row[key] for key in ('id', 'name', 'rom_offset', 'vram', 'status')}
+            'source_revalidation_limits': {'functions': MAX_CHECKS, 'seconds': SECONDS},
+            'source_revalidation_candidates': [{**{key: row[key] for key in ('id', 'rom_offset', 'vram', 'status')},
+                                                'name': row['name'][:512], 'name_truncated': len(row['name']) > 512}
                                                 for row in rows[:100]],
             'source_revalidation_candidates_truncated': len(rows) > 100}
 

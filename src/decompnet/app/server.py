@@ -724,7 +724,9 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             return net.resplit_history(slug, int(cursor) if cursor is not None else None)
         undo = data.get("undo")
         apply = data.get("apply") is True
-        if undo is not None and (apply or data.get("profile") is not None):
+        if apply and data.get('inspection') is not None:
+            raise NetworkError('preview inspection is read-only')
+        if undo is not None and (apply or data.get("profile") is not None or data.get('inspection') is not None):
             raise NetworkError("choose either resplit apply/profile migration or undo")
         if apply or undo is not None:
             if any(s.slug == slug and s.state in ("starting", "working", "waiting") and not s.stop.is_set()
@@ -736,7 +738,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         def work(log):
             if undo is not None:
                 return net.undo_resplit(slug, undo)
-            return net.resplit_banked(slug, apply=apply, log=log, expected_plan=data.get("plan"), profile=data.get("profile"))
+            return net.resplit_banked(slug, apply=apply, log=log, expected_plan=data.get("plan"),
+                                      profile=data.get("profile"), inspection=data.get('inspection'))
         return {"job": jobs.start("resplit", work)}
 
     def p_resplit_archive(slug, request, data):

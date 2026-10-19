@@ -44,7 +44,10 @@ window.SMSProfileMigrationUI = {
           `${report.added} added, ${report.removed} removed. ` +
           "Accepted source is checked on apply; names and purposes still need review.";
         result.append(status);
-        window.ResplitHistoryUI.changes(result, report);
+        window.ResplitHistoryUI.changes(result, report,
+          selection => run(choice, false, report.plan, null, selection),
+          () => current() && revision === started && JSON.stringify(read()) === JSON.stringify(choice),
+          () => { saved = null; apply.hidden = true; revision++; });
         if (commit) await applied();
         else if (/^[0-9a-f]{64}$/.test(report.plan)) {
           saved = { choice, plan: report.plan };
