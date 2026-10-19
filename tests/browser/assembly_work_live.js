@@ -33,6 +33,12 @@
     L.filter = 'deferred'; renderList();
     assert(document.getElementById('fnRows').textContent.includes('Bytes exact') &&
       !document.getElementById('fnRows').textContent.includes('99.'), 'assembly queue separates byte equality from checks');
+    await document.getElementById('fnResume').onclick();
+    document.getElementById('fnEdit').value = '; authored\nFirst: ret';
+    await tryIt();
+    assert(document.getElementById('tryBtn').disabled && document.getElementById('tryMsg').textContent.includes('pending'),
+      'an exact-byte mapping failure shows validation feedback and stays deferred after submission');
+    assert(!document.getElementById('tryMsg').textContent.includes("didn't compile"), 'a validation blocker is not a compile failure');
     document.getElementById('report').textContent = 'PASS: production assembly drawer, queue actions, guarded launcher and byte/check separation';
   } catch (e) { document.getElementById('report').textContent = 'FAIL: ' + e.stack; }
 })();

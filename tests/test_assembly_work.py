@@ -208,3 +208,13 @@ def test_operator_can_defer_their_own_manual_edit_but_not_a_helpers_claim(work):
     net.claim_asm_row(you, 'authored', 'First')
     assert net.assembly.change('authored', 'First', reason='Authored evidence needs manual repair')['deferred']
     assert not net.store.one('SELECT 1 FROM claims')
+
+
+def test_pinned_assembly_cannot_bypass_its_target_through_direct_tools(work):
+    net, agent, _ = work
+    net.pinned[agent.id] = 'First'
+    with pytest.raises(NetworkError, match='works on First only'):
+        net.claim_asm_row(agent, 'authored', 'Second')
+    with pytest.raises(NetworkError, match='works on First only'):
+        net.document_function(agent, 'authored', 'Second', 'Second: ret')
+    assert not net.store.one('SELECT 1 FROM attempts')

@@ -2409,7 +2409,7 @@ async function tryIt() {
     if (r.score != null) { S.ftab = "diff"; showFnTab("diff"); }
   } catch (e) {
     msg.className = "try-msg bad"; msg.textContent = e.message;
-  } finally { $("tryBtn").disabled = false; }
+  } finally { $("tryBtn").disabled = !!S.fnDetail?.assembly_work?.deferred; }
 }
 /* The function stays yours only while you're on it: give it back when you move on. */
 function giveBack(next) {

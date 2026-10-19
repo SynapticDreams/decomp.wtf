@@ -2156,6 +2156,10 @@ class RomNetwork(Network):
         hands its members' claims out with it."""
         proj = self._project(project)
         self.sms.require(row=proj)
+        if (pin := self.pinned.get(agent.id)) is not None:
+            if function and self._function(function, proj["slug"])["name"] != pin:
+                raise NetworkError(f"this helper works on {pin} only")
+            function = pin
         now = time.time()
         with self.store.tx() as db:
             self._expire_claims(db)
@@ -2320,6 +2324,8 @@ class RomNetwork(Network):
         fn = self._function(function, project)
         proj = self._project(project) if project else self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
         self.sms.require(row=proj)
+        if (pin := self.pinned.get(agent.id)) is not None and fn["name"] != pin:
+            raise NetworkError(f"this helper works on {pin} only")
         if (self.cfg(proj).get("arch") or "").lower() not in ASM_ARCHS:
             raise NetworkError("documented assembly is for Game Boy, Master System, Game Gear and NES projects for now")
         judge = self._asm_judge(proj)  # (RGBDS or WLA-DX)
