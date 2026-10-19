@@ -8,6 +8,7 @@ from __future__ import annotations
 from decompnet.rom import sms, sms_trace
 
 from .test_sms import make_rom
+from .sms_wla_fixture import bank_zero_layout
 
 SIZE = 0x20000  # 8 banks: the Sega mapper pages slot 2
 BANK5 = {0x14000: bytes.fromhex("3e07c9")}  # bank 5 at 0x8000: ld a,7 · ret
@@ -153,6 +154,7 @@ def test_a_symbol_files_automatic_names_seed_code_but_dont_name_it(tmp_path):
     rom.write_bytes(make_rom(size=SIZE, code={0x0000: bytes.fromhex("18fe"), 0x0600: bytes.fromhex("3e01c9"),
                                               0x0700: bytes.fromhex("3e02c9")}))
     (tmp_path / "game.sym").write_text("[labels]\n0000:0600 _LABEL_600_\n0000:0700 SetUp\n")
-    fns = {f.rom: f.name for f in sms.split(rom, tmp_path, log=lambda *_: None)}
+    fns = {f.rom: f.name for f in sms.split(rom, tmp_path, log=lambda *_: None,
+                                        symbol_layout=bank_zero_layout(rom.read_bytes()))}
     assert fns[0x0600] == "func_000_0600" and fns[0x0700] == "SetUp"
-    assert sms_trace.read_sym("[labels]\n0000:0600 _LABEL_600_\n") == {}
+    assert sms_trace.read_sym("[labels]\n0000:0600 _LABEL_600_\n", physical=True) == {}

@@ -1,6 +1,7 @@
 """Project-bound WLA previews, private source publication and bounded inspection."""
 import base64
 from collections import Counter
+from contextlib import nullcontext
 import hashlib
 import json
 from pathlib import Path
@@ -8,7 +9,7 @@ import re
 import time
 
 from ..network import NetworkError
-from ..rom import sms_identity, wla_bundle, wla_symbols
+from ..rom import sms_identity, sms_symbol_sources, wla_bundle, wla_symbols
 from ..rom.export_sms_artifacts import read_regular
 from .sms_export_state import stamp
 
@@ -19,6 +20,13 @@ def project(net, slug, *, write=False):
     if cfg.get('platform') not in ('sms', 'gg') or cfg.get('kind') != 'rom' or net.fork_slug(slug) or (write and slug in net.links):
         raise NetworkError('declared symbol sources are for local SMS/GG ROM projects')
     return proj, cfg
+
+
+def snapshot(net, slug, *, write=False):
+    with net.store.lock:
+        with (nullcontext() if net.store.conn.in_transaction else net.store.tx()):
+            proj, cfg = project(net, slug, write=write)
+            return proj, cfg, stamp(net, proj)
 
 
 def image(proj, cfg):
@@ -49,13 +57,15 @@ def page(prepared, name, offset=0):
             'semantic_approval': False}
 
 
-def import_source(net, slug, text, name, *, layout=None, apply=True, expected_plan=None, source_base64=None):
-    with net.store.lock:
-        proj, cfg = project(net, slug, write=True)
-        before = stamp(net, proj)
+def import_source(net, slug, text, name, *, layout=None, apply=True, expected_plan=None, source_base64=None, offset=0):
+    proj, cfg, before = snapshot(net, slug, write=True)
     if type(apply) is not bool or (expected_plan is not None and
             (not isinstance(expected_plan, str) or not re.fullmatch('[0-9a-f]{64}', expected_plan))):
         raise NetworkError('invalid symbol apply flag or preview fingerprint')
+    if type(offset) is not int or not 0 <= offset <= wla_symbols.MAX_RECORDS or (apply and offset != 0):
+        raise NetworkError('symbol preview offset is invalid')
+    if offset and expected_plan is None:
+        raise NetworkError('symbol preview pages require the preview fingerprint')
     try:
         original = image(proj, cfg)
         if source_base64 is not None:
@@ -72,7 +82,7 @@ def import_source(net, slug, text, name, *, layout=None, apply=True, expected_pl
             raise NetworkError('symbol preview is stale; preview again before applying')
         result = {'plan': plan, 'applied': apply, 'kept': len(prepared.report['records']),
                   'dropped': prepared.report['ignored_lines'], 'renamed': 0,
-                  'symbol_file': page(prepared, name)}
+                  'symbol_file': page(prepared, name, offset)}
         if not apply:
             return result
         with net.store.tx() as db:
@@ -89,20 +99,36 @@ def import_source(net, slug, text, name, *, layout=None, apply=True, expected_pl
         raise NetworkError('symbol source, declared layout or original input is unavailable, invalid or differs') from None
 
 
-def inspect(net, slug, *, offset=0, expected_source=None):
-    proj, cfg = project(net, slug)
+def inspect(net, slug, *, offset=0, expected_source=None, expected_context=None):
+    proj, cfg, context = snapshot(net, slug)
     if type(offset) is not int or not 0 <= offset <= wla_symbols.MAX_RECORDS:
         raise NetworkError('symbol inspection offset is invalid')
+    if offset and (expected_source is None or expected_context is None):
+        raise NetworkError('symbol inspection pages require source and context fingerprints')
+    if expected_context is not None and expected_context != context:
+        raise NetworkError('symbol inspection context changed; inspect the current source again')
     reference = cfg.get('symbol_file')
     if reference is None:
         reference = {}
     if not isinstance(reference, dict):
         raise NetworkError('stored symbol source metadata is invalid')
-    if expected_source is not None and expected_source != reference.get('bundle_sha256'):
-        raise NetworkError('symbol source changed; inspect the current source again')
     try:
-        prepared = wla_bundle.load(Path(proj['root']), reference, image(proj, cfg), mapper=net.sms.model(proj).kind)
-        return page(prepared, reference.get('from'), offset)
+        path = (Path(proj['root']) / cfg['rom']['file']).with_suffix('.sym')
+        prepared = sms_symbol_sources.select(path, image(proj, cfg),
+                    reference=reference if 'format' in reference else None, mapper=net.sms.model(proj).kind, root=Path(proj['root']))
+        if prepared is None:
+            raise NetworkError('no active symbol source to inspect')
+        if expected_source is not None and expected_source != prepared.sha256:
+            raise NetworkError('symbol source changed; inspect the current source again')
+        if context != stamp(net, proj):
+            raise NetworkError('symbol inspection context changed; inspect the current source again')
+        result = page(prepared, reference.get('from') or path.name, offset)
+        result['inspection_context'] = context
+        if reference.get('format') != 'wla-bundle':
+            result['format'] = 'adjacent'
+        if reference.get('notice'):
+            result['notice'] = reference['notice']
+        return result
     except (OSError, ValueError, TypeError, KeyError, AttributeError):
         raise NetworkError('symbol source is unavailable, changed, or needs a declared import') from None
 
@@ -114,20 +140,17 @@ def present(net, slug):
         reference = {}
     if not isinstance(reference, dict):
         return {'format': 'unknown', 'from': 'symbols.sym', 'names': 0, 'blocks': 0, 'state': 'unavailable'}
-    if reference.get('format') == 'disabled':
+    if reference.get('format') == 'disabled' and reference.get('state') != 'rejected':
         return None
-    if reference.get('format') == 'wla-bundle':
-        try:
-            result = inspect(net, slug)
-            return {key: value for key, value in result.items() if key not in ('records', 'offset', 'next_offset')}
-        except NetworkError:
-            return {'format': 'wla-bundle', 'from': filename(reference.get('from')), 'names': 0, 'blocks': 0,
-                    'state': 'unavailable', 'error': 'stored symbol evidence is unavailable or differs'}
     path = (Path(proj['root']) / cfg['rom']['file']).with_suffix('.sym')
-    if not path.exists():
+    if 'format' not in reference and not path.exists():
         return None
-    return {'from': filename(reference.get('from') or path.name), 'names': 0, 'blocks': 0,
-            'state': 'legacy_physical_unqualified', 'semantic_approval': False}
+    try:
+        result = inspect(net, slug)
+        return {key: value for key, value in result.items() if key not in ('records', 'offset', 'next_offset')}
+    except NetworkError:
+        return {'format': reference.get('format', 'adjacent'), 'from': filename(reference.get('from') or path.name),
+                'names': 0, 'blocks': 0, 'state': 'unavailable', 'error': 'stored symbol evidence is unavailable or differs'}
 
 
 def remove(net, slug):

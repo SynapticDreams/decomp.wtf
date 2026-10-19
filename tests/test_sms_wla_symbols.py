@@ -144,3 +144,13 @@ def test_many_alias_records_are_preserved_in_source_order_without_duplicate_effe
     assert len(result.records) == 3001
     assert result.aliases[(0, 0x2100)] == names
     assert result.names == {(0, 0x2100): names[0]} and len(result.seeds) == 1
+
+
+def test_public_reader_requires_geometry_or_explicit_physical_code_coordinates():
+    text = '01:2100 First\n01:2100 Alias\n'
+    with pytest.raises(ValueError, match='need layout/image'):
+        wla_symbols.read_names(text)
+    assert wla_symbols.read_names(text, layout=layout_for(IMAGE), image=IMAGE) == {(0, 0x2100): 'First'}
+    assert wla_symbols.read_names(text, physical=True) == {(1, 0x2100): 'Alias'}
+    with pytest.raises(ValueError, match='choose declared'):
+        wla_symbols.read_names(text, layout=layout_for(IMAGE), image=IMAGE, physical=True)

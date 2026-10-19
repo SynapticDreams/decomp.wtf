@@ -3129,6 +3129,8 @@ async function renderProjectSettings() {
   // (NES: coverage from an emulator only, for now: no corrections or symbol files yet)
   const nesOnly = ov.platform === "nes";
   for (const id of ["corrIntro", "correctionsList", "symHead", "symText", "symRow", "covHead"]) $(id).hidden = nesOnly;
+  if (ov.sms_progress) $("symRow").hidden = true;
+  smsSymbols.render(ov);
   $("corrTitle").textContent = nesOnly ? "Coverage from an emulator" : "Corrections to the split";
   if (corrects) loadCorrections();
 }
@@ -3154,6 +3156,7 @@ function showCorrections(r) {
     catch (e) { b.disabled = false; toast(esc(e.message), "err"); }
   }; });
   const f = r.symbol_file;
+  smsSymbols.render(S.ov, f);
   $("symStatus").textContent = f ? `${f.from}: ${f.state ? `${f.state.replaceAll("_", " ")} · ` : ""}${plural(f.names, "name")}${f.blocks ? `, ${plural(f.blocks, "block")}` : ""}` : "";
   $("symRemove").hidden = !f;
   const c = r.coverage;
@@ -3175,6 +3178,10 @@ $("covFile").onchange = async () => {
 $("covRemove").onclick = async () => {
   try { showCorrections(await api("/api/coverage/remove", { method: "POST", body: { slug: S.slug } })); } catch (e) { toast(esc(e.message), "err"); }
 };
+
+const smsSymbols = window.SMSSymbolUI.create($("smsSymbols"), {
+  api, getSlug: () => S.slug, refresh: loadCorrections, notify: message => toast(esc(message))
+});
 
 $("symFile").onchange = async () => {
   const file = $("symFile").files[0];

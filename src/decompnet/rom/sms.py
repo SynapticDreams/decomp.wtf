@@ -501,10 +501,10 @@ def functions(data: bytes, log=lambda *_: None, labels: dict | None = None,
 def split(path: Path, workdir: Path, log=lambda *_: None, report: dict | None = None,
           hints: dict | None = None, *, symbol_layout: dict | None = None) -> list[gb.GbFunction]:
     """A ROM file's functions. (`report` gets {"splitter": "built-in"}: there is no external tool for the Z80, and
-    the banks' addresses.) A WLA-DX symbol file next to the ROM (`game.sym` for `game.sms`) seeds and names them;
+    the banks' addresses.) A symbol file next to the ROM (`game.sym` for `game.sms`) remains pending until declared;
     `hints` are the project's corrections (functions). `symbol_layout` opts into a revision-bound WLA declaration
     separating assembler banks/slots from physical 16 KiB banks. Its records/aliases are returned in the report;
-    the original file is unchanged. Without a declaration the historical physical-bank interpretation remains."""
+    the original file is unchanged. Without a declaration, sidecar records remain unqualified suggestions."""
     if report is not None:
         report["splitter"] = "built-in"
     data = strip_copier_header(Path(path).read_bytes())
@@ -513,39 +513,15 @@ def split(path: Path, workdir: Path, log=lambda *_: None, report: dict | None = 
     info = read_info(data, Path(path).name)
     log(f"{info['platform'].upper()}: {info['title']} ({info['cartridge']}"
         f"{', header found' if info['header'] else ', no header'})")
-    labels = seeds = None
-    sym = Path(path).with_suffix(".sym")
-    reference = (hints or {}).get('symbol_source')
-    if reference is not None:
-        from . import wla_bundle
+    from .sms_symbol_sources import select
 
-        if symbol_layout is not None:
-            raise ValueError('choose a project symbol source or a direct layout, not both')
-        labels = seeds = {}
-        if not isinstance(reference, dict) or reference.get('format') != 'disabled':
-            imported = wla_bundle.load(Path(path).parent, reference, data, mapper=(hints or {}).get('mapper', 'sega'))
-            labels, seeds = imported.names, imported.seeds
-            if report is not None:
-                report['symbol_import'] = imported.report
-            log(f"stored symbol source: {imported.report['state']}; {len(seeds)} seed suggestions")
-    elif symbol_layout is not None:
-        from . import wla_layout, wla_symbols
-        from .export_sms_artifacts import read_regular
-
-        raw, stat = read_regular(sym, wla_symbols.MAX_BYTES + 1)
-        if stat.st_size > wla_symbols.MAX_BYTES:
-            raise ValueError('WLA symbol source exceeds the 8 MiB budget')
-        layout = wla_layout.declare(symbol_layout, data, mapper=(hints or {}).get('mapper', 'sega'))
-        imported = wla_symbols.normalize(wla_symbols.read(raw), layout, data)
-        labels, seeds = imported.names, imported.seeds
+    imported = select(Path(path).with_suffix('.sym'), data, reference=(hints or {}).get('symbol_source'),
+                      declaration=symbol_layout, mapper=(hints or {}).get('mapper', 'sega'), root=Path(workdir))
+    labels, seeds = (imported.names, imported.seeds) if imported is not None else (None, None)
+    if imported is not None:
         if report is not None:
-            report['symbol_import'] = imported.report()
-        log(f'{len(imported.records)} WLA records through declared layout; {len(seeds)} seed suggestions')
-    elif sym.is_file():
-        text = sym.read_text(encoding="utf-8", errors="replace")
-        labels, seeds = sms_trace.read_sym(text), sms_trace.read_sym(text, seeds=True)
-        log(f"{len(labels)} labels from {sym.name}" + (f", and {len(seeds) - len(labels)} places it says code starts"
-                                                         if len(seeds) > len(labels) else ""))
+            report['symbol_import'] = imported.report
+        log(f"symbol source: {imported.report['state']}; {len(imported.seeds)} seed suggestions")
     if hints and any(hints.get(k) for k in ("entries", "data", "tables", "inline", "noreturn")):
         log("with the project's corrections")
     if hints and hints.get("coverage") is not None:

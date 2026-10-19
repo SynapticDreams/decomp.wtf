@@ -279,17 +279,29 @@ when applying to reject stale previews. Importing a declaration retains existing
 source; splitting again can use its qualified seeds and names for newly discovered routines.
 
 New SMS/GG uploads without a layout retain records as `requires_layout` suggestions, with no effective names or
-seeds. The current upload control supports storing this pending source; layout controls follow separately.
+seeds. Settings provides source/layout selection, preview, application, stored inspection and disabling. It preserves
+original file bytes through base64. Choose both files again to qualify or replace a stored source. Candidate names
+and seed suggestions remain separate from names already assigned to existing routines and semantic approval.
 Sources live in private immutable bundles selected by project metadata. The original comments and source paths
 stay out of API reports. `/api/symbols/inspect` POST returns at most 50 records, with `next_offset`; send that as
-`offset` and the current `source_id` as `expected_source` to detect a source change between pages. Candidate
+`offset`, the current `source_id` as `expected_source` and `inspection_context` as `expected_context` to reject
+source or mapper/project changes between pages. These fingerprints are required after the first page. Candidate
 coordinates are bounded to 32 per record with an explicit truncation flag. Counts and source hashes remain visible.
+Preview pages use `/api/symbols/import` with the same source/layout, `apply: false`, `offset` and `expected_plan`.
+Both preview and stored pages reject changed context/source; a used or stale preview needs to be generated again.
 Changed/missing bundles stop resplitting instead of falling back to another symbol file. Removing a source
 disables it while retaining its private provenance; it does not activate an older adjacent file.
 
-Existing adjacent/legacy `.sym` files retain their historical physical-bank interpretation and are shown as
-unqualified until reimported with a layout. Automatic adjacent-file import and operator declaration controls
-remain separate integration work.
+Initial import brings a bounded adjacent `.sym` and optional `.sym.layout.json` into the private project. A valid,
+revision-bound declaration selects normalized seeds; absent or rejected declarations leave the source pending.
+Malformed or wrong-revision sources retain their private bytes without contributing labels. The source view
+shows rejected input/layout states and notices. Adjacent declarations are capped at 2 MiB.
+
+Legacy project and direct-split `.sym` files also remain unqualified until explicitly declared. They cannot
+silently reinterpret WLA bank IDs as physical banks. Use resplit preview to inspect affected entries and preserved
+work before applying. Python `read_sym` requires `layout` and normalized `image` bytes for WLA records. Legacy
+scripts that already assert physical code coordinates must opt into `physical=True`; the reader never assumes
+that a WLA bank ID is a physical bank by default. Current discovery uses declared sources.
 The version 1 declaration contains `input: {size, sha256}` for the normalized image, `banks` with
 `{id, offset, size}` in physical file order, `slots` with `{id, start, size, space}`, and `views` with
 `{bank, slot, offset, size, role}`. Bank sizes may differ; they must cover the image exactly once. A view's

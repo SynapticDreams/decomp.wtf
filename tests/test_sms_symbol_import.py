@@ -86,9 +86,10 @@ def test_inspection_pages_preserve_every_alias_and_reject_a_changed_source(proje
     raw += b'\n[labels]\n' + b'\n'.join(f'01:2100 Alias_{n}'.encode() for n in range(130))
     result = net.import_symbols(slug, raw.decode(), 'many.sym', layout=layout)
     source = result['symbol_file']['source_id']
-    inspected, offset = [], 0
+    inspected, offset, context = [], 0, None
     while True:
-        page = net.inspect_symbols(slug, offset=offset, expected_source=source)
+        page = net.inspect_symbols(slug, offset=offset, expected_source=source, expected_context=context)
+        context = page['inspection_context']
         assert len(page['records']) <= 50
         inspected.extend(page['records'])
         if page['next_offset'] is None:
@@ -97,8 +98,8 @@ def test_inspection_pages_preserve_every_alias_and_reject_a_changed_source(proje
     assert len(inspected) == result['kept'] and len({r['name'] for r in inspected if r['name'].startswith('Alias_')}) == 130
     assert 'game.asm' not in str(page)
     net.import_symbols(slug, raw.decode() + '\n; source change\n', 'many.sym', layout=layout)
-    with pytest.raises(NetworkError, match='source changed'):
-        net.inspect_symbols(slug, offset=50, expected_source=source)
+    with pytest.raises(NetworkError, match='changed'):
+        net.inspect_symbols(slug, offset=50, expected_source=source, expected_context=context)
 
 
 @pytest.mark.parametrize('change', ['source', 'work', 'input'])
