@@ -16,7 +16,7 @@ from __future__ import annotations
 import bisect
 import re
 
-from . import z80
+from . import sms_seeds, z80
 from .sms_mapping import BusState, Mapper, entry_state, join, wram_address
 from .sms_mapping import REGISTERS as MAPPER
 from .sms_mapping import bank_mask as bank_mask  # preserve the previous helper import
@@ -495,7 +495,7 @@ class Tracer:
         """The CPU address each bank's code was found running at: the slot most of its functions run from."""
         votes: dict[int, dict[int, int]] = {}
         for flat, (cpu, _why) in self.found.starts.items():
-            if cpu >= 0x4000:
+            if cpu >= 0x0400:
                 v = votes.setdefault(flat // BANK, {})
                 v[cpu & ~(BANK - 1)] = v.get(cpu & ~(BANK - 1), 0) + 1
         self.found.bank_base = {b: max(v, key=v.get) for b, v in votes.items()}
@@ -525,13 +525,10 @@ def read_sym(text: str, seeds: bool = False) -> dict[tuple[int, int], str]:
     return out
 
 
-def sym_seeds(labels: dict[tuple[int, int], str], data: bytes) -> dict[int, tuple[int, str]]:
+def sym_seeds(labels: dict[tuple[int, int], str], data: bytes, *, mapper: str = "sega") -> dict[int, tuple[int, str]]:
     """Seeds from a symbol file's labels that point at code in the ROM: {flat: (cpu, "sym")}."""
     out = {}
-    for (bank, cpu), _name in labels.items():
-        if cpu >= 0xC000:
-            continue
-        flat = cpu if cpu < 0x4000 else bank * BANK + (cpu & (BANK - 1))
-        if flat < len(data) and plausible(data, flat, cpu):
+    for flat, cpu in sms_seeds.symbol_targets(labels, Mapper(mapper, len(data))):
+        if plausible(data, flat, cpu):
             out[flat] = (cpu, "sym")
     return out

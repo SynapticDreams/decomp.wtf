@@ -4,11 +4,12 @@ from __future__ import annotations
 import re
 
 from .sms_identity import VERSION as IDENTITY_VERSION
+from .sms_mapping import Mapper
 
 VERSION = 1
 MAPPERS = ("unknown", "sega", "mapperless", "codemasters", "unsupported")
 VARIANTS = ("exact-original", "annotated-original", "experimental")
-SUPPORTED = ("sega",)
+SUPPORTED = ("sega", "mapperless")
 FIELDS = {"version", "mapper", "variant", "origin", "reason", "sha256", "size"}
 
 
@@ -63,6 +64,12 @@ def read(cfg: dict) -> dict:
     return dict(raw)
 
 
+def validate_model(profile: dict) -> None:
+    """Validate newly selected supported models without making old unsupported declarations unreadable."""
+    if profile["mapper"] in SUPPORTED:
+        Mapper(profile["mapper"], profile["size"])
+
+
 def describe(cfg: dict) -> dict | None:
     if cfg.get("platform") not in ("sms", "gg") and cfg.get("arch") != "z80":
         return None
@@ -73,13 +80,20 @@ def describe(cfg: dict) -> dict | None:
     mapper = profile["mapper"]
     # Additional models become supported only when the shared mapper implementation is integrated.
     supported = mapper in SUPPORTED and profile["origin"] == "operator"
+    model_error = ""
+    if supported:
+        try:
+            validate_model(profile)
+        except ValueError as exc:
+            supported, model_error = False, str(exc)
     status = "declared" if supported else "legacy" if profile["origin"] == "legacy" else \
         "unresolved" if mapper == "unknown" else "unsupported"
     message = "Cartridge mapping declared; static analysis still has the limits described in the SMS guide." if supported else \
         "Declare the cartridge mapping in project Settings before accepting new source." if mapper == "unknown" else \
         "This cartridge mapping is recorded but its analysis model is not supported yet."
+    message = model_error or message
     return {"status": status, "supported": supported, "profile": profile, "message": message,
-            "discovery": "declared-sega-model" if supported else "provisional-sega-listing",
+            "discovery": f"declared-{mapper}-model" if supported else "provisional-sega-listing",
             "exact_original_intent": profile["variant"] in ("exact-original", "annotated-original"),
             "supported_mappers": list(SUPPORTED)}
 
@@ -90,3 +104,9 @@ def require_supported(cfg: dict) -> None:
     view = describe(cfg)
     if view is not None and not view["supported"]:
         raise ValueError(view["message"])
+
+
+def listing_mapper(cfg: dict) -> str:
+    """Unknown/legacy projects retain the explicitly provisional Sega listing recipe; declarations take precedence."""
+    mapper = read(cfg)["mapper"]
+    return "sega" if mapper == "unknown" else mapper

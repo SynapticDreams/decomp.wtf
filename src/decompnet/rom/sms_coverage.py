@@ -9,18 +9,9 @@ from __future__ import annotations
 
 from . import z80
 from .coverage import Coverage, CoverageError, _TRACE
-from .sms_mapping import BANK, Address, BusState, Mapper, entry_state
+from .sms_mapping import Mapper, entry_state
+from .sms_mapping import rom_coordinate as trace_address
 from .sms_profile import read as read_profile
-
-
-def trace_address(model: Mapper, bank: int, cpu: int, mapping: BusState | None = None) -> Address:
-    """Validate a claimed ROM coordinate against the mapper and any explicit bus context."""
-    flat = bank * BANK + (cpu & (BANK - 1))
-    state = mapping if mapping is not None else entry_state(flat, cpu, model.size)
-    result = model.resolve(cpu, state)
-    if result.rom_offset is not None and result.offset != flat:
-        return Address(cpu, "unknown", reason="trace bank contradicts the selected cartridge mapping")
-    return result
 
 
 def from_config(text: str, rom: bytes, cfg: dict) -> Coverage:

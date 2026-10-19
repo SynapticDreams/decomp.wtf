@@ -176,3 +176,13 @@ def join(states) -> BusState:
         wram=agreed(s.wram for s in states), other_source=agreed(s.other_source for s in states),
         rom_modified=any(s.rom_modified for s in states),
     )
+
+
+def rom_coordinate(model: Mapper, bank: int, cpu: int, mapping: BusState | None = None) -> Address:
+    """Validate an explicit physical ROM-bank/CPU coordinate; never reattribute contradictory coordinates."""
+    flat = bank * BANK + (cpu & (BANK - 1))
+    state = mapping if mapping is not None else entry_state(flat, cpu, model.size)
+    result = model.resolve(cpu, state)
+    if result.rom_offset is not None and result.offset != flat:
+        return Address(cpu, "unknown", reason="coordinate bank contradicts the selected cartridge mapping")
+    return result

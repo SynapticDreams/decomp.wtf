@@ -6,10 +6,13 @@ encoding. Cartridge mapping and original compiler depend on the project; an SMS/
 
 Choose the cartridge mapping and build intent in project Settings, with the evidence for that choice.
 New imports and legacy projects with no declaration remain readable as provisional Sega-based listings;
-accepting new C or documented assembly requires a supported declaration. Sega is currently supported under
-the static-analysis limits below. Mapperless, Codemasters and other mappings can be recorded but remain
-unsupported until their analysis models are integrated. A declaration does not establish hardware accuracy.
+accepting new C or documented assembly requires a supported declaration. Sega and mapperless models are supported under
+the static-analysis limits below and authored synthetic checks. Codemasters and other mappings can be recorded
+but remain unsupported until their models are qualified. Mapperless inputs must fit within 48 KiB; undeclared
+small-ROM mirroring remains unresolved. A declaration does not establish hardware accuracy.
 Profile changes retain existing work and refuse mapping changes that would reinterpret accepted source.
+After selecting mapperless, preview and apply a resplit if existing function coordinates came from Sega paging;
+source acceptance remains blocked while any such incompatible coordinates remain.
 Experimental build intent is recorded separately from original reconstruction; whole-image equality still
 compares against the frozen original input. The local operator API is `/api/sms/profile` (GET or POST).
 
@@ -36,11 +39,10 @@ affected entry-bank facts conservatively; precise values across paths/callees st
   The project retains SHA-256 identities for the supplied dump and normalized ROM, including any removed header.
   Reimporting the same revision with another wrapper adds input evidence. Export refuses changed comparison
   bytes before replacing existing output; headerless inputs keep product/revision unknown.
-- The cartridge is split into **16 KiB banks**. Bank 0 is at 0x0000. Which bank is mapped where is decided by writes
-  to 0xFFFE/0xFFFF at run time, so the code is followed with the banks it maps (`ld a,5 / ld ($ffff),a` puts bank
-  5 at 0x8000): each function runs at the address its bank is mapped to when it's called, and its calls and jumps
-  into its own bank read as the ROM has them. Most games keep bank 1 at 0x4000 and page the rest into 0x8000.
-  Names spell the bank and the address the code runs at: `func_<bank>_<address>`.
+- ROM offsets are grouped into **16 KiB banks**. Sega fixes only the first KiB to bank 0; writes to 0xFFFD,
+  0xFFFE and 0xFFFF select the larger CPU windows, with RAM selected through mapper control. Mapperless wiring is
+  flat within its supplied bytes. Names spell the physical bank and declared/discovered CPU coordinate:
+  `func_<bank>_<address>`. Display placement for an unresolved bank is provisional.
 - Functions are found from the reset vector, the RST handlers and the NMI by following calls, tail jumps, bank
   switchers and the tables dispatchers read (`ld hl,table / jp dispatch`, or a function's own
   `ld hl,table / add hl,de / ... / jp (hl)`, as many entries as a `cp n / jr nc` before it allows), plus a sweep for
@@ -55,7 +57,9 @@ affected entry-bank facts conservatively; precise values across paths/callees st
   addresses at `at`), `operands` (the routine at `at` reads `count` bytes after each call to it and returns past
   them), `noreturn` (it never returns). `at` is a function's name, `NN:AAAA` (the bank and the address it runs at,
   `05:8123` for bank 5 in slot 2) or an address in `function`'s bank. It's used the next time a person splits the
-  game again (they can undo it first); ten an hour at most.
+  game again (they can undo it first); ten an hour at most. Table corrections retain their explicit CPU window.
+  An unqualified SMS address resolves only with established window evidence; use `NN:AAAA` or a function
+  name when a bank is required. A unique function at a CPU address is insufficient mapping evidence.
 - A person can also import what an emulator saw while they played (Settings, a Mesen2 code/data log or a
   `bank:address` trace): splitting the game again then starts functions where calls entered and where code ran that
   wasn't reached, and keeps what was only read as data out of functions.
@@ -66,6 +70,8 @@ affected entry-bank facts conservatively; precise values across paths/callees st
   for one physical entry remain ambiguous. The format has no session identity or loss accounting, so it does not
   establish a complete capture. A failed import retains the previous file. Byte-indexed code/data logs remain
   readable without a mapper declaration.
+  A Sega code/data log supplies physical ROM offsets without CPU windows. New placements need a symbol, an
+  explicit entry correction or another established CPU context; section defaults cannot fill that gap.
 
 - The import reads which toolchain built the game: GBDK-2020's start-up code (C), or an SDSC tag (homebrew,
   not which tool). A game none of them built is most likely assembly, for the assembly track.

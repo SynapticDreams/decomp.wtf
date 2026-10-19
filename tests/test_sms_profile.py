@@ -62,13 +62,18 @@ def test_declaring_sega_enables_work_and_preserves_revision_and_notes(project):
     assert net.store.one("SELECT * FROM claims") == held
 
 
-@pytest.mark.parametrize("mapper", ["mapperless", "codemasters", "unsupported", "unknown"])
+@pytest.mark.parametrize("mapper", ["codemasters", "unsupported", "unknown"])
 def test_recording_a_mapper_does_not_invent_implementation_support(project, mapper):
     net, slug, _agent, _name = project
     result = net.sms.configure(slug, mapper, "experimental", REASON)
     assert not result["supported"] and not result["exact_original_intent"]
     with pytest.raises(NetworkError):
         net.sms.require(slug)
+    if mapper != "unknown":
+        before = net.cfg(net.project_row(slug))
+        with pytest.raises(NetworkError, match="unavailable for analysis"):
+            net.resplit_banked(slug, apply=True, log=lambda *_: None)
+        assert net.cfg(net.project_row(slug)) == before
 
 
 @pytest.mark.parametrize("field,value", [("version", 2), ("version", True), ("mapper", "made-up"),
