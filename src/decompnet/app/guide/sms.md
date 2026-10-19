@@ -28,10 +28,21 @@ followed separately. Each function has instruction, per-address context, stack a
 unchanged loops converge as table/bound marks age and expire. Exhausted entries appear in split logs and the
 `analysis_exhausted` report/resplit result with their ROM offsets and reasons. Their discovered callees retain
 only conditional entry-window facts; exhausted analysis cannot prove a mapper helper or a nonreturning routine.
-General callee effects, unknown stores and interrupt restoration remain analysis limits; this does not qualify
+General callee effects, physical stack accesses and interrupt restoration remain analysis limits; this does not qualify
 BIOS, cartridge-RAM or peripheral execution, or establish complete discovery when no budget was exhausted.
 Control knowledge is tracked per bit: a Sega ROM entry in slot 2 establishes that RAM is deselected there, without inventing
 shift/write-enable bits or raw register latches. Joins keep agreed bits even when another control bit differs.
+Explicit byte/word stores, memory read-modify-write operations, block transfers/input and possible memory-control
+port writes now invalidate affected facts. Word stores apply both bytes in CPU order, including address wrap;
+RAM aliases still do not select a mapper bank. An unknown destination discards sparse RAM and virtual-stack values.
+Known VDP/PSG/I/O-control output ports preserve mapping; unknown outputs and possible memory-control mirrors
+leave bus sources unresolved. Hardware/mode-specific port enable values are not interpreted as a new mapping.
+The virtual stack does not qualify physical SP placement, interrupt interleaving or stack/device aliasing.
+Explicit SP changes discard saved virtual values; popping an untracked index register still consumes its value.
+General callee effects and complete call/interrupt summaries remain pending; a store adapter is not CPU emulation.
+Instruction forms follow the [Zilog Z80 manual](https://www.zilog.com/docs/z80/um0080.pdf); source-selection
+limits follow the [memory-control reference](https://www.smspower.org/Development/Port3E) and
+[hardware notes](https://github.com/drhelius/Gearsystem/blob/master/skills/gearsystem-debugging/references/smstech.md).
 Standalone exports include this shared resolver. Generated reference names require a declared model and established
 instruction geometry; unresolved references remain numeric while the build still verifies whole-image equality.
 Assembly judging uses the same source/bank resolver. A unique routine name at a CPU address cannot establish its

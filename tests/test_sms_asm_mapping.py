@@ -46,6 +46,17 @@ def test_an_indirect_read_does_not_invalidate_a_known_bank():
 
 
 @NEEDS_WLA
+@pytest.mark.parametrize(("encoded", "instruction"), [("ed67", "rrd"), ("edb2", "inir"), ("d300", "out ($00), a")])
+def test_byte_correct_explicit_writes_cannot_accept_a_stale_named_rom_reference(encoded, instruction):
+    r = routine(mapping=BusState.cartridge_only((0, 1, 5)))
+    r.code = bytes.fromhex(encoded + " cd0080 c9")
+    text = HEADER + f"RouteEntry:\n    {instruction}\n    call Handler\n    ret\n"
+    verdict = sms_asm.judge(r, text)
+    assert verdict.same == verdict.size == len(r.code)
+    assert not verdict.ok and any(p.startswith("3.") and "isn't known yet" in p for p in verdict.problems)
+
+
+@NEEDS_WLA
 def test_a_unique_named_function_in_an_unknown_window_cannot_be_accepted():
     verdict = sms_asm.judge(routine(), source())
     assert verdict.same == verdict.size == 4

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-from . import z80
+from . import sms_effects, z80
 from .sms_mapping import BANK, Address, BusState, Mapper, entry_state
 
 
@@ -30,14 +30,10 @@ def reference(routine, target: int, offset: int = 0, *, prefix=None) -> Address:
     # Do not reuse an entry bank after a store changes its selection. Value/path summaries are not
     # established here, so known mapper stores use unknown values rather than guessing an A/HL value.
     for text in prefix if prefix is not None else _prefix(routine, offset):
-        if match := re.match(r"^ld \(\$([0-9a-f]{4})\), (.+)$", text):
-            count = 2 if match.group(2) in ("hl", "de", "bc", "sp", "ix", "iy") else 1
-            for byte in range(count):
-                state = model.write(state, (int(match.group(1), 16) + byte) & 0xFFFF, None)
-        elif re.match(r"^(?:ld \((?:bc|de|hl|ix|iy)|(?:inc|dec|rlc|rrc|rl|rr|sla|sra|sll|srl) \((?:hl|ix|iy)|"
-                      r"(?:res|set) \d, \((?:hl|ix|iy))", text) or \
-                text.startswith(("out ($3e)", "out (c)", "ldi", "ldd", "ex (sp)")):
-            state = BusState()  # an unqualified indirect/bus write can affect the source
+        for write in sms_effects.memory_writes(text):
+            state = model.unknown_write(state) if write.cpu is None else model.write(state, write.cpu, None)
+        if sms_effects.port_may_change_source(text):
+            state = BusState()  # hardware/mode-specific bus enables are not qualified here
     return model.resolve(target, state)
 
 
