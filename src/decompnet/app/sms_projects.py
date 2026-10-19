@@ -7,7 +7,8 @@ import time
 from pathlib import Path
 
 from ..network import NetworkError
-from ..rom import sms_identity, sms_profile
+from ..rom import sms_identity, sms_locations, sms_profile
+from ..rom.sms_mapping import Mapper
 
 
 class SMSProjects:
@@ -21,10 +22,16 @@ class SMSProjects:
             "SELECT * FROM projects WHERE id=?", net._function(function, None)["project_id"])
         if proj is None:
             raise NetworkError("the project is no longer available")
+        cfg = net.cfg(proj)
         try:
-            sms_profile.require_supported(net.cfg(proj))
+            sms_profile.require_supported(cfg)
         except ValueError as exc:
             raise NetworkError(str(exc)) from None
+        if cfg.get("kind") == "rom" and (cfg.get("arch") or proj["arch"] or "").lower() == "z80" and \
+                sms_profile.read(cfg)["mapper"] == "mapperless" and net.store.one(
+                    "SELECT 1 FROM functions WHERE project_id=? AND rom_offset IS NOT NULL "
+                    "AND (vram IS NULL OR vram!=rom_offset) LIMIT 1", proj["id"]):
+            raise NetworkError("mapperless mapping differs from the current function coordinates; preview and apply a resplit first")
 
     def inspect(self, slug):
         cfg = self.net.cfg(self.net._project(slug))
@@ -32,6 +39,30 @@ class SMSProjects:
         if view is None or cfg.get("kind") != "rom":
             raise NetworkError("cartridge profiles are for SMS/GG ROM projects")
         return {**view, "mappers": list(sms_profile.MAPPERS), "variants": list(sms_profile.VARIANTS)}
+
+    def model(self, proj):
+        cfg = self.net.cfg(proj)
+        try:
+            return Mapper(sms_profile.listing_mapper(cfg), int(cfg["rom"].get("size") or 0))
+        except ValueError as exc:
+            raise NetworkError(f"cartridge model is unavailable for analysis: {exc}") from None
+
+    def place(self, proj, at, function=None):
+        """Resolve an annotation location without choosing a bank from a unique CPU-name coincidence."""
+        net, text = self.net, str(at or "").strip()
+        try:
+            model = self.model(proj)
+            row = net.store.one("SELECT rom_offset, vram FROM functions WHERE project_id=? AND name=?", proj["id"], text)
+            if row is not None and row["rom_offset"] is not None and row["vram"] is not None:
+                return sms_locations.coordinate(model, row["rom_offset"], row["vram"])
+            context = None
+            if function:
+                row = net._function(function, proj["slug"])
+                if row["rom_offset"] is not None and row["vram"] is not None:
+                    context = row["rom_offset"], row["vram"]
+            return sms_locations.resolve(model, text, context)
+        except ValueError as exc:
+            raise NetworkError(str(exc)) from None
 
     def brief(self, proj):
         view = sms_profile.describe(self.net.cfg(proj))
@@ -121,6 +152,7 @@ class SMSProjects:
             candidate = {**current, "sms_profile": profile}
             try:
                 sms_profile.read(candidate)
+                sms_profile.validate_model(profile)
             except (ValueError, TypeError) as exc:
                 raise NetworkError(str(exc)) from None
             # A profile edit cannot reinterpret previously accepted source without a resplit/revalidation workflow.

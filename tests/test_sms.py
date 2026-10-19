@@ -181,7 +181,8 @@ def test_functions_in_another_bank_are_found_from_their_own_calls():
     rom = make_rom(size=size, code={0x0000: bytes.fromhex("cd0070" "c9"),  # bank 0: call $7000 (not mapped: bank 1)
                                     0x4000 + 0x100: bytes.fromhex("cd0043c9"),  # bank 1: call $4300 (its own bank)
                                     0x4000 + 0x300: bytes.fromhex("3e07c9")})
-    fns = _starts(sms.functions(rom))
+    assert 0x4300 not in _starts(sms.functions(rom))  # section placement alone cannot establish this cold entry
+    fns = _starts(sms.functions(rom, seeds={(1, 0x4100): "_LABEL_4100_"}))
     assert 0x4300 in fns and fns[0x4300].bank == 1 and fns[0x4300].rom == 0x4300 and fns[0x4300].name == "func_001_4300"
 
 

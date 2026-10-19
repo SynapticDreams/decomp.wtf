@@ -1411,10 +1411,12 @@ class RomNetwork(Network):
     # -- the banked lanes (Game Boy, Master System, NES): functions cut and joined by their bytes
 
     def _lane(self, proj, arch: str | None = None):
-        from ..rom import banked
+        from ..rom import banked, sms_profile
 
         cfg = self.cfg(proj)
-        return banked.Lane(arch or (cfg.get("arch") or "").lower(), cfg.get("rom") or {})
+        arch = arch or (cfg.get("arch") or "").lower()
+        mapper = sms_profile.listing_mapper(cfg) if arch == "z80" else "sega"
+        return banked.Lane(arch, cfg.get("rom") or {}, mapper=mapper)
 
     def _banked_status(self, arch: str, code: bytes, cpu: int, meta: dict) -> tuple[str, str]:
         """(status, meta JSON) for a banked function's (new) bytes: set aside when the set-aside rules say no C writes
@@ -2049,9 +2051,10 @@ class RomNetwork(Network):
     }
 
     def _banked_at(self, proj, at: str, function: str | None = None) -> tuple[int, int]:
-        """(ROM offset, CPU address) of a place in a Game Boy or Master System game: a function's name, `NN:AAAA` (its
-        bank and the address it runs at), or an address in the bank of `function` (or in bank 0, or one only one
-        function has)."""
+        """Research coordinates. SMS delegates to its mapper/context adapter; GB uses its fixed/switchable windows
+        and accepts a function name, NN:AAAA or an address in the supplied function's bank."""
+        if (self.cfg(proj).get("arch") or "").lower() == "z80":
+            return self.sms.place(proj, at, function)
         text = str(at or "").strip()
         row = self.store.one("SELECT rom_offset, vram FROM functions WHERE project_id=? AND name=?", proj["id"], text)
         if row is not None and row["rom_offset"] is not None:
@@ -2073,14 +2076,8 @@ class RomNetwork(Network):
                 bank = banks.pop()
         else:
             raise NetworkError(f"`{at}` is not a function, NN:AAAA (a bank and an address) or an address")
-        z80 = (self.cfg(proj).get("arch") or "").lower() == "z80"  # (Master System: slots at $4000 and $8000, and
-        # slot 0 paged above its first KiB)
-        if z80:
-            bad = cpu >= 0xC000 or (cpu < 0x0400 and bank not in (0, None)) or (cpu >= 0x4000 and bank == 0)
-            where = "bank 0 is at $0000-$3FFF, the others at $4000-$BFFF (or $0400-$3FFF when slot 0 is paged)"
-        else:
-            bad = cpu >= 0x8000 or (cpu < 0x4000 and bank not in (0, None)) or (cpu >= 0x4000 and bank == 0)
-            where = "bank 0 is at $0000-$3FFF, every other bank at $4000-$7FFF"
+        bad = cpu >= 0x8000 or (cpu < 0x4000 and bank not in (0, None)) or (cpu >= 0x4000 and bank == 0)
+        where = "bank 0 is at $0000-$3FFF, every other bank at $4000-$7FFF"
         if bad:
             raise NetworkError(f"{bank:02X}:{cpu:04X} isn't in the ROM: {where}")
         flat = cpu if cpu < 0x4000 and not bank else bank * 0x4000 + (cpu & 0x3FFF)
@@ -2157,7 +2154,10 @@ class RomNetwork(Network):
 
     def _hints(self, proj) -> dict:
         """The project's corrections, as the split takes them (rom/gb_trace.Tracer)."""
-        hints: dict = {"entries": {}, "data": [], "tables": [], "inline": {}, "noreturn": set()}
+        hints: dict = {"entries": {}, "data": [], "tables": [], "table_cpus": {}, "inline": {}, "noreturn": set()}
+        cfg = self.cfg(proj)
+        if (cfg.get("arch") or "").lower() == "z80":
+            hints["mapper"] = self.sms.model(proj).kind
         for r in self.store.all("SELECT * FROM corrections WHERE project_id=? AND undone_at IS NULL ORDER BY id",
                                 proj["id"]):
             flat = r["rom_offset"]
@@ -2167,6 +2167,7 @@ class RomNetwork(Network):
                 hints["entries"][flat] = r["cpu"]
             elif r["kind"] == "table":
                 hints["tables"].append((flat, r["count"]))
+                hints["table_cpus"][flat] = r["cpu"]
             elif r["kind"] == "operands":
                 hints["inline"][flat] = r["count"]
             elif r["kind"] == "noreturn":
@@ -2536,11 +2537,10 @@ class RomNetwork(Network):
             "SELECT * FROM data_regions WHERE project_id=? AND rom_offset<? AND rom_offset+size>?",
             proj["id"], flat + size, flat)]
         if proj["arch"] == "z80":
-            from ..rom.sms_profile import describe
+            from ..rom.sms_profile import listing_mapper
 
             cfg = self.cfg(proj)
-            profile = describe(cfg) or {}
-            mapper = (profile.get("profile") or {}).get("mapper", "unknown")
+            mapper = listing_mapper(cfg)
             rom_size = int(cfg["rom"].get("size") or 0)
             return sms_asm.Routine(fn["name"], flat // 0x4000, fn["vram"] or 0, bytes(fn["target"] or b""), symbols,
                                    functions, {r["rom_offset"]: r["vram"] for r in rows if r["vram"] is not None}, data,

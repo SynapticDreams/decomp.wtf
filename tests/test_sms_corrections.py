@@ -25,8 +25,8 @@ CODE = {
     0x0500: bytes.fromhex("0006" "2006"),  # a table of two handlers nothing reads
     0x0600: bytes.fromhex("3e01c9"), 0x0620: bytes.fromhex("3e02c9"),
     0x0700: bytes.fromhex("3e03c9"),  # code nothing reaches
-    0x0800: bytes.fromhex("cd0009"),  # three bytes of a table that read like `call $0900`
-    0x0900: bytes.fromhex("3e04c9"),
+    0x0800: bytes.fromhex("cd5002"),  # three bytes of a table that read like `call $0250`
+    0x0250: bytes.fromhex("3e04c9"),
     0x14000: bytes.fromhex("3e07c9"), 0x18000: bytes.fromhex("3e08c9"),
 }
 
@@ -49,7 +49,7 @@ def _starts(net, slug) -> set[int]:
 def test_splitting_again_uses_the_corrections(game):
     net, slug, agent = game
     before = _starts(net, slug)
-    assert 0x18000 in before and 0x14000 not in before and 0x0900 in before  # (what the split got wrong)
+    assert 0x18000 in before and 0x14000 not in before and 0x0250 in before  # (what the split got wrong)
     net.correct_split(agent, slug, "operands", "00:0300", "it pops its return address, steps over one byte, pushes it",
                       count=1)
     net.correct_split(agent, slug, "noreturn", "00:0400", "it's the reset routine: it jumps to the start, never back")
@@ -60,7 +60,7 @@ def test_splitting_again_uses_the_corrections(game):
     assert out["corrections"] == 5
     after = _starts(net, slug)
     assert 0x14000 in after and 0x18000 not in after  # past the operand byte, and not past the call that doesn't return
-    assert {0x0600, 0x0620, 0x0700} <= after and 0x0800 not in after and 0x0900 not in after
+    assert {0x0600, 0x0620, 0x0700} <= after and 0x0800 not in after and 0x0250 not in after
     pid = net._project(slug)["id"]
     regions = {(r["rom_offset"], r["size"], r["kind"]) for r in net.store.all(
         "SELECT * FROM data_regions WHERE project_id=?", pid)}
@@ -75,7 +75,10 @@ def test_a_place_is_a_bank_and_the_address_it_runs_at(game):
     assert net._banked_at(proj, "05:8123") == (5 * 0x4000 + 0x123, 0x8123)  # slot 2
     assert net._banked_at(proj, "01:4010") == (0x4010, 0x4010)  # slot 1
     assert net._banked_at(proj, "04:1234") == (4 * 0x4000 + 0x1234, 0x1234)  # slot 0, paged
-    for bad in ("00:8123", "05:C123", "05:0100"):
+    assert net._banked_at(proj, "00:8123") == (0x123, 0x8123)  # bank 0 can also page into slot 2
+    with pytest.raises(NetworkError, match="explicit NN:AAAA"):
+        net._banked_at(proj, "8000")  # one function at a CPU address does not establish its mapped bank
+    for bad in ("05:C123", "05:0100"):
         with pytest.raises(NetworkError, match="isn't in the ROM"):
             net._banked_at(proj, bad)
 

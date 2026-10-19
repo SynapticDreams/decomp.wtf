@@ -473,7 +473,8 @@ def draft(r: Routine) -> str:
     def code_name(target: int, offset: int) -> str:
         if r.cpu <= target < r.cpu + len(r.code) and target - r.cpu in starts:
             return f"@l_{target:04x}"
-        flat = sms_asm_refs.reference(r, target, offset).rom_offset
+        prefix = [text for off, text, _ln, kind, _target in pieces if kind is not None and off < offset]
+        flat = sms_asm_refs.reference(r, target, offset, prefix=prefix).rom_offset
         return r.functions.get(flat, f"${target:04x}")
 
     def address(value: int, role: str) -> str:

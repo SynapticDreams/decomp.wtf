@@ -94,11 +94,32 @@ def test_mapperless_reference_is_flat_without_sega_reset_banks():
 
 
 @NEEDS_WLA
+def test_source_placement_cannot_contradict_the_declared_mapper():
+    verdict = sms_asm.judge(routine(0x31, 0x31, bank=1, cpu=0x8100,
+                                    mapper="mapperless", rom_size=0xC000, banks=3), source())
+    assert verdict.same == 4 and not verdict.ok
+    assert any(p.startswith("3.") and "source coordinate" in p for p in verdict.problems)
+
+
+@NEEDS_WLA
 def test_a_mapper_write_cannot_leave_the_previous_entry_bank_as_a_reference_fact():
     r = routine(0x8200, 0x14200, bank=5, cpu=0x8100)
     r.code = bytes.fromhex("3e06 32ffff cd0082 c9")
     text = HEADER.replace("Routes one named handler", "Maps a bank and routes one named handler") + \
         "RouteEntry:\n    ld a, 6\n    ld (MapperSlot2), a\n    call Handler\n    ret\n"
+    verdict = sms_asm.judge(r, text)
+    assert verdict.same == len(r.code) and not verdict.ok
+    assert any(p.startswith("3.") for p in verdict.problems)
+    assert "call $8200" in sms_asm.draft(r)
+
+
+@NEEDS_WLA
+def test_typed_data_cannot_hide_a_following_mapper_write_from_reference_checks():
+    r = routine(0x8200, 0x14200, bank=5, cpu=0x8100)
+    r.code = bytes.fromhex("3e06 cd00 32ffff cd0082 c9")
+    r.data = [(r.flat + 2, 2, "inline")]
+    text = HEADER.replace("Routes one named handler", "Maps a bank and routes one named handler") + \
+        "RouteEntry:\n    ld a, 6\n    .db $cd, $00\n    ld (MapperSlot2), a\n    call Handler\n    ret\n"
     verdict = sms_asm.judge(r, text)
     assert verdict.same == len(r.code) and not verdict.ok
     assert any(p.startswith("3.") for p in verdict.problems)

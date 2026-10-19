@@ -40,13 +40,15 @@ def _regions(net, slug) -> set[tuple]:
 def test_a_master_system_log_starts_functions_and_keeps_data_out(tmp_path):
     data = sms_rom(size=0x20000, code=CODE)
     net, slug = _project(tmp_path, "game.sms", data)
-    assert 0x0700 not in _starts(net, slug) and 0x0900 in _starts(net, slug)
+    assert 0x0700 not in _starts(net, slug) and 0x0250 in _starts(net, slug)
     log = cdl(data, {0x0700: 0x09, 0x0701: 0x01, 0x0702: 0x01, 0x0800: 0x02, 0x0801: 0x02, 0x0802: 0x02})
     info = net.import_coverage(slug, log, "game.cdl")
     assert info["entries"] == 1 and info["from"] == "game.cdl"
+    # CDL is physical ROM evidence; this declaration supplies the CPU window it does not contain.
+    net.import_symbols(slug, "[labels]\n0000:0700 _LABEL_700_\n", "fixture.sym")
     net.resplit_banked(slug, apply=True, log=lambda *_: None)
     starts = _starts(net, slug)
-    assert 0x0700 in starts and 0x0800 not in starts and 0x0900 not in starts  # (its only "caller" was data)
+    assert 0x0700 in starts and 0x0800 not in starts and 0x0250 not in starts  # (its only "caller" was data)
     assert (0x0800, 3, "read") in _regions(net, slug)
 
 

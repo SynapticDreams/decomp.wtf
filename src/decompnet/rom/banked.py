@@ -15,8 +15,9 @@ from .sms_mapping import BusState
 class Lane:
     """The banked lane a project's CPU uses, with the project's ROM facts (`cfg["rom"]`)."""
 
-    def __init__(self, arch: str, rom: dict):
+    def __init__(self, arch: str, rom: dict, *, mapper: str = "sega"):
         self.arch, self.rom = arch, rom or {}
+        self.sms_mapper = mapper
         self.size = int(self.rom.get("size") or 0) or 1 << 23
         self.cpu_mod = {"sm83": sm83, "z80": z80, "mos6502": mos6502}[arch]
         if arch == "mos6502":
@@ -51,7 +52,7 @@ class Lane:
         if self.arch == "sm83":
             return gb.flat_offset(cpu, bank) if cpu < 0x8000 else None
         if self.arch == "z80":
-            return sms.target_flat(cpu, bank, self.size, from_cpu, mapping=mapping)
+            return sms.target_flat(cpu, bank, self.size, from_cpu, mapping=mapping, mapper=self.sms_mapper)
         p = self.layout.target(cpu, bank)
         return None if p is None else p + self.prg_off
 
@@ -70,7 +71,7 @@ class Lane:
         if self.arch == "sm83":
             out = gb.refs_of(code, cpu, bank, self.size)
         elif self.arch == "z80":
-            out = sms.refs_of(code, cpu, bank, self.size)
+            out = sms.refs_of(code, cpu, bank, self.size, mapper=self.sms_mapper)
         else:
             out = nes.refs_of(code, cpu, bank, self.layout)
         return [list(r) for r in out]
