@@ -15,8 +15,9 @@ CODE = {0: bytes.fromhex("3e01 32ffff cd0002 18fe"), 0x200: bytes.fromhex("cd008
         0x4000: bytes.fromhex("3e01 c9"), 0x8000: bytes.fromhex("3e02 c9")}
 
 
-@pytest.mark.parametrize("platform,region", [("sms", 4), ("gg", 6)])
-@pytest.mark.parametrize("mapper,flat,value", [("sega", 0x4000, 1), ("mapperless", 0x8000, 2), ("codemasters", 0xC000, 3)])
+@pytest.mark.parametrize("platform,region", [("sms", 4), ("gg", 6)], ids=["sms", "gg"])
+@pytest.mark.parametrize("mapper,flat,value", [("sega", 0x4000, 1), ("mapperless", 0x8000, 2), ("codemasters", 0xC000, 3)],
+                         ids=["sega", "mapperless", "codemasters"])
 @pytest.mark.skipif(not sms_asm.available(), reason="needs WLA-DX")
 def test_declared_models_agree_across_project_consumers(tmp_path, platform, region, mapper, flat, value):
     net = RomNetwork(tmp_path / "state.db", tmp_path / "projects")
