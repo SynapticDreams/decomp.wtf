@@ -94,6 +94,11 @@ name) so the next session starts ahead:
 
 ## Conventions
 
+The synthetic assembly and export checks run in the **SMS assembly** CI workflow with the pinned WLA-DX.
+To run that gate locally, install `decompnet toolchain install wla-dx`, then run
+`uv run python tools/sms_gate.py` from the repository. It checks SMS and GG exports and fails on missing
+tools, failed comparisons or skipped tests. The default report is `build/sms-tool-tests.xml`.
+
 - Keep the split's `func_<bank>_<address>` names unless a function's purpose is clear.
 - Helper types and prototypes that several functions share go in the project's shared header
   (`get_context`), never edited per function to force a match.

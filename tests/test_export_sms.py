@@ -36,11 +36,11 @@ ShowMenu:
 """
 
 
-@pytest.fixture
-def exported(tmp_path):
+@pytest.fixture(params=["sms", "gg"])
+def exported(tmp_path, request):
     net = RomNetwork(tmp_path / "d.db", tmp_path / "ws")
-    rom = tmp_path / "game.sms"
-    rom.write_bytes(make_rom(size=0x20000, code=CODE))
+    rom = tmp_path / f"game.{request.param}"
+    rom.write_bytes(make_rom(size=0x20000, region=6 if request.param == "gg" else 4, code=CODE))
     slug = net.import_rom(rom, confirmed=True, log=lambda *_: None)
     pid = net.project_row(slug)["id"]
     fn = net.store.one("SELECT * FROM functions WHERE project_id=? AND rom_offset=?", pid, 0x200)
@@ -56,6 +56,8 @@ def test_the_export_rebuilds_the_game_with_its_documented_routine(exported):
     net, slug, res, out = exported
     assert res["identical"], res["log"]
     assert (res["documented"], res["left_out"]) == (1, [])
+    platform = net.cfg(net.project_row(slug))["platform"]
+    assert (out / "build" / f"game.{platform}").read_bytes() == (out / f"baserom.{platform}").read_bytes()
     assert net.overview(slug)["exportable"] and net.cfg(net.project_row(slug))["export"]["documented"] == 1
     bank0 = (out / "build" / "disassembly" / "bank_000.asm").read_text()
     assert "call ShowMenu" in bank0 and "; documented in assembly: documented/ShowMenu.asm" in bank0
@@ -70,11 +72,12 @@ def test_the_export_rebuilds_the_game_with_its_documented_routine(exported):
 
 def test_the_tree_keeps_the_game_out_of_git(exported):
     net, slug, res, out = exported
+    base = f"baserom.{net.cfg(net.project_row(slug))['platform']}"
     ignored = (out / ".gitignore").read_text().split()
-    assert "build/" in ignored and "baserom.sms" in ignored
+    assert "build/" in ignored and base in ignored
     tracked = [p for p in out.rglob("*") if p.is_file() and "build" not in p.relative_to(out).parts
-               and p.name != "baserom.sms" and "__pycache__" not in p.parts]
-    rom = (out / "baserom.sms").read_bytes()
+               and p.name != base and "__pycache__" not in p.parts]
+    rom = (out / base).read_bytes()
     assert all(rom[0x100:0x10f] not in p.read_bytes() for p in tracked)  # the game's code is in none of them
     layout = json.loads((out / "layout.json").read_text())
     assert any(f["name"] == "ShowMenu" and f["cpu"] == 0x200 for f in layout["functions"])
@@ -82,6 +85,7 @@ def test_the_tree_keeps_the_game_out_of_git(exported):
 
 def test_the_build_refuses_another_game(exported):
     net, slug, res, out = exported
-    (out / "baserom.sms").write_bytes(make_rom(size=0x20000, code={**CODE, 0x0200: bytes.fromhex("3e01c9")}))
+    base = f"baserom.{net.cfg(net.project_row(slug))['platform']}"
+    (out / base).write_bytes(make_rom(size=0x20000, code={**CODE, 0x0200: bytes.fromhex("3e01c9")}))
     proc = subprocess.run([sys.executable, "build.py"], cwd=out, capture_output=True, text=True)
     assert proc.returncode != 0 and "isn't the version" in proc.stderr
