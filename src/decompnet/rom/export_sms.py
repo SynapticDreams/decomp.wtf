@@ -23,6 +23,7 @@ from pathlib import Path
 from ..limits import capped
 from . import sms, sms_asm, sms_hw
 from .export_gb import NOTE_CHARS, NOTES_PER_LABEL, _documented
+from .sms_identity import verify_normalized
 
 LABEL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")  # a name WLA-DX takes as a label
 WORD = re.compile(r"(?<![.@\w])[A-Za-z_]\w*")
@@ -34,6 +35,7 @@ def export_sms(net, slug: str, out: Path, log=print) -> dict:
     cfg = net.cfg(proj)
     rom_path = Path(proj["root"]) / cfg["rom"]["file"]
     image = sms.strip_copier_header(rom_path.read_bytes())
+    verify_normalized(image, cfg["rom"].get("identity"), cfg["rom"].get("sha1"))
     if out.exists():
         for child in out.iterdir():
             if child.name != ".git":
@@ -85,8 +87,10 @@ def export_sms(net, slug: str, out: Path, log=print) -> dict:
         + sms_hw.inc(), encoding="utf-8")
     (out / "tools").mkdir(exist_ok=True)
     shutil.copyfile(Path(__file__).with_name("z80.py"), out / "tools" / "z80.py")
+    shutil.copyfile(Path(__file__).with_name("sms_identity.py"), out / "tools" / "sms_identity.py")
     (out / "build.json").write_text(json.dumps({"title": proj["name"], "platform": platform, "image": base,
-                                                "sha1": hashlib.sha1(image).hexdigest(), "size": len(image)},
+                                                "sha1": hashlib.sha1(image).hexdigest(), "size": len(image),
+                                                "identity": cfg["rom"].get("identity")},
                                                indent=1), encoding="utf-8")
     shutil.copyfile(Path(__file__).with_name("export_sms_build.py"), out / "build.py")
     (out / base).write_bytes(image)
@@ -162,7 +166,7 @@ in assembly (in `documented/`), and {matched} are also matched in C (in `c/`).
 | `documented/` | Routines documented in assembly: names, comments and constants for what the disassembly has as numbers, each checked to rebuild its bytes. `build.py` puts each in place of its bytes; `names.inc` holds the names they use that aren't labels (RAM, constants). `python build.py --no-documented` builds without them. |
 | `include/hardware.inc` | The hardware's names the documented routines use (ports, the mapper's registers). |
 | `c/` | Functions matched in C: SDCC compiles each to exactly the original code. For reference: the build is the assembly. |
-| `tools/z80.py`, `build.py`, `build.json` | The disassembler, the build, and which game it's for. |
+| `tools/z80.py`, `tools/sms_identity.py`, `build.py`, `build.json` | The disassembler, revision identity checks, the build, and which game it's for. |
 
 `build/disassembly/` is made from your copy on every build, so keep your work in `layout.json`, `comments.txt` and
 `documented/`. To change the game itself, copy `build/disassembly/` elsewhere and edit it there (`game.asm` is the
