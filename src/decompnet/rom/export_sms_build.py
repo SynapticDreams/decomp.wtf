@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "tools"))
 import z80  # noqa: E402  (decomp.wtf's Z80 disassembler, next to this file)
 from sms_identity import strip_copier_header, verify_normalized  # noqa: E402
-from sms_mapping import BusState, Mapper, entry_state  # noqa: E402
+from sms_mapping import BusState, Mapper  # noqa: E402
 
 B = json.loads((ROOT / "build.json").read_text(encoding="utf-8"))
 L = json.loads((ROOT / "layout.json").read_text(encoding="utf-8"))
@@ -133,7 +133,7 @@ class Disassembly:
             source = self.emitted.get(from_flat)
             if source is None:
                 return None
-            mapping = entry_state(from_flat, source[2], self.size)
+            mapping = self.mapper.entry(from_flat, source[2])
         return self.mapper.resolve(target, mapping).rom_offset
 
     def decode(self) -> None:

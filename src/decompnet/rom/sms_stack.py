@@ -48,8 +48,7 @@ def _overlaps(state, cpu, count):
 
 
 def _addresses(state, model, addresses):
-    if any(model.resolve(at, state.mapping).space != "wram" or (
-            model.kind == "sega" and at >= 0xFFFC) for at in addresses):
+    if any(model.resolve(at, state.mapping).space != "wram" or model.is_mapper_register(at) for at in addresses):
         return "physical stack may access a mapper or unqualified memory source"
     return None
 

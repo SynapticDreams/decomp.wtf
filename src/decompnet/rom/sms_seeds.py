@@ -5,7 +5,7 @@ Symbol/table CPU coordinates are explicit declarations; an unqualified call scan
 """
 from __future__ import annotations
 
-from .sms_mapping import BANK, BusState, Mapper, entry_state, rom_coordinate
+from .sms_mapping import BANK, BusState, Mapper, rom_coordinate
 
 CALLS = (0xCD, 0xC4, 0xCC, 0xD4, 0xDC, 0xE4, 0xEC, 0xF4, 0xFC)
 
@@ -41,7 +41,7 @@ def table_targets(data: bytes, tables, cpus: dict, model: Mapper):
             address = rom_coordinate(model, flat // BANK, cpu)
             if address.rom_offset != flat:
                 continue
-            state = entry_state(flat, cpu, model.size)
+            state = model.entry(flat, cpu)
         for index in range(min(count, (len(data) - flat) // 2)):
             offset = flat + 2 * index
             target = int.from_bytes(data[offset:offset + 2], "little")
