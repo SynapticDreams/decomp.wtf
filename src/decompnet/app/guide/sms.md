@@ -132,7 +132,7 @@ revalidation. Full toolchain/ABI and linked replacement qualification is separat
 
 Dependency capture is bounded to 32 MiB total, 4 MiB per file, 8,192 files, 16,384 traversal nodes, 64 roots,
 64 levels and 1,024 recipes, within the existing snapshot encoding budget. Cyclic/unreadable trees and exhausted
-budgets stop resplitting before work commits. No-include legacy history retains its original digest/undo behavior.
+budgets stop resplitting before work commits. Existing no-include records retain their snapshot digest format and remain eligible for guarded undo.
 Older records with configured includes but no captured dependency contents remain inspectable; whole undo is
 refused with a recovery message because their historical compiler inputs are unknown. Snapshot capture records
 the context at resplit time and cannot retroactively establish the context of an earlier accepted attempt.
