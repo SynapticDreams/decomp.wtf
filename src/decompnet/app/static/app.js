@@ -3044,8 +3044,33 @@ async function renderProjectSettings() {
   $("projFacts").innerHTML = facts.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v || "—")}</dd></div>`).join("");
   // splitting again: the banked lanes, on a project of the user's own (a room member's copy follows its host's)
   const banked = ["gb", "gbc", "sms", "gg", "nes"].includes(ov.platform) && !fork && ov.room?.role !== "guest";
-  if ($("resplitPanel").hidden === banked) { $("resplitApply").hidden = true; $("resplitResult").innerHTML = ""; $("resplitLog").hidden = true; }
-  $("resplitPanel").hidden = !banked;
+  const resplitPanel = $("resplitPanel");
+  if (resplitPanel.hidden === banked || resplitPanel.dataset.project !== S.slug) {
+    $("resplitApply").hidden = true;
+    $("resplitResult").replaceChildren();
+    $("resplitLog").hidden = true;
+    S.resplitPlan = null;
+  }
+  resplitPanel.dataset.project = S.slug;
+  resplitPanel.hidden = !banked;
+  const resplitHistory = $("resplitHistory");
+  resplitHistory.hidden = !banked || !["sms", "gg"].includes(ov.platform);
+  if (!resplitHistory.hidden) {
+    const slug = S.slug;
+    window.ResplitHistoryUI.render(resplitHistory,
+      cursor => api(`/api/resplit?slug=${encodeURIComponent(slug)}${cursor ? `&before=${cursor}` : ""}`),
+      async id => {
+        $("resplitLog").hidden = false;
+        const { job } = await api("/api/resplit", { method: "POST", body: { slug, undo: id } });
+        await followJob(job, $("resplitLog"));
+        if (S.slug !== slug) return;
+        $("resplitResult").textContent = "Restored the previous split and its saved work.";
+        $("resplitApply").hidden = true;
+        S.ov = await api(`/api/project?slug=${encodeURIComponent(slug)}`);
+        renderProjectSettings();
+        poll(false);
+      });
+  }
   const corrects = ["gb", "gbc", "sms", "gg", "nes"].includes(ov.platform) && !fork && ov.room?.role !== "guest";
   $("correctionsPanel").hidden = !corrects;
   // (NES: coverage from an emulator only, for now: no corrections or symbol files yet)
@@ -3115,16 +3140,24 @@ $("symRemove").onclick = async () => {
 
 /* What splitting again would change (or did): a preview first, then the same with "apply". */
 async function resplit(apply) {
+  const slug = S.slug;
   const btn = apply ? $("resplitApply") : $("resplitPreview");
   btn.disabled = true;
   $("resplitLog").hidden = false;
   try {
-    const { job } = await api("/api/resplit", { method: "POST", body: { slug: S.slug, apply } });
+    const plan = apply && S.resplitPlan?.slug === slug ? S.resplitPlan.token : null;
+    const { job } = await api("/api/resplit", { method: "POST", body: { slug, apply, plan } });
     const r = await followJob(job, $("resplitLog"));
+    if (S.slug !== slug) return;
+    S.resplitPlan = apply ? null : { slug, token: r.plan };
     $("resplitResult").innerHTML = `<div class="notice ${apply ? "room" : ""}"><span>${apply ? "<b>Split again.</b> " : ""}${plural(r.before, "function")} → ${plural(r.after, "function")}: ${r.kept.toLocaleString()} unchanged keep their work, ${r.added.toLocaleString()} new, ${r.removed.toLocaleString()} ${apply ? "gone" : "would go"}; all ${r.matched_kept.toLocaleString()} matched kept${r.notes_moved ? `, notes of ${plural(r.notes_moved, "function")} ${apply ? "moved" : "would move"}` : ""}.${r.data_after || r.data_before ? ` Functions cover ${bytes(r.bytes_before)} → ${bytes(r.bytes_after)}; ${bytes(r.data_after)} ${apply ? "is" : "would be"} shown as data (tables, padding, bytes the code never reaches), not handed out as functions${r.data_before ? ` (${bytes(r.data_before)} before)` : ""}.` : ""}${r.corrections ? ` With ${plural(r.corrections, "correction")} from below.` : ""}</span></div>`;
+    window.ResplitHistoryUI.changes($("resplitResult"), r);
     $("resplitApply").hidden = apply;
     if (apply) { S.ov = await api(`/api/project?slug=${S.slug}`); renderProjectSettings(); poll(false); }
-  } catch (e) { toast(esc(e.message), "err"); } finally { btn.disabled = false; }
+  } catch (e) {
+    if (apply && S.slug === slug) { S.resplitPlan = null; $("resplitApply").hidden = true; }
+    toast(esc(e.message), "err");
+  } finally { btn.disabled = false; }
 }
 $("resplitPreview").onclick = () => resplit(false);
 $("resplitApply").onclick = () => resplit(true);

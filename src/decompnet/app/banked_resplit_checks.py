@@ -28,3 +28,11 @@ def verify_settings(expected: dict, current: dict) -> None:
         raise NetworkError("mapping or ROM metadata changed during resplit; retry with the current declaration")
     if expected != current:
         raise NetworkError("project settings changed during resplit; retry with the current settings")
+
+
+def quiet(net, slug: str) -> None:
+    ap, job = net.autopilots.get(slug), net.twins.jobs.get(slug)
+    pid = net._project(slug)["id"]
+    if (ap and ap.get("state") == "running") or (net.permuter.status(slug) or {}).get("state") == "running" or \
+            (job and job.state == "running") or pid in net.twins._busy:
+        raise NetworkError("stop this project's background analysis before resplitting or undoing a resplit")

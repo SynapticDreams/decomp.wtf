@@ -91,6 +91,30 @@ Resplit verifies the normalized input against the frozen revision before and aft
 database updates. Legacy SHA-1 identities and equivalent recognized copier wrappers remain usable. A missing,
 malformed or changed identity stops the operation; profile or other project settings edited during analysis require a retry.
 If an input change is detected during database updates, that transaction rolls back.
+SMS/GG previews also identify changed work and overlapping candidates (at most 100 changed entries and eight
+overlaps per entry, with total counts and truncation disclosed). Settings sends the preview fingerprint when
+applying; changed work, annotations, sidecar inputs or candidate layout require a new preview. Direct operator
+API calls can omit that optional fingerprint and analyze the current state. Concurrent edits during discovery
+or before mutation still stop the apply.
+
+An SMS/GG apply saves a private, versioned snapshot of its configuration, functions, attempts, claims, notes,
+symbols, corrections, data regions and context headers. New candidates never reuse deleted function IDs, and
+removed attempts are retained in the snapshot. A changed documented routine's prior source remains recoverable;
+the new candidate starts unaccepted. Existing matched-C ranges retain their protection, with changed entries
+flagged for revalidation. Snapshot retention does not establish source validity under changed boundaries/context.
+SMS classification, data changes and history are committed in one SQLite transaction, including rollback on
+commit failure. Unchanged work and applicable claims remain attached to their original function rows; applying
+changes to an actively claimed function requires releasing that claim first.
+
+**Resplit history** in Settings lists metadata in pages of 50. Undo restores the latest active snapshot only if
+the current project work and inputs still match its recorded result. New notes, attempts, claims, annotations,
+headers, settings or sidecar edits block undo; a saved ID reused outside the project is an explicit conflict.
+History remains available after a conflict. Repeated resplits undo in reverse order. Deleting a project removes
+its private history. The operator API uses `/api/resplit` GET (`before` for pagination) and POST (`undo` with a
+history ID); existing POST preview/apply calls remain available. History responses contain counts rather than
+stored source. Each snapshot is bounded to 100,000 rows and 64 MiB of encoded work; sidecar verification is capped
+at 64 MiB per file. Exceeding a budget stops the apply before it commits. Existing databases gain history storage
+without rewriting existing work. This recovery path currently covers local SMS/GG projects.
 Explicit nonreturn corrections apply; an incomplete trace never supplies a preserving or nonreturning contract.
 This remains static analysis under an ordinary virtual-stack contract; asynchronous interrupt preservation,
 physical byte/flag stack emulation and complete execution qualification remain pending. Neither adapter is a CPU emulator.

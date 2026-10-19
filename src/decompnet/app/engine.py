@@ -767,11 +767,21 @@ class RomNetwork(Network):
 
         return import_project(self, picked, slug, workdir, log, BASE_HEADER.format(title=picked.info["title"]))
 
-    def resplit_banked(self, slug: str, apply: bool = False, log=print) -> dict:
+    def resplit_banked(self, slug: str, apply: bool = False, log=print, *, expected_plan: str | None = None) -> dict:
         """Preview or apply a banked ROM resplit, reconciling discovered functions with stored work."""
         from .banked_resplit import resplit
 
-        return resplit(self, slug, apply=apply, log=log)
+        return resplit(self, slug, apply=apply, log=log, expected_plan=expected_plan)
+
+    def resplit_history(self, slug: str, before_id: int | None = None) -> dict:
+        from .banked_resplit_history import list_history
+
+        return list_history(self, slug, before_id)
+
+    def undo_resplit(self, slug: str, history_id: int) -> dict:
+        from .banked_resplit_history import undo
+
+        return undo(self, slug, history_id)
 
     @staticmethod
     def _store_regions(db, project_id: int, regions: list) -> None:

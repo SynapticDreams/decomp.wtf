@@ -7,15 +7,18 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 
 from ..network import NetworkError
 from ..rom.symbols import AUTO_NAME
 from . import banked_resplit_checks as checks
+from .banked_resplit_changes import describe, plan_digest
+from . import banked_resplit_history as history, banked_resplit_state as snapshots
 from .banked_import import BANKED_TOOLS, segments, with_edges
 
 
-def resplit(net, slug: str, apply: bool = False, log=print) -> dict:
+def resplit(net, slug: str, apply: bool = False, log=print, *, expected_plan: str | None = None) -> dict:
     """Split a Game Boy, Master System or NES game again with this version's splitter, keeping the work done on
     it: a function whose start, address and bytes don't change keeps its row (name, status, attempts, notes);
     a matched function is never removed (new functions that would overlap it are left out); notes on a function
@@ -26,6 +29,10 @@ def resplit(net, slug: str, apply: bool = False, log=print) -> dict:
     proj = net._project(slug)
     cfg = net.cfg(proj)
     arch = (cfg.get("arch") or "").lower()
+    if expected_plan is not None and (not isinstance(expected_plan, str) or not re.fullmatch(r"[0-9a-f]{64}", expected_plan)):
+        raise NetworkError("invalid resplit preview fingerprint")
+    if expected_plan is not None and arch != "z80":
+        raise NetworkError("resplit preview fingerprints are currently supported for SMS/GG")
     if arch not in BANKED_TOOLS or net.fork_slug(slug):
         raise NetworkError("splitting again is for Game Boy, Master System and NES projects")
     if slug in net.links:
@@ -36,11 +43,18 @@ def resplit(net, slug: str, apply: bool = False, log=print) -> dict:
         raise NetworkError(f"the project's copy of the game ({cfg['rom']['file']}) isn't in its folder any more")
     lane = sms if arch == "z80" else nes if arch == "mos6502" else gb
     checks.verify_input(arch, rom_path, cfg)
+    before = history.capture(net, proj) if arch == "z80" else None
+    before_digest = snapshots.encode(before)[1] if before is not None else None
+    if apply and before is not None:
+        checks.quiet(net, slug)
     report: dict = {}
     fns = lane.split(rom_path, root, log=log, report=report, hints=net._hints(proj))
     checks.verify_input(arch, rom_path, cfg)
     checks.verify_settings(cfg, net.cfg(net._project(slug)))
-    old = net.store.all("SELECT * FROM functions WHERE project_id=?", proj["id"])
+    if before is not None:
+        history.unchanged(net, proj, before_digest)
+    old = before["tables"]["functions"] if before is not None else \
+        net.store.all("SELECT * FROM functions WHERE project_id=?", proj["id"])
     by_off = {r["rom_offset"]: r for r in old if r["rom_offset"] is not None}
     kept, fresh = set(), []
     for f in fns:
@@ -53,7 +67,10 @@ def resplit(net, slug: str, apply: bool = False, log=print) -> dict:
             if r["status"] == "matched" and r["id"] not in kept and r["rom_offset"] is not None]
     fresh = [f for f in fresh if not any(lo < f.rom + len(f.code) and f.rom < hi for lo, hi in held)]
     gone = [r for r in old if r["id"] not in kept and r["status"] != "matched"]
-    noted = {r["id"] for r in gone if net.store.one("SELECT 1 FROM notes WHERE function_id=?", r["id"])}
+    if before is not None:
+        noted = {row["function_id"] for row in before["tables"]["notes"]} & {row["id"] for row in gone}
+    else:
+        noted = {r["id"] for r in gone if net.store.one("SELECT 1 FROM notes WHERE function_id=?", r["id"])}
     regions = [r for r in report.get("regions") or []
                if not any(lo < r[0] + r[1] and r[0] < hi for lo, hi in held)]  # a matched function keeps its bytes
     out = {"before": len(old), "after": len(kept) + len(held) + len(fresh), "kept": len(kept),
@@ -70,8 +87,16 @@ def resplit(net, slug: str, apply: bool = False, log=print) -> dict:
            + sum(f.size for f in fresh),
            "corrections": net.store.one("SELECT COUNT(*) AS n FROM corrections WHERE project_id=? AND undone_at IS "
                                          "NULL", proj["id"])["n"]}
+    if before is not None:
+        out.update(describe(before, fns, kept))
+        out["plan"] = plan_digest(before_digest, fns, report)
+        if apply and expected_plan is not None and expected_plan != out["plan"]:
+            raise NetworkError("resplit preview is stale; preview again before applying")
     if not apply:
         return out
+    if before is not None and any(row["function_id"] in {r["id"] for r in gone} and row["expires_at"] > time.time()
+                                  for row in before["tables"]["claims"]):
+        raise NetworkError("release claims on changed functions before applying this resplit")
     spans = [(f.rom, f.rom + len(f.code), f) for f in fresh] + [
         (r["rom_offset"], r["rom_offset"] + (r["size"] or 0), r) for r in old if r["id"] in kept or r["status"] == "matched"]
     names = {r["name"] for r in old if r["id"] in kept or r["status"] == "matched"}
@@ -85,7 +110,12 @@ def resplit(net, slug: str, apply: bool = False, log=print) -> dict:
             raise NetworkError("the project was removed during resplit")
         checks.verify_settings(cfg, json.loads(current["config"]))
         checks.verify_input(arch, rom_path, cfg)
+        if before is not None:
+            checks.quiet(net, slug)
+            history.unchanged(net, proj, before_digest)
         for r in gone:
+            if before is not None:
+                db.execute("DELETE FROM attempts WHERE function_id=?", (r["id"],))  # retained in private history
             db.execute("DELETE FROM claims WHERE function_id=?", (r["id"],))
             db.execute("DELETE FROM twin_misses WHERE function_id=?", (r["id"],))
             db.execute("DELETE FROM functions WHERE id=?", (r["id"],))
@@ -115,7 +145,8 @@ def resplit(net, slug: str, apply: bool = False, log=print) -> dict:
         for r in gone:  # its notes go to whatever covers its start now
             if r["id"] not in noted:
                 continue
-            owner = next((x for lo, hi, x in spans if lo <= (r["rom_offset"] or -1) < hi), None)
+            offset = r["rom_offset"] if r["rom_offset"] is not None else -1
+            owner = next((x for lo, hi, x in spans if lo <= offset < hi), None)
             fid = (new_ids.get(owner.rom) if hasattr(owner, "rom") else owner["id"]) if owner is not None else None
             db.execute("UPDATE notes SET function_id=? WHERE function_id=?", (fid, r["id"]))
         net._store_regions(db, proj["id"], regions)
@@ -126,13 +157,25 @@ def resplit(net, slug: str, apply: bool = False, log=print) -> dict:
         cfg["splitter"] = report.get("splitter", cfg.get("splitter"))
         checks.verify_input(arch, rom_path, cfg)  # failure rolls back preceding function/region updates
         db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
+        if before is not None:
+            history.mark_sms(db, proj["id"])
+            checks.verify_input(arch, rom_path, cfg)
+            summary = {key: out[key] for key in ("before", "after", "kept", "added", "removed")}
+            removed_ids = {row["id"] for row in gone}
+            summary["archived_attempts"] = sum(row["function_id"] in removed_ids for row in before["tables"]["attempts"])
+            summary["archived_documented"] = sum(row["status"] == "documented" for row in gone)
+            after = history.capture(net, net._project(slug))
+            if after["inputs"] != before["inputs"]:
+                raise NetworkError("symbol/coverage inputs changed during resplit; preview again")
+            out["history_id"] = history.record(db, proj["id"], before, after, summary)
         net._event(db, proj["id"], None, "split", f"split again: {out['kept']} functions unchanged, {out['added']} "
                     f"new, {out['removed']} gone ({out['matched_kept']} matched kept)")
-    for cache in (net._xrefs, net._ops, net._syms, net._roms):
+    for cache in (net._xrefs, net._ops, net._syms, net._roms, net._progress_cache):
         cache.pop(proj["id"], None)
     with net.twins._lock:
         net.twins._prints.pop(proj["id"], None)
-    net.twins.set_aside_asm(net._project(slug))  # the new functions, through the set-aside rules
+    if before is None:
+        net.twins.set_aside_asm(net._project(slug))  # other lanes retain their existing classification path
     log(f"split again: {out['after']} functions ({out['kept']} unchanged, {out['added']} new, {out['removed']} gone)")
     return out
 
