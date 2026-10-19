@@ -21,8 +21,9 @@ def required():
             for p in platforms for kind in ('c', 'asm')} | {f'{test}[{p}]' for p in platforms for test in (
                 'test_split_and_merge_preserve_metadata_as_original_subject_without_inheriting_approval',
                 'test_idempotent_symbol_refresh_preserves_raw_future_metadata_and_changed_role_archives_it',
-                'test_rename_refuses_new_work_during_source_checks_and_preserves_the_new_observation',
-                'test_research_status_is_visible_in_briefs_and_archives_stay_out_of_active_context')},
+                'test_rename_refuses_new_work_during_source_checks_and_preserves_the_new_observation')}
+            | {f'test_research_status_is_visible_in_briefs_and_archives_stay_out_of_active_context[{p}-{track}]'
+                      for p in platforms for track in ('open', 'asm', 'documented')},
         'test_sms_annotation_sources': {f'{test}[{p}]' for p in platforms for test in (
             'test_declared_symbol_sources_support_all_research_records_and_ignore_presentation_metadata',
             'test_changed_or_missing_source_bundle_is_unavailable_without_erasing_original_evidence')},

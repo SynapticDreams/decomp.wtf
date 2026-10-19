@@ -106,17 +106,24 @@ def test_rename_refuses_new_work_during_source_checks_and_preserves_the_new_obse
     assert net.store.one('SELECT text FROM notes')['text'].startswith('A new observation')
 
 
-def test_research_status_is_visible_in_briefs_and_archives_stay_out_of_active_context(project):
+@pytest.mark.parametrize('track', ['open', 'asm', 'documented'])
+def test_research_status_is_visible_in_briefs_and_archives_stay_out_of_active_context(project, track):
     net, slug = project
     agent, _ = net.local_agent('brief_writer')
+    net.store.conn.execute("UPDATE functions SET status=?,meta=? WHERE project_id=? AND rom_offset=512",
+                           (track, '{"for_agents":true}' if track == 'open' else '{}', net.project_row(slug)['id']))
     name = symbol(net, slug)
     item = put(net, slug, agent, 'note', value=annotation(), function=name)['record']
+    put(net, slug, agent, 'note', value=annotation(), text='Project-wide tentative layout observation.')
     put(net, slug, agent, 'symbol', value=annotation())
     brief = net.get_function(name, slug)
+    assert ('(assembly track)' in brief) == (track != 'open')
     assert 'research hypothesis; pending_review; confidence low' in brief
+    assert 'Project-wide tentative layout observation.' in brief
     assert f'Symbol research for {name}: pending_review' in brief
     review(net, slug, 'note', item['key'])
     assert 'reviewed_research' in net.get_function(name, slug)
     with net.store.tx() as db:
         symbol_records.update(db, net.project_row(slug)['id'], name, kind='alias')
-    assert archives.PREFIX not in net.get_function(name, slug)
+    brief = net.get_function(name, slug)
+    assert archives.PREFIX not in brief and 'archived original research' not in brief

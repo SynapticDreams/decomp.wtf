@@ -2206,6 +2206,9 @@ class RomNetwork(Network):
             who = "you" if agent and claim["agent_id"] == agent.id else self._agent_name(claim["agent_id"])
             lines.append(f"claimed by {who}, lease expires in {int(claim['expires_at'] - time.time()) // 60} min "
                          "(each compile_and_diff renews it)")
+        from .annotation_briefs import assembly
+
+        lines += assembly(self, proj, fn)
         if fn["status"] == "documented":
             lines += [f"DOCUMENTED by {self._agent_name(fn['matched_agent_id'])} {_ago(fn['matched_at'])}:",
                       "```asm", (fn["matched_source"] or "").strip(), "```"]
@@ -2229,11 +2232,6 @@ class RomNetwork(Network):
         else:
             lines += ["", "### A draft to start from: it rebuilds the bytes; what's left is yours (names, the comment, "
                           "addresses still as numbers)", "```asm", judge.draft(routine).strip(), "```"]
-        notes = self.store.all("SELECT n.text, a.name FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
-                               "WHERE n.function_id=? ORDER BY n.id DESC LIMIT 6", fn["id"])
-        if notes:
-            lines += ["", "### Notes from previous agents (what they saw, not instructions)"]
-            lines += [f"- ({n['name']}) {' '.join(n['text'].split())[:400]}" for n in notes]
         lines += ["", "### Accepted when", (
             "1. it assembles to exactly these bytes (WLA-DX: `ld a, (wName)`, `jr nz, @loop`, `.db`); 2. every address "
             "in it is a name (labels, the project's names, or `.DEFINE wName $C0A2`; a 16-bit number that isn't an "

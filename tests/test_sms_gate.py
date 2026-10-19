@@ -211,7 +211,7 @@ def test_gate_requires_a_valid_report_with_executed_tests(tmp_path):
     path.write_text("<testsuite />")
     with pytest.raises(ValueError, match="executed, passing tests"):
         sms_gate.verify_report(path)
-    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 282
+    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 286
 
 
 def test_gate_rejects_gbdk_from_path_without_the_pinned_install(monkeypatch):
