@@ -4,6 +4,7 @@ import shutil
 
 from sms_identity import strip_copier_header, verify_normalized
 from sms_export_report import Report
+from sms_export_artifacts import read_regular
 
 
 def build(module, argv):
@@ -15,7 +16,10 @@ def build(module, argv):
         image = root / config['image']
         if not image.exists():
             module.fail(f"put your own copy of the game here as {config['image']}")
-        data = strip_copier_header(image.read_bytes())
+        raw, info = read_regular(image, config['size'] + 513)
+        if info.st_size > config['size'] + 512:
+            raise ValueError('original input size differs')
+        data = strip_copier_header(raw)
         if hashlib.sha1(data).hexdigest() != config['sha1']:
             module.fail(f"{config['image']} isn't the version this project is for (its sha1 differs)")
         verify_normalized(data, config.get('identity'), config['sha1'])

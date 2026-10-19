@@ -12,14 +12,15 @@ const pctOf = (best, insns) => (best == null ? null : Math.max(0, 1 - best / Mat
 const progress = (p) => {
   // (routines documented in assembly are done, apart from C: they count in neither)
   const asm = p.asm || 0, doc = p.documented || 0, room = Math.max(0, (p.bytes || 0) - (p.asm_bytes || 0) - (p.documented_bytes || 0));
-  return { pct: room ? (100 * (p.matched_bytes || 0)) / room : 0, total: Math.max(0, (p.functions || 0) - asm - doc), room, asm, doc };
+  const eligible = p.sms_progress ? p.sms_progress.c_reference.eligible_bytes : room;
+  return { pct: eligible ? (100 * (p.matched_bytes || 0)) / eligible : 0, total: Math.max(0, (p.functions || 0) - asm - doc), room: eligible, asm, doc };
 };
 /* A banked game's map: how much of its ROM the project knows what it is (code, data). */
 const mappedText = (ov) => {
   const m = ov.mapped;
   if (!m || !m.rom) return "";
-  const pct = (100 * Math.min(m.rom, m.code + m.data)) / m.rom;
-  return `${pctNum(pct)}% of the ROM mapped${ov.sms_profile && !ov.sms_profile.supported ? " (provisional listing)" : ""}`;
+  const pct = (100 * Math.min(m.rom, m.covered ?? m.code + m.data)) / m.rom;
+  return `${pctNum(pct)}% of the ROM ${ov.sms_progress ? "classified" : "mapped"}${ov.sms_profile && !ov.sms_profile.supported ? " (provisional listing)" : ""}`;
 };
 const asideText = (n) => (n ? ` · ${n.toLocaleString()} set aside` : "");
 /* A match percentage that never reads 100% before the function really matches (99.6% stays 99.6%). */
@@ -228,7 +229,7 @@ async function showHome() {
       : `${esc(p.rom?.game_code || "")}${p.rom?.region ? " · " + esc(p.rom.region) : ""} · ${esc(p.compiler?.name || "")}`;
     a.innerHTML = `<div class="cc-top"><span class="plat">${esc(p.platform_name || "?")}</span><span class="meta">${esc(since(p.last_activity))}</span></div>
       <div><h4>${esc(p.title)}</h4><p class="meta">${meta}</p></div>
-      <div class="meter"><i></i></div><p class="meta"><b>${pctNum(pct)}%</b> of code · ${(p.matched || 0).toLocaleString()} / ${pr.total.toLocaleString()} functions${asideText(pr.asm)}</p>`;
+      <div class="meter"><i></i></div><p class="meta"><b>${pctNum(pct)}%</b> ${p.sms_progress ? "of C candidates (stored references)" : "of code"} · ${(p.matched || 0).toLocaleString()} / ${pr.total.toLocaleString()} functions${asideText(pr.asm)}</p>`;
     box.append(a);
     requestAnimationFrame(() => { a.querySelector(".meter i").style.width = pct + "%"; });
   }
@@ -794,7 +795,7 @@ function renderHeader(ov) {
   $("phPct").textContent = pctNum(pct);
   $("phBar").style.width = pct + "%";
   $("phSub").textContent = fork && !ov.ready ? "set up the project to start"
-    : `${ov.matched.toLocaleString()} / ${pr.total.toLocaleString()} functions${pr.doc ? ` · ${pr.doc.toLocaleString()} documented` : ""}${asideText(pr.asm)}${linkedText(ov)} · ${plural(ov.attempts || 0, "compile")}${S.today ? ` · ${S.today} matched today` : ""}`;
+    : `${ov.sms_progress ? "Stored C candidate references · " : ""}${ov.matched.toLocaleString()} / ${pr.total.toLocaleString()} functions${pr.doc ? ` · ${pr.doc.toLocaleString()} documented` : ""}${asideText(pr.asm)}${linkedText(ov)} · ${plural(ov.attempts || 0, "compile")}${S.today ? ` · ${S.today} matched today` : ""}`;
   const w = workingAgents();
   $("phWorking").hidden = !w.n;
   $("phWorkingText").textContent = `${w.n} agent${w.n === 1 ? "" : "s"} working`;
@@ -861,6 +862,8 @@ function linkedText(ov) {
 function renderStats(ov) {
   renderHeader(ov);
   const pr = progress(ov), pct = pr.pct;
+  $("matchedLabel").textContent = ov.sms_progress ? "Stored C byte references" : "Matched code";
+  $("progress").setAttribute("aria-label", ov.sms_progress ? "Current stored C references by acceptance date" : "Matched code over time");
   $("pct").textContent = pctNum(pct);
   $("pctSub").textContent = (pr.room ? `${bytes(ov.matched_bytes)} of ${bytes(pr.room)}` : "") + (pr.asm ? ` (${bytes(ov.asm_bytes)} set aside)` : "")
     + linkedText(ov) + (S.today ? ` · ${S.today} matched today` : "")
@@ -958,7 +961,9 @@ function renderCloser(st) {
   const c = st.closeness || { now: 0, per_hour: [], today: 0 };
   const ph = c.per_hour || [], max = Math.max(0.01, ...ph);
   $("closerBars").innerHTML = ph.map((n, i) => `<rect x="${i * 10 + 1}" y="${20 - Math.max(n ? 3 : 1, (18 * n) / max)}" width="8" height="${Math.max(n ? 3 : 1, (18 * n) / max)}" rx="1.5" class="${n ? "on" : ""}"><title>+${n.toFixed(2)} pts ${23 - i ? `${23 - i} h ago` : "this hour"}</title></rect>`).join("");
-  $("closerSub").textContent = `The best attempts so far reproduce ${c.now.toFixed(1)}% of the code C can match`
+  $("closerSub").textContent = S.ov?.sms_progress
+    ? `Stored C candidate score estimate: ${c.now.toFixed(1)}% (instruction-weighted; not byte coverage or linked replacement)`
+    : `The best attempts so far reproduce ${c.now.toFixed(1)}% of the code C can match`
     + (c.today ? ` (+${c.today.toFixed(1)} points in the last 24 hours).` : ".");
   const rows = st.closer || [];
   $("closerList").innerHTML = rows.length ? rows.map((r) => `<li>${fnLink(r.name)}<span class="mono small nowrap">${pctPts(r.from)} → <b>${pctPts(r.to)}</b></span><span class="grow"></span><span class="muted small">${esc(r.agent)}${r.model ? ` · ${esc(r.model)}` : ""} · ${esc(since(r.at))}</span></li>`).join("")
@@ -2577,6 +2582,10 @@ function renderProgress() {
   const svg = $("progress"), total = S.map.reduce((n, f) => n + (f.size || 0), 0);
   const done = S.map.filter((f) => f.status === "matched");
   S.today = done.filter((f) => f.matched_at > Date.now() / 1000 - 86400).length;
+  if (S.ov?.sms_progress) {
+    window.SMSProgressUI.timeline(svg, S.ov.sms_progress.c_reference.timeline);
+    return;
+  }
   const dated = done.filter((f) => f.matched_at).sort((a, b) => a.matched_at - b.matched_at);
   if (!total || dated.length < 2) { svg.innerHTML = ""; return; }
   let cum = done.filter((f) => !f.matched_at).reduce((n, f) => n + (f.size || 0), 0);
@@ -2903,6 +2912,10 @@ const cwName = (c) => (c.startsWith("DS/") ? `CodeWarrior for DS ${c.slice(3)}` 
 /* ------------------------------------------------------------------ source: the base for ports and mods */
 function renderSource(ov) {
   const ex = ov.export, fork = ov.kind === "fork";
+  const sms = !!ov.sms_progress && !fork;
+  $("smsStrictControl").hidden = !sms;
+  $("smsProgress").hidden = !sms;
+  window.SMSProgressUI.render($("smsProgress"), ov);
   $("srcExport").hidden = fork || !ov.exportable;
   $("srcDiscExport").hidden = fork || ov.platform !== "psx";
   $("srcWhen").textContent = !fork && ex ? `exported ${since(ex.t)}` : "";
@@ -2949,10 +2962,15 @@ function renderSource(ov) {
   $("srcText").innerHTML = ov.platform === "nes"
     ? "decomp.wtf writes a ca65/ld65 project: where each function is and its name, what its agents found out, the routines documented in assembly, and <code>build.py</code>, which disassembles your copy (each PRG bank at the address it's shown at, code as instructions, the rest as bytes, the header and graphics included from your copy) and rebuilds it with cc65, each documented routine in place of its bytes. Then it builds it to prove it rebuilds your game <b>byte for byte</b>. Nearly every NES game was written in assembly, so this is its source: the base for mods, translations and ports. The game's bytes stay out of git, but documented routines are its code written out: share the tree only if you have the right to."
     : ["sms", "gg"].includes(ov.platform)
-    ? "decomp.wtf writes a WLA-DX project: where each function is and its name, what its agents found out, the routines documented in assembly, and <code>build.py</code>, which disassembles your copy (code as instructions, the rest as bytes) and rebuilds it with WLA-DX, each documented routine in place of its bytes. Then it builds it to prove it rebuilds your game <b>byte for byte</b>. Most Master System and Game Gear games were written in assembly, so this is their source: the base for mods, translations and ports. The game's bytes stay out of git, but documented routines are its code written out: share the tree only if you have the right to."
+    ? "decomp.wtf writes an annotated WLA-DX disassembly with the project's names, notes and documented assembly. The build checks the frozen input and actual rebuilt bytes, reports inserted routines and omissions, and can require every expected source. C files are stored byte references, with their unit context; this build does not compile or link them. Image equality, source insertion and semantic review are separate checks. Share game-derived source only if you have the right to."
     : ["gb", "gbc"].includes(ov.platform)
     ? "decomp.wtf writes an RGBDS project: the game as assembly, with the project's names and what its agents found out as comments, and <code>build.py</code>, which disassembles your copy with mgbdis and rebuilds it, each routine documented in assembly in place of its bytes. Then it builds it to prove it rebuilds your game <b>byte for byte</b>. Most Game Boy games were written in assembly, so this is their source: the base for mods, translations and ports. Functions matched in C come along for reference. The game's bytes stay out of git, but documented routines are its code written out: share the tree only if you have the right to."
     : "decomp.wtf writes a complete decompilation project: the matched functions as C, everything else as assembly, a linker script and <code>build.py</code>. Then it builds it to prove it rebuilds your game <b>byte for byte</b>. It's the base for ports and mods; game code and data stay out of git, so the tree is safe to put in a repository.";
+  if (sms) {
+    $("srcState").replaceChildren();
+    $("srcExport").textContent = ex ? "Export again" : "Export project";
+    return;
+  }
   const stale = ex && ex.matched != null && ex.matched < ov.matched;
   $("srcState").innerHTML = !ex ? `<span class="muted small">Not exported yet.</span>`
     : `<div class="src-line ${ex.identical === false ? "bad" : "ok"}">${ex.identical === false ? "✕ the last rebuild differed" : "✓ rebuilds byte for byte"}</div>
@@ -2979,19 +2997,33 @@ $("srcDiscExport").onclick = () => {
 };
 
 $("srcExport").onclick = async () => {
+  const slug = S.slug, sms = !!S.ov?.sms_progress, request = Symbol();
+  S.exportRequest = request;
   $("srcExport").disabled = true;
   $("expLog").hidden = false;
   $("expResult").innerHTML = "";
   try {
-    const { job } = await api("/api/export", { method: "POST", body: { slug: S.slug } });
+    const { job } = await api("/api/export", { method: "POST", body: { slug, strict_documented: sms && $("smsStrict").checked } });
     const r = await followJob(job, $("expLog"));
-    $("expResult").innerHTML = r.identical === false
+    if (S.slug !== slug || S.exportRequest !== request) return;
+    if (sms) window.SMSProgressUI.result($("expResult"), r);
+    else $("expResult").innerHTML = r.identical === false
       ? `<div class="notice bad"><span><b>Exported, but the rebuild differs.</b> ${esc(r.log.split("\n").filter(Boolean).pop() || "")}</span></div>`
       : `<div class="notice room"><span><b>Rebuilds byte for byte.</b> ${r.matched != null ? `${r.matched} of ${r.functions} functions are C.` : ""}</span></div>${cmdBox(`cd "${r.path}" && python build.py`)}`;
     wireCopies($("expResult"));
-    S.ov = await api(`/api/project?slug=${S.slug}`);
+    const overview = await api(`/api/project?slug=${encodeURIComponent(slug)}`);
+    if (S.slug !== slug || S.exportRequest !== request) return;
+    S.ov = overview;
     renderSource(S.ov);
-  } catch (e) { toast(esc(e.message), "err"); } finally { $("srcExport").disabled = false; }
+  } catch (e) {
+    toast(esc(e.message), "err");
+    if (sms && S.slug === slug && S.exportRequest === request) {
+      try {
+        const overview = await api(`/api/project?slug=${encodeURIComponent(slug)}`);
+        if (S.slug === slug && S.exportRequest === request) { S.ov = overview; renderSource(S.ov); }
+      } catch (refreshError) { toast(esc(refreshError.message), "err"); }
+    }
+  } finally { if (S.exportRequest === request) $("srcExport").disabled = false; }
 };
 
 $("compilerDiagnostic").onclick = () => {

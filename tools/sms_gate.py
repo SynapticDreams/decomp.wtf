@@ -28,6 +28,11 @@ TESTS = (
     "tests/test_sms_project_archive.py",
     "tests/test_sms_resplit_legacy_integration.py",
     "tests/test_sms_export_verification.py",
+    "tests/test_sms_progress.py",
+    "tests/test_sms_export_state.py",
+    "tests/test_sms_c_reference_export.py",
+    "tests/test_sms_progress_routes.py",
+    "tests/test_sms_export_artifacts.py",
     "tests/test_sms_documented.py",
     "tests/test_export_sms.py",
 )
@@ -124,6 +129,31 @@ def verify_report(report: Path) -> int:
             f'test_failed_standalone_run_replaces_old_success_receipts_and_artifacts[{platform}-tool]' in verification
             for platform in ('sms', 'gg')):
         raise ValueError('SMS gate report is missing actual SMS/GG structured export verification checks')
+    required_progress = {
+        'tests.test_sms_progress': {f'test_overview_and_banked_map_use_the_same_union_and_fresh_input_status[{p}]' for p in ('sms', 'gg')} |
+                                  {'test_aliases_and_data_overlap_are_measured_as_physical_unions',
+                                   'test_current_reference_dates_attribute_overlapping_bytes_once_and_bound_the_chart'},
+        'tests.test_sms_export_state': {f'test_last_success_is_historical_after_work_or_input_changes[{p}-{change}]'
+                                       for p in ('sms', 'gg') for change in ('source', 'header', 'symbol', 'note', 'profile', 'input', 'missing',
+                                                                          'tree', 'artifact', 'receipt', 'baserom', 'tree_missing')} |
+                                      {f'{test}[{p}]' for p in ('sms', 'gg') for test in (
+                                          'test_failed_preflight_records_a_new_failed_attempt_and_keeps_previous_output',
+                                          'test_unbound_legacy_input_cannot_be_promoted_to_an_exact_export',
+                                          'test_summary_counts_union_inserted_bytes_and_bounds_omission_bodies',
+                                          'test_new_work_during_export_remains_and_prevents_a_current_success_claim',
+                                          'test_tree_edit_during_the_build_cannot_bind_a_current_success',
+                                          'test_result_edit_after_measurement_cannot_be_bound_to_the_older_success')},
+        'tests.test_sms_c_reference_export': {f'test_named_unit_c_reference_keeps_its_header_flags_and_truthful_scope[{p}]' for p in ('sms', 'gg')},
+        'tests.test_sms_export_artifacts': {'test_source_edits_and_measured_outputs_change_fingerprint_but_scratch_files_do_not',
+                                          'test_caps_and_nonregular_inputs_cannot_be_attested',
+                                          'test_symlinks_including_the_output_directory_are_not_followed',
+                                          'test_paths_and_permissions_are_framed_unambiguously'},
+        'tests.test_sms_progress_routes': {f'test_operator_controls_strict_insertion_and_sees_independent_evidence[{p}]' for p in ('sms', 'gg')} |
+            {f'test_configuration_or_helper_failure_replaces_a_stale_standalone_success[{p}-{name}]'
+             for p in ('sms', 'gg') for name in ('build.json', 'layout.json', 'tools/sms_export_build_run.py', 'tools/sms_export_artifacts.py')}}
+    for module, required in required_progress.items():
+        if not required <= {case.get('name') for case in cases if case.get('classname') == module}:
+            raise ValueError(f'SMS gate report is missing required progress/export evidence: {module}')
     return len(cases)
 
 

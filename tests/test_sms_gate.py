@@ -6,10 +6,41 @@ import pytest
 from tools import sms_gate
 
 
-def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True, revalidation=True, archive=True, dependencies=True, undo=True, migration=True, inspection=True, project_archive=True, legacy=True, verification=True):
+def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True, revalidation=True, archive=True, dependencies=True, undo=True, migration=True, inspection=True, project_archive=True, legacy=True, verification=True, progress=True, export_state=True, c_reference=True, progress_routes=True, artifacts=True):
     suite = ET.Element("testsuite")
     modules = sms_gate.TESTS[:-1] if missing_module else sms_gate.TESTS
     for name in modules:
+        extra = None
+        if name.endswith('test_sms_progress.py') and progress:
+            extra = ['test_aliases_and_data_overlap_are_measured_as_physical_unions',
+                     'test_current_reference_dates_attribute_overlapping_bytes_once_and_bound_the_chart'] + [
+                f'test_overview_and_banked_map_use_the_same_union_and_fresh_input_status[{p}]' for p in ('sms', 'gg')]
+        elif name.endswith('test_sms_export_state.py') and export_state:
+            extra = [f'test_last_success_is_historical_after_work_or_input_changes[{p}-{change}]'
+                     for p in ('sms', 'gg') for change in ('source', 'header', 'symbol', 'note', 'profile', 'input', 'missing',
+                                                        'tree', 'artifact', 'receipt', 'baserom', 'tree_missing')]
+            extra += [f'{test}[{p}]' for p in ('sms', 'gg') for test in (
+                'test_failed_preflight_records_a_new_failed_attempt_and_keeps_previous_output',
+                'test_unbound_legacy_input_cannot_be_promoted_to_an_exact_export',
+                'test_summary_counts_union_inserted_bytes_and_bounds_omission_bodies',
+                'test_new_work_during_export_remains_and_prevents_a_current_success_claim',
+                'test_tree_edit_during_the_build_cannot_bind_a_current_success',
+                'test_result_edit_after_measurement_cannot_be_bound_to_the_older_success')]
+        elif name.endswith('test_sms_export_artifacts.py') and artifacts:
+            extra = ['test_source_edits_and_measured_outputs_change_fingerprint_but_scratch_files_do_not',
+                     'test_caps_and_nonregular_inputs_cannot_be_attested',
+                     'test_symlinks_including_the_output_directory_are_not_followed',
+                     'test_paths_and_permissions_are_framed_unambiguously']
+        elif name.endswith('test_sms_c_reference_export.py') and c_reference:
+            extra = [f'test_named_unit_c_reference_keeps_its_header_flags_and_truthful_scope[{p}]' for p in ('sms', 'gg')]
+        elif name.endswith('test_sms_progress_routes.py') and progress_routes:
+            extra = [f'test_operator_controls_strict_insertion_and_sees_independent_evidence[{p}]' for p in ('sms', 'gg')]
+            extra += [f'test_configuration_or_helper_failure_replaces_a_stale_standalone_success[{p}-{file}]'
+                      for p in ('sms', 'gg') for file in ('build.json', 'layout.json', 'tools/sms_export_build_run.py', 'tools/sms_export_artifacts.py')]
+        if extra is not None:
+            for test in extra:
+                ET.SubElement(suite, 'testcase', classname=name[:-3].replace('/', '.'), name=test)
+            continue
         if name.endswith('test_sms_export_verification.py') and verification:
             for platform in ('sms', 'gg'):
                 for test in ('test_standalone_reports_inserted_disabled_and_required_source_separately',
@@ -112,7 +143,7 @@ def test_gate_rejects_an_install_manifest_without_binaries(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("kwargs", [{"skipped": True}, {"failed": True}, {"missing_module": True}, {"gg": False},
-                                    {"mapper_matrix": False}, {"recovery": False}, {"revalidation": False}, {"archive": False}, {"dependencies": False}, {"undo": False}, {"migration": False}, {"inspection": False}, {"project_archive": False}, {"legacy": False}, {"verification": False}])
+                                    {"mapper_matrix": False}, {"recovery": False}, {"revalidation": False}, {"archive": False}, {"dependencies": False}, {"undo": False}, {"migration": False}, {"inspection": False}, {"project_archive": False}, {"legacy": False}, {"verification": False}, {"progress": False}, {"export_state": False}, {"c_reference": False}, {"progress_routes": False}, {"artifacts": False}])
 def test_gate_rejects_incomplete_or_unsuccessful_execution(tmp_path, kwargs):
     with pytest.raises(ValueError):
         sms_gate.verify_report(report(tmp_path, **kwargs))
@@ -125,7 +156,7 @@ def test_gate_requires_a_valid_report_with_executed_tests(tmp_path):
     path.write_text("<testsuite />")
     with pytest.raises(ValueError, match="executed, passing tests"):
         sms_gate.verify_report(path)
-    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 43
+    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 94
 
 
 def test_gate_rejects_gbdk_from_path_without_the_pinned_install(monkeypatch):

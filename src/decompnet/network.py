@@ -875,7 +875,12 @@ class Network:
         out = []
         for p in s["projects"]:
             pct = 100 * p["matched_bytes"] / (p["bytes"] or 1)
-            out.append(f"{p['slug']}: {p['matched']}/{p['functions']} functions, {pct:.1f}% of code matched, "
+            scope = 'of code matched'
+            if p.get('sms_progress'):
+                references = p['sms_progress']['c_reference']
+                pct = 100 * references['bytes'] / (references['eligible_bytes'] or 1)
+                scope = 'of C candidates, stored byte references; not linked'
+            out.append(f"{p['slug']}: {p['matched']}/{p['functions']} functions, {pct:.1f}% {scope}, "
                        f"context.h v{p['context_version']}, {len(p['claims'])} agents working")
             out += [f"  - {c['agent']} on {c['function']} ({c['insns']} insns, best {c['best_score']})"
                     for c in p["claims"]]

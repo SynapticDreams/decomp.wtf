@@ -26,6 +26,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "tools"))
+# A configuration/import failure must replace an older success before loading helpers or JSON.
+if __name__ == '__main__':
+    folder = ROOT / 'build'
+    folder.mkdir(parents=True, exist_ok=True)
+    initial = {'version': 1, 'passed': False, 'input': {'verified': False}, 'image': {'equal': False},
+               'process': {'completed': False, 'stage': 'configuration', 'exit_code': 1},
+               'documented': {'required': '--require-documented' in sys.argv, 'routines': []}}
+    temporary = folder / 'verification.startup.tmp'
+    temporary.write_text(json.dumps(initial) + '\n', encoding='utf-8')
+    temporary.replace(folder / 'verification.json')
+    for extension in ('sms', 'gg'):
+        (folder / f'game.{extension}').unlink(missing_ok=True)
 import z80  # noqa: E402  (decomp.wtf's Z80 disassembler, next to this file)
 from sms_mapping import BusState, Mapper  # noqa: E402
 

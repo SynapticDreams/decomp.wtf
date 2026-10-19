@@ -219,7 +219,7 @@
   <section class="ptab" data-pane="overview">
     <div class="kpis">
       <div class="kpi">
-        <span class="label">Matched code</span>
+        <span class="label" id="matchedLabel">Matched code</span>
         <div class="big-row"><span class="num"><span id="pct">0</span><small>%</small></span><svg id="progress" class="progress" viewBox="0 0 200 44" preserveAspectRatio="none" aria-label="Matched code over time"></svg></div>
         <span class="sub" id="pctSub"></span>
       </div>
@@ -372,6 +372,8 @@
       <div class="pad">
         <p id="srcText"></p>
         <div class="src-state" id="srcState"></div>
+        <div id="smsProgress" hidden></div>
+        <label class="check" id="smsStrictControl" hidden><input type="checkbox" id="smsStrict"><span>Require every expected documented assembly routine to be inserted</span></label>
         <div class="row"><button class="primary" id="srcExport" type="button">Export project</button><button class="ghost" id="srcDiscExport" type="button" hidden>Build disc image</button><button class="ghost" id="srcOpen" type="button">Open folder</button></div>
         <pre class="joblog tall" id="expLog" hidden></pre>
         <div id="expResult"></div>
@@ -541,6 +543,7 @@
 
 <div class="toasts" id="toasts" aria-live="polite"></div>
 <script src="/assets/sms-profile.js"></script>
+<script src="/assets/sms-progress.js"></script>
 <script src="/assets/sms-profile-migration.js"></script>
 <script src="/assets/resplit-archive.js"></script>
 <script src="/assets/resplit-history.js"></script>

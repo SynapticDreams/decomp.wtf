@@ -2908,34 +2908,11 @@ class RomNetwork(Network):
             db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
         return result
 
-    def export_rom(self, slug: str, log=print, translation_units: list[dict] | None = None) -> dict:
-        """Write a rebuildable source tree (the base for ports and mods) and prove it rebuilds the game."""
-        if self.fork_slug(slug):  # a fork's work is already in its source tree, committed
-            return {"path": self._project(slug)["root"], "identical": None}
-        from ..rom.export import export_rom
-        from ..rom.export_gb import export_gb
-        from ..rom.export_gba import export_gba
-        from ..rom.export_nes import export_nes
-        from ..rom.export_sms import export_sms
+    def export_rom(self, slug: str, log=print, translation_units: list[dict] | None = None, *, strict_documented=False) -> dict:
+        """Write and verify a rebuildable source tree through the platform exporter."""
+        from .rom_export import export
 
-        proj = self._project(slug)
-        if self.cfg(proj).get("mapping"):
-            raise NetworkError("mapping v1 supports fixed-extent disc export; a complete source-tree export is not supported yet")
-        platform = self.cfg(proj).get("platform")
-        if translation_units is not None and platform != "psx":
-            raise NetworkError("translation-unit export groups currently support PS1 projects")
-        export = export_gba if platform == "gba" else export_gb if platform in ("gb", "gbc") else \
-            export_sms if platform in ("sms", "gg") else export_nes if platform == "nes" else export_rom
-        kwargs = {"translation_units": translation_units} if translation_units is not None else {}
-        res = export(self, slug, Path(proj["root"]) / "source", log=log, **kwargs)
-        with self.store.tx() as db:  # shown on the project page: what's in the tree and whether it rebuilds
-            cfg = json.loads(db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()["config"])
-            cfg["export"] = {"t": time.time(), "path": str(res["path"]), "identical": res.get("identical"),
-                             "matched": res.get("matched"), "functions": res.get("functions"),
-                             "fallback": len(res.get("fallback") or []), "documented": res.get("documented"),
-                             "left_out": len(res.get("left_out") or [])}
-            db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
-        return res
+        return export(self, slug, log, translation_units, strict_documented=strict_documented)
 
     # ------------------------------------------------------------------ for the GUI
 
@@ -2966,63 +2943,24 @@ class RomNetwork(Network):
         return [n for n in names if n not in done]
 
     def _overview(self, slug: str, proj) -> dict:
-        if (fork := self.fork_slug(slug)):
-            return self.forks.overview(fork)
-        cfg = self.cfg(proj)
-        agg = self.store.one(
-            "SELECT COUNT(*) AS total, SUM(status='matched') AS matched, SUM(size) AS bytes, "
-            "SUM(CASE WHEN status='matched' THEN size ELSE 0 END) AS matched_bytes, SUM(attempts) AS attempts, "
-            "SUM(status='asm') AS asm, SUM(CASE WHEN status='asm' THEN size ELSE 0 END) AS asm_bytes, "
-            "SUM(status='documented') AS documented, SUM(CASE WHEN status='documented' THEN size ELSE 0 END) AS documented_bytes "
-            "FROM functions WHERE project_id=?", proj["id"])
-        tc = toolchains.get(cfg["compiler"]["toolchain"])
-        from ..rom.sms_profile import describe
-        return {
-            "slug": proj["slug"], "title": proj["name"], "description": proj["description"],
-            "platform": cfg.get("platform", "n64"), "platform_name": detect.PLATFORMS.get(cfg.get("platform", "n64"), ""),
-            "sms_profile": describe(cfg),
-            "compilers": PLATFORM_COMPILERS.get(cfg.get("platform", "n64"), []),
-            "rom": {k: cfg["rom"].get(k) for k in ("title", "game_code", "region", "size", "sha1", "byte_order", "compiler_guess")},
-            # what built a banked game, as its bytes say (rom/fingerprint.py): None, most likely assembly; absent, not read
-            "built_with": cfg.get("built_with", False) if cfg.get("arch") in BANKED_ARCHS else False,
-            "compiler": {"toolchain": tc.id, "name": SHORT_NAMES.get(tc.id, tc.name), "flags": cfg["compiler"]["flags"],
-                         "aspsx": cfg["compiler"].get("aspsx", ""),
-                         "probe": cfg.get("compiler_probe"),
-                         "libraries": cfg.get("psyq_libraries"),
-                         "small_data": cfg.get("small_data"),
-                         "units": cfg["compiler"].get("units", {}),
-                         "unit_names": [r["unit"] for r in self.store.all(
-                             "SELECT DISTINCT unit FROM functions WHERE project_id=? ORDER BY unit", proj["id"])],
-                         "installed": toolchains.installed(tc.id) is not None, "proprietary": tc.proprietary,
-                         "supported": tc.supported, "wsl": tc.via_wsl,
-                         "why": None if tc.supported else toolchains.unsupported_cpu()},
-            "functions": agg["total"] or 0, "matched": agg["matched"] or 0, "bytes": agg["bytes"] or 0,
-            "matched_bytes": agg["matched_bytes"] or 0, "attempts": agg["attempts"] or 0,
-            # set aside: assembly no compiler makes, or what the split took for code (see handwritten.py)
-            "asm": agg["asm"] or 0, "asm_bytes": agg["asm_bytes"] or 0,
-            # the assembly track (Game Boy): hand-written routines documented in assembly, apart from C matches
-            "documented": agg["documented"] or 0, "documented_bytes": agg["documented_bytes"] or 0,
-            "mapped": self._mapped(proj, cfg) if (proj["arch"] or "") in BANKED_ARCHS else None,
-            "context_version": self._context(proj["id"])["version"],
-            "folder": proj["root"],
-            "export": cfg.get("export"),
-            "exportable": not cfg.get("mapping") and cfg.get("platform", "n64") in ("n64", "psx", "ps2", "gba", "gb", "gbc",
-                                                                                  "sms", "gg", "nes"),
-            "mapping": {"version": 1, "regions": list(cfg["mapping"]["regions"])} if cfg.get("mapping") else None,
-            "room": self._room_info(proj["slug"]),
-        }
+        from .project_overview import build
+
+        return build(self, slug, proj)
+
+    def list_projects(self) -> str:
+        from .project_overview import list_projects
+
+        return list_projects(self)
+
+    def status_json(self) -> dict:
+        from .project_overview import status_dimensions
+
+        return status_dimensions(self, super().status_json())
 
     def _mapped(self, proj, cfg: dict) -> dict:
-        """How much of a banked game's ROM the project knows what it is: code (its functions, but for what's set aside
-        as not code), data (tables, padding, operands, bytes the code never reaches), and how many hand-written
-        routines are left to document."""
-        rows = self.store.all("SELECT status, size, meta FROM functions WHERE project_id=?", proj["id"])
-        code = sum(r["size"] or 0 for r in rows if r["status"] != "asm" or self.asm_track(r))
-        data = self.store.one("SELECT COALESCE(SUM(size), 0) AS n FROM data_regions WHERE project_id=?", proj["id"])["n"]
-        size = int((cfg.get("rom") or {}).get("size") or 0)
-        return {"rom": size, "code": code, "data": data,
-                "to_document": sum(1 for r in rows if r["status"] == "asm" and self.asm_track(r))
-                if proj["arch"] in ASM_ARCHS else 0}
+        from .project_overview import mapped
+
+        return mapped(self, proj, cfg)
 
     def _room_info(self, slug: str) -> dict | None:
         if slug in self.links:
