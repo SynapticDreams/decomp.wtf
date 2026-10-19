@@ -155,4 +155,24 @@ def entry_state(flat: int, cpu: int, size: int) -> BusState:
     banks: list[int | None] = [None, None, None]
     if 0 <= flat < size and 0 <= cpu < 0xC000 and flat % BANK == cpu % BANK and cpu >= 0x0400:
         banks[cpu // BANK] = flat // BANK
-    return BusState.cartridge_only(banks)
+    return BusState.cartridge_only(banks, registers=tuple(banks))
+
+
+def join(states) -> BusState:
+    """Keep only facts shared by all incoming contexts; any possibly modified ROM stays unknown."""
+    states = tuple(states)
+    if not states:
+        return BusState()
+
+    def agreed(values):
+        values = set(values)
+        return next(iter(values)) if len(values) == 1 else None
+
+    return BusState(
+        banks=tuple(agreed(s.banks[k] for s in states) for k in range(3)),
+        registers=tuple(agreed(s.registers[k] for s in states) for k in range(3)),
+        control=agreed(s.control for s in states),
+        cartridge=agreed(s.cartridge for s in states), bios=agreed(s.bios for s in states),
+        wram=agreed(s.wram for s in states), other_source=agreed(s.other_source for s in states),
+        rom_modified=any(s.rom_modified for s in states),
+    )

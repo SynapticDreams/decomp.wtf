@@ -7,17 +7,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 
+from .sms_mapping import BusState
+
 ARG = "arg"  # A as the function was entered: a mapper helper can receive its caller's bank in A
 FRESH = 16  # instructions within which a bound or table base belongs to the following dispatch
 
 
 @dataclass
 class State:
-    s1: object
-    s2: object
+    mapping: BusState
     a: object = None   # an int, ARG, or None
     hl: int | None = None
-    s0: object = 0  # slot 0's bank above 0x0400 (0 unless the code pages it: 0xFFFD)
     de: int | None = None
     bc: int | None = None
     mem: dict = field(default_factory=dict)  # RAM this function stored a known value to (a bank kept in RAM)
@@ -43,19 +43,19 @@ class State:
 @dataclass
 class Found:
     starts: dict[int, tuple[int, str]] = field(default_factory=dict)  # flat -> (cpu it runs at, how it was found)
-    entered: dict[int, set] = field(default_factory=dict)  # flat -> every (s1, s2) it was entered with
+    entered: dict[int, set[BusState]] = field(default_factory=dict)  # flat -> incoming bus contexts
     returns: set[int] = field(default_factory=set)  # functions a path of which reaches a return
     takes_return: set[int] = field(default_factory=set)  # functions that pop their return address (a table follows)
     switchers: dict[int, int] = field(default_factory=dict)  # function -> the slot it maps the A it's given into
     dispatchers: set[int] = field(default_factory=set)  # functions that jump through HL to an address they read
     # calls and tail jumps made with a known address in HL: (from flat, from cpu, HL, the slots then, to flat, the
     # index's bound or None): a table, when what they go to is a dispatcher
-    with_hl: list[tuple[int, int, int, tuple, int, int | None]] = field(default_factory=list)
+    with_hl: list[tuple[int, int, int, BusState, int, tuple | None]] = field(default_factory=list)
     # tables a function indexes itself before `jp (hl)`: (from flat, from cpu, table, the slots then, bound or None)
-    indexed: list[tuple[int, int, int, tuple, int | None]] = field(default_factory=list)
+    indexed: list[tuple[int, int, int, BusState, tuple | None]] = field(default_factory=list)
     tails: dict[int, set] = field(default_factory=dict)  # function -> where its tail jumps go (None: not known)
     code: dict[int, int] = field(default_factory=dict)  # every instruction followed: flat -> its length
-    jumps: list[tuple[int, int, int, tuple]] = field(default_factory=list)  # (function, to flat, to cpu, slots)
+    jumps: list[tuple[int, int, int, BusState]] = field(default_factory=list)  # (function, to flat, to cpu, bus)
     anchors: set[int] = field(default_factory=set)  # starts reached by something other than a jump (a call...)
-    slot_writes: dict[int, int] = field(default_factory=dict)  # 1 | 2 -> mapper writes seen that pick that slot's bank
+    slot_writes: dict[int, int] = field(default_factory=dict)  # 0 | 1 | 2 -> mapper writes seen for that slot
     bank_base: dict[int, int] = field(default_factory=dict)  # bank -> the CPU address its code was found running at

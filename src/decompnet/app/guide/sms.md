@@ -17,8 +17,11 @@ Reference resolution distinguishes CPU addresses from cartridge offsets. An esta
 its own mapped window; its display placement does not establish banks in other windows. Only Sega's first KiB
 is fixed to bank 0. Mapper-register reads see work RAM, including its mirror: writing the other RAM alias can
 change that readback without selecting a new bank. Reset register values are a selected analysis recipe,
-not a guarantee for every mapper revision. Full bus-context propagation and consumer migration are in progress;
-the provisional trace still uses a cartridge-only reset model and cannot establish BIOS or cartridge-RAM execution.
+not a guarantee for every mapper revision. The tracer carries full bus snapshots through calls and tables,
+and joins incoming mapping facts conservatively. Known mapper-control writes update RAM selection; a bank change
+updates the next instruction's source. The reset root uses an explicit cartridge-only recipe. Isolated seeds
+establish only their own ROM window. General callee effects, unknown stores, multiple paths through one instruction
+and interrupt restoration remain analysis limits; this does not qualify BIOS, cartridge-RAM or peripheral execution.
 Standalone exports include this shared resolver. Generated reference names require a declared model and established
 instruction geometry; unresolved references remain numeric while the build still verifies whole-image equality.
 
