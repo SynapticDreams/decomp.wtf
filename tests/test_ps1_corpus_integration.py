@@ -57,7 +57,7 @@ def test_distinct_overlays_at_the_same_address_survive_source_and_disc_exports(t
         code = _overlay(0x80180040, count)
         return bytes(64) + bytes(template) + code[32:]
 
-    original = tmp_path / 'disc.iso' 
+    original = tmp_path / 'disc.iso'
     original.write_bytes(_iso({'SYSTEM.CNF': b'BOOT = cdrom:\\SYNTH.EXE;1\r\n',
                                'SYNTH.EXE': EXE.read_bytes(),
                                'ALPHA.BIN': payload(40),
