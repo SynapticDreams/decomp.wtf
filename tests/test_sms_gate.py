@@ -6,10 +6,19 @@ import pytest
 from tools import sms_gate
 
 
-def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True, revalidation=True, archive=True, dependencies=True, undo=True):
+def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True, revalidation=True, archive=True, dependencies=True, undo=True, migration=True):
     suite = ET.Element("testsuite")
     modules = sms_gate.TESTS[:-1] if missing_module else sms_gate.TESTS
     for name in modules:
+        if name.endswith('test_sms_profile_migration.py') and migration:
+            for platform in ('sms', 'gg'):
+                for mapper in ('mapperless', 'codemasters'):
+                    ET.SubElement(suite, 'testcase', classname='tests.test_sms_profile_migration', name=
+                        f'test_proposed_model_revalidates_unchanged_c_and_undo_restores_the_old_model[{platform}-{mapper}]')
+                for test in ('test_assembly_is_rejudged_in_the_new_model_with_semantic_review_pending',
+                             'test_old_documented_entry_without_new_model_placement_is_archived_unaccepted'):
+                    ET.SubElement(suite, 'testcase', classname='tests.test_sms_profile_migration', name=f'{test}[{platform}]')
+            continue
         if name.endswith('test_sms_resplit_undo_validation.py') and undo:
             for platform in ('sms', 'gg'):
                 for change in ('note', 'header', 'claim'):
@@ -78,7 +87,7 @@ def test_gate_rejects_an_install_manifest_without_binaries(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("kwargs", [{"skipped": True}, {"failed": True}, {"missing_module": True}, {"gg": False},
-                                    {"mapper_matrix": False}, {"recovery": False}, {"revalidation": False}, {"archive": False}, {"dependencies": False}, {"undo": False}])
+                                    {"mapper_matrix": False}, {"recovery": False}, {"revalidation": False}, {"archive": False}, {"dependencies": False}, {"undo": False}, {"migration": False}])
 def test_gate_rejects_incomplete_or_unsuccessful_execution(tmp_path, kwargs):
     with pytest.raises(ValueError):
         sms_gate.verify_report(report(tmp_path, **kwargs))
@@ -91,7 +100,7 @@ def test_gate_requires_a_valid_report_with_executed_tests(tmp_path):
     path.write_text("<testsuite />")
     with pytest.raises(ValueError, match="executed, passing tests"):
         sms_gate.verify_report(path)
-    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 24
+    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 31
 
 
 def test_gate_rejects_gbdk_from_path_without_the_pinned_install(monkeypatch):

@@ -23,6 +23,7 @@ TESTS = (
     "tests/test_sms_resplit_dependencies.py",
     "tests/test_sms_resplit_dependency_integration.py",
     "tests/test_sms_resplit_undo_validation.py",
+    "tests/test_sms_profile_migration.py",
     "tests/test_sms_documented.py",
     "tests/test_export_sms.py",
 )
@@ -92,6 +93,14 @@ def verify_report(report: Path) -> int:
     required.update(f'test_old_accepted_bytes_outside_the_frozen_input_cannot_be_restored[{platform}]' for platform in ('sms', 'gg'))
     if not required <= undo:
         raise ValueError('SMS gate report is missing actual SMS/GG guarded undo checks')
+    migration = {case.get('name') for case in cases if case.get('classname') == 'tests.test_sms_profile_migration'}
+    required = {f'test_proposed_model_revalidates_unchanged_c_and_undo_restores_the_old_model[{platform}-{mapper}]'
+                for platform in ('sms', 'gg') for mapper in ('mapperless', 'codemasters')}
+    required.update(f'{test}[{platform}]' for platform in ('sms', 'gg') for test in (
+        'test_assembly_is_rejudged_in_the_new_model_with_semantic_review_pending',
+        'test_old_documented_entry_without_new_model_placement_is_archived_unaccepted'))
+    if not required <= migration:
+        raise ValueError('SMS gate report is missing actual SMS/GG profile migration checks')
     return len(cases)
 
 

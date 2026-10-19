@@ -1,7 +1,6 @@
 """Operator SMS/GG profile changes and source-acceptance gates."""
 from __future__ import annotations
 
-import hashlib
 import json
 import time
 from pathlib import Path
@@ -9,6 +8,7 @@ from pathlib import Path
 from ..network import NetworkError
 from ..rom import sms_identity, sms_locations, sms_mapper_evidence, sms_profile
 from ..rom.sms_mapping import Mapper
+from . import sms_profile_proposal as proposal
 
 
 class SMSProjects:
@@ -86,13 +86,8 @@ class SMSProjects:
 
     @staticmethod
     def _bind_legacy_identity(db, pid, cfg, image):
-        if cfg["rom"].get("identity") is not None:
-            return
-        for fn in db.execute("SELECT rom_offset, target FROM functions WHERE project_id=? AND rom_offset IS NOT NULL", (pid,)):
-            target = bytes(fn["target"] or b"")
-            if fn["rom_offset"] < 0 or image[fn["rom_offset"]:fn["rom_offset"] + len(target)] != target:
-                raise NetworkError("legacy ROM differs from stored function targets; retain the original revision")
-        cfg["rom"]["identity"] = sms_identity.identify(image, image, {**cfg["rom"], "platform": cfg["platform"]})
+        functions = db.execute('SELECT rom_offset,target FROM functions WHERE project_id=?', (pid,)).fetchall()
+        proposal.bind_identity(cfg, image, functions)
 
     def follow_host(self, slug, profile):
         """Apply a declaration from the authenticated room state only for this exact local revision."""
@@ -127,11 +122,6 @@ class SMSProjects:
         if slug in net.links or net.cfg(proj).get("link"):
             raise NetworkError("the room host selects cartridge mapping")
         self.inspect(slug)
-        if not isinstance(reason, str):
-            raise NetworkError("profile reason must be text")
-        reason = " ".join(reason.split())
-        if not isinstance(mapper, str) or not isinstance(variant, str):
-            raise NetworkError("mapper and variant must be text")
         cfg = net.cfg(proj)
         image = sms_identity.strip_copier_header((Path(proj["root"]) / cfg["rom"]["file"]).read_bytes())
         try:
@@ -154,20 +144,12 @@ class SMSProjects:
                 old = sms_profile.read(current)
             except (ValueError, TypeError) as exc:
                 raise NetworkError(str(exc)) from None
-            self._bind_legacy_identity(db, proj["id"], current, image)
-            profile = {"version": 1, "mapper": mapper, "variant": variant, "origin": "operator", "reason": reason,
-                       "sha256": hashlib.sha256(image).hexdigest(), "size": len(image)}
-            candidate = {**current, "sms_profile": profile}
-            try:
-                sms_profile.read(candidate)
-                sms_profile.validate_model(profile)
-            except (ValueError, TypeError) as exc:
-                raise NetworkError(str(exc)) from None
+            functions = db.execute('SELECT rom_offset,target FROM functions WHERE project_id=?', (proj['id'],)).fetchall()
+            candidate = proposal.prepare(current, image, mapper, variant, reason, functions)
+            profile = candidate['sms_profile']
             # A profile edit cannot reinterpret previously accepted source without a resplit/revalidation workflow.
             self._preserve_sources(db, proj["id"], old, profile)
-            current["sms_profile"] = profile
-            current.pop("export", None)  # cached verification described the earlier profile/intent
-            db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(current), proj["id"]))
-            net._event(db, proj["id"], None, "profile", f"SMS/GG mapping {mapper}; build intent {variant}: {reason}")
+            db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(candidate), proj["id"]))
+            net._event(db, proj["id"], None, "profile", f"SMS/GG mapping {mapper}; build intent {variant}: {profile['reason']}")
         net._progress_cache.pop(proj["id"], None)
         return self.inspect(slug)

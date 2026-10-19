@@ -26,9 +26,17 @@ Suggestions always have low confidence and remain ambiguous: patterns may occur 
 or absent patterns prove no mapper. They never change the declaration, acceptance gate or revision identity.
 Missing/changed input makes suggestions unavailable. Use independent wiring evidence for profile selection.
 
-Profile changes retain existing work and refuse mapping changes that would reinterpret accepted source.
-After selecting mapperless, preview and apply a resplit if existing function coordinates came from Sega paging;
-source acceptance remains blocked while any such incompatible coordinates remain.
+Use **Preview profile and resplit** to analyze a proposed supported profile without saving it. **Apply profile and
+resplit** commits that exact proposal, its layout and recovery history together. Editing any proposal field discards
+the preview; work or input changes require another preview. All accepted source is checked in the proposed model,
+including routines whose bytes and placement stay unchanged. Failed/unresolved source remains unaccepted and
+recoverable through resplit history. Byte checks do not establish names or purposes; retained interpretation needs
+review. Active claims and background analysis block apply. Undo checks restored accepted source and can refuse when
+newer work or changed inputs prevent a safe restore; saved work remains available for forward recovery.
+Ordinary **Save cartridge profile** still refuses mapping changes that would reinterpret accepted source. After
+selecting mapperless directly, preview and apply a resplit if existing coordinates came from Sega paging;
+source acceptance remains blocked while incompatible coordinates remain. The migration API is `/api/resplit` POST
+with `profile: {mapper, variant, reason}`; applying also requires `apply: true` and the preview's `plan` fingerprint.
 Experimental build intent is recorded separately from original reconstruction; whole-image equality still
 compares against the frozen original input. The local operator API is `/api/sms/profile` (GET or POST).
 
@@ -292,8 +300,9 @@ name) so the next session starts ahead:
 
 ## Conventions
 
-The synthetic assembly and export checks run in the **SMS assembly** CI workflow with the pinned WLA-DX.
-To run that gate locally, install `decompnet toolchain install wla-dx`, then run
+The synthetic assembly, migration and export checks run in the **SMS assembly** CI workflow with pinned WLA-DX
+and GBDK. To run that gate locally, install `decompnet toolchain install wla-dx` and
+`decompnet toolchain install gbdk-2020`, then run
 `uv run python tools/sms_gate.py` from the repository. It checks SMS and GG exports and fails on missing
 tools, failed comparisons or skipped tests. The default report is `build/sms-tool-tests.xml`.
 
