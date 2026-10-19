@@ -6,12 +6,15 @@ import pytest
 from tools import sms_gate
 
 
-def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True, revalidation=True, archive=True, dependencies=True, undo=True, migration=True, inspection=True, project_archive=True, legacy=True, verification=True, progress=True, export_state=True, c_reference=True, progress_routes=True, artifacts=True, wla=True, symbol_imports=True, adjacent=True, annotations=True, facts=True):
+def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True, revalidation=True, archive=True, dependencies=True, undo=True, migration=True, inspection=True, project_archive=True, legacy=True, verification=True, progress=True, export_state=True, c_reference=True, progress_routes=True, artifacts=True, wla=True, symbol_imports=True, adjacent=True, annotations=True, facts=True, research=True):
     suite = ET.Element("testsuite")
     modules = sms_gate.TESTS[:-1] if missing_module else sms_gate.TESTS
     for name in modules:
         extra = None
-        if name.endswith('test_sms_correction_facts.py') and facts:
+        module = name.removeprefix('tests/').removesuffix('.py')
+        if module in sms_gate.research_checks.required() and research:
+            extra = sorted(sms_gate.research_checks.required()[module])
+        elif name.endswith('test_sms_correction_facts.py') and facts:
             extra = [f'{test}[{p}-{kind}]' for p in ('sms', 'gg') for kind in sms_gate.annotation_checks.KINDS for test in (
                 'test_every_kind_is_bound_pending_inspectable_and_undoable_after_reload',
                 'test_operator_review_is_separate_from_recording_and_only_legacy_kinds_feed_hints')]
@@ -195,7 +198,7 @@ def test_gate_rejects_an_install_manifest_without_binaries(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("kwargs", [{"skipped": True}, {"failed": True}, {"missing_module": True}, {"gg": False},
-                                    {"mapper_matrix": False}, {"recovery": False}, {"revalidation": False}, {"archive": False}, {"dependencies": False}, {"undo": False}, {"migration": False}, {"inspection": False}, {"project_archive": False}, {"legacy": False}, {"verification": False}, {"progress": False}, {"export_state": False}, {"c_reference": False}, {"progress_routes": False}, {"artifacts": False}, {"wla": False}, {"symbol_imports": False}, {"adjacent": False}, {"annotations": False}, {"facts": False}])
+                                    {"mapper_matrix": False}, {"recovery": False}, {"revalidation": False}, {"archive": False}, {"dependencies": False}, {"undo": False}, {"migration": False}, {"inspection": False}, {"project_archive": False}, {"legacy": False}, {"verification": False}, {"progress": False}, {"export_state": False}, {"c_reference": False}, {"progress_routes": False}, {"artifacts": False}, {"wla": False}, {"symbol_imports": False}, {"adjacent": False}, {"annotations": False}, {"facts": False}, {"research": False}])
 def test_gate_rejects_incomplete_or_unsuccessful_execution(tmp_path, kwargs):
     with pytest.raises(ValueError):
         sms_gate.verify_report(report(tmp_path, **kwargs))
@@ -208,10 +211,23 @@ def test_gate_requires_a_valid_report_with_executed_tests(tmp_path):
     path.write_text("<testsuite />")
     with pytest.raises(ValueError, match="executed, passing tests"):
         sms_gate.verify_report(path)
-    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 220
+    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 282
 
 
 def test_gate_rejects_gbdk_from_path_without_the_pinned_install(monkeypatch):
     monkeypatch.setattr(sms_gate.toolchains, 'installed', lambda _: None)
     with pytest.raises(ValueError, match='install gbdk-2020'):
         sms_gate.require_tools('gbdk-2020')
+
+
+def test_gate_requires_the_individual_gg_cartridge_ram_symbol_subject_case(tmp_path):
+    path = report(tmp_path)
+    tree = ET.parse(path)
+    root = tree.getroot()
+    required = 'test_notes_and_symbols_bind_full_subjects_and_reload_without_inventing_ram_contents[gg-cart_ram-symbol]'
+    matching = [case for case in root.findall('testcase') if case.get('name') == required]
+    assert len(matching) == 1
+    root.remove(matching[0])
+    tree.write(path)
+    with pytest.raises(ValueError, match='note/symbol research'):
+        sms_gate.verify_report(path)

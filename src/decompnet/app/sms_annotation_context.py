@@ -7,6 +7,7 @@ from ..rom import sms_profile
 from ..rom.annotations import dump, validate_annotation
 from . import banked_resplit_history as history, banked_resplit_state as state, correction_policy as policy
 from .sms_symbol_import import image
+from . import annotation_sources
 
 
 @contextmanager
@@ -28,10 +29,11 @@ def load(net, slug):
         original = image(proj, cfg)
         revision = {'platform': cfg['platform'], 'size': len(original), 'sha256': hashlib.sha256(original).hexdigest()}
         profile = sms_profile.read(cfg)
+        source = annotation_sources.binding(proj, cfg, revision)
         context = {'mapper': profile['mapper'], 'sha256': digest({
-            'version': 1, 'profile': profile, 'symbol_source': cfg.get('symbol_file')})}
-        return proj, cfg, original, revision, context
-    except (ValueError, TypeError, KeyError, OSError):
+            'version': 1, 'profile': profile, 'symbol_source': source})}
+        return proj, {**cfg, '_annotation_source': source}, original, revision, context
+    except (ValueError, TypeError, KeyError, OSError, RecursionError, OverflowError):
         raise NetworkError('frozen SMS/GG input or declared mapping is unavailable or differs') from None
 
 
@@ -57,8 +59,19 @@ def check_plan(expected, actual, *, required=False):
 
 
 def plan(work, request):
-    # Requests are bounded by the annotation codec; the work digest has its own snapshot budget.
-    return digest({'version': 1, 'work': work, 'request': request})
+    # Hash separately bounded metadata fields, rather than reclassifying their serialized JSON as
+    # one 4 KiB prose string. The framing also avoids duplicating large metadata in memory.
+    result = hashlib.sha256(dump({'version': 2, 'work': work}).encode())
+    for key, value in sorted(request.items()):
+        if key in ('annotation', 'evidence', 'subject') and isinstance(value, str):
+            raw = value.encode()
+            if len(raw) > 65536:
+                raise ValueError('research metadata exceeds its request budget')
+            framed = {'field': key, 'sha256': hashlib.sha256(raw).hexdigest()}
+        else:
+            framed = {'field': key, 'value': value}
+        result.update(b'\0' + dump(framed).encode())
+    return result.hexdigest()
 
 
 def current(net, slug, expected_work, revision, context):

@@ -460,7 +460,9 @@ class Twins:
                            "best_source=NULL, best_agent_id=NULL, meta=? WHERE id=? AND status='open'",
                            (code, n, sum(1 for _ in sm83.disassemble(code, vram)),
                             json.dumps([list(x) for x in gb.refs_of(code, vram, bank, limit)]), json.dumps(meta), r["id"]))
-                db.execute("UPDATE symbols SET size=? WHERE project_id=? AND name=?", (n, proj["id"], r["name"]))
+                from . import symbol_records
+
+            symbol_records.update(db, proj["id"], r["name"], size=n)
             self.net._event(db, proj["id"], None, "split", f"{len(trims)} functions end where their routine does now "
                             "(the split had run them on into what follows)")
         with self._lock:

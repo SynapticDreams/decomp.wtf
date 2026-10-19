@@ -6,7 +6,8 @@ review and undo. The five existing untagged correction kinds keep their historic
 meaning, with unknown provenance. New structured facts are pending by default.
 Only current, operator-reviewed facts of those five kinds feed existing split hints.
 Other structured kinds remain stored research until their discovery consumers are
-qualified. Notes/symbol editing and the full annotation UI remain follow-up work.
+qualified. Notes and symbols now support the same guarded metadata workflow. The
+full structured authoring/review UI remains follow-up work.
 
 ## Correction workflow
 
@@ -47,6 +48,55 @@ Approval is bound to the exact stored row through the latest operator review eve
 a JSON receipt, copied receipt or superseded approval cannot grant authority. Row,
 binding and work reads use one database snapshot. `/api/corrections/undo` retains
 the fact and evidence while disabling it; undo requires a positive integer `id`.
+
+## Notes and symbols
+
+`add_note` keeps existing text-only calls. For bound SMS/GG metadata, supply
+`annotation` and/or `evidence` and preview with `apply=false`, then apply with the
+returned `expected_plan`. Evidence-only prose notes need no artificial ROM range.
+An optional `note_id` attaches/replaces metadata on existing immutable note text;
+changing text or attachment requires a new note. Text is bounded to 4,000 characters.
+`annotate_symbol(symbol, ...)` uses the same metadata/preview fields on an existing
+exact symbol name. It does not rename the symbol or approve its purpose.
+
+`inspect_annotations(kind="note"|"symbol", key=...)` returns full bounded evidence
+and the original subject descriptor. Omit key to page: `next_before`/`before_id`
+for notes, `next_symbol`/`after_symbol` for symbols. Page sizes are 1–100. Note keys
+are positive integer IDs; symbol keys are exact bounded names.
+
+The descriptor records original text or symbol identity, function attachment and
+stored-target digest, normalized revision, declared mapping, source identity and
+typed-target correspondence. ROM ranges include the original byte digest; RAM
+declarations explicitly say contents are unobserved. They establish no runtime
+value, mapping selection or lifetime. Caller receipts cannot grant review. Research
+on notes/symbols always has `discovery=false`, including operator-reviewed research.
+
+Operator HTTP uses `/api/note` and `/api/symbols/annotation` GET/POST. GET accepts
+`id` (notes) or `symbol` (symbols), plus their page cursor and `limit`. POST actions
+are `create`/`annotate`, `inspect`, `review` and `clear`. Review uses boolean `ok`;
+review/clear require preview then exact application with `apply`/`expected_plan`.
+Cookie and write-header guards are the same as corrections. Workers have no review
+or clear tool. Legacy POST `/api/note` still returns its plaintext confirmation.
+
+Replacing metadata resets review to pending and retains the prior metadata plus
+descriptor as an explicitly inactive archive note. Clear detaches metadata while
+preserving the note text or symbol and its archived original research; it does not
+delete that prose or rename the symbol. It can detach unsupported metadata without
+requiring the original input to be present, but still requires the exact work guard.
+Archives are read-only research subjects and can be inspected for forward recovery.
+
+Symbol refreshes preserve exact metadata for unchanged identity/extent/role.
+Renames, size/role changes, merges and resplits archive original research before
+changing or removing its subject; approval never transfers to a new name or range.
+Original descriptors remain understandable after the function itself changes.
+Local SMS/GG renames reject intervening work during source regression checks.
+Agent briefs mark pending/stale research and omit archives from current context;
+search returns an inactive archive reference rather than promoting its old prose.
+
+Research context binds verified symbol-source bytes and bundle identity, excluding
+upload timestamps/display names. Missing or changed bundles make bindings
+unavailable; changed source bytes require new review. Context identity does not
+replace the WLA adapter's separate layout/record qualification.
 
 `decompnet.rom.annotations` provides `validate_annotation(value, rom_size=...)`,
 `validate_evidence(value)`, bounded canonical `dump(value)` and
@@ -136,6 +186,9 @@ consumers and evidence.
 Opening a database atomically adds nullable `annotation` and `evidence` TEXT
 columns to corrections, symbols and notes. Reopening is idempotent. Existing rows
 retain NULL metadata: no provenance, context, confidence or approval is invented.
+Notes and symbols additionally have nullable `subject` TEXT for the original
+descriptor. Old metadata without a descriptor stays unbound; no descriptor is
+inferred from its claims. Corrections retain their existing payload-based binding.
 Non-NULL metadata survives snapshot/reload/undo byte for byte. NULL optional columns
 are omitted from snapshot encoding to retain existing history hashes; restoring
 old snapshots fills only those known optional columns with NULL. Missing required
@@ -144,5 +197,6 @@ Export context fingerprints use the same NULL-field compatibility rule, preservi
 an unchanged project's historical export context while detecting populated metadata.
 
 The mandatory SMS gate executes schema, migration, authority and real pinned-tool
-C/assembly recovery fixtures on both SMS and GG. Structured table discovery and a
-complete annotation editor remain separate work.
+C/assembly recovery fixtures on both SMS and GG, including note/symbol lifecycle
+and declared-source integration. Structured table discovery and a complete
+annotation editor remain separate work.

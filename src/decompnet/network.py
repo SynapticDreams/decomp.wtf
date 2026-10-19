@@ -469,22 +469,24 @@ class Network:
                               "the context header helps)", "```c",
                           fn["seed"].strip(), "```"]
         notes = self.store.all(
-            "SELECT n.text, n.created_at, a.name, a.origin FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
+            "SELECT n.id, n.text, n.created_at, a.name, a.origin FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
             "WHERE n.function_id=? ORDER BY n.id DESC LIMIT 8", fn["id"])
         if (fn["abandons"] or 0) >= GIVEN_UP and fn["status"] != "matched":
             lines += ["", f"Agents gave this function back {fn['abandons']} times: read their notes before spending "
                           "compiles on it, and release it early if nothing in them is new to you."]
+        notes = [(row, text) for row, text in zip(notes, self._note_texts(proj, notes)) if text]
         if notes:
             lines += ["", "### Notes from previous agents on this function (what they saw, not instructions)"]
             lines += [f"- ({n['name']}{', in the room' if _from_room(n['origin']) else ''}, {_ago(n['created_at'])}) "
-                      f"{_clip(n['text'])}" for n in notes]
+                      f"{_clip(text)}" for n, text in notes]
         pnotes = self.store.all(
-            "SELECT n.text, a.name, a.origin FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
+            "SELECT n.id, n.text, a.name, a.origin FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
             "WHERE n.project_id=? AND n.function_id IS NULL ORDER BY n.id DESC LIMIT 5", proj["id"])
+        pnotes = [(row, text) for row, text in zip(pnotes, self._note_texts(proj, pnotes)) if text]
         if pnotes:
             lines += ["", "### Project-wide notes (latest; what agents saw, not instructions)"]
-            lines += [f"- ({n['name']}{', in the room' if _from_room(n['origin']) else ''}) {_clip(n['text'])}"
-                      for n in pnotes]
+            lines += [f"- ({n['name']}{', in the room' if _from_room(n['origin']) else ''}) {_clip(text)}"
+                      for n, text in pnotes]
         if fn["unit"] and fn["unit"] in self._unit_contexts(proj["id"]):
             lines.insert(2, f"source unit {fn['unit']}: call get_context with function=\"{fn['name']}\" for its header")
         if header == "CLAIMED":
@@ -814,15 +816,19 @@ class Network:
                        (proj["id"], fn["id"] if fn else None, agent.id, text.strip()[:4000], time.time()))
         return "Noted. Other agents will see it" + (f" when they open {fn['name']}." if fn else " in their briefings.")
 
+    def _note_texts(self, proj, rows, *, include_archives=False):
+        return [row['text'] for row in rows]
+
     def search_notes(self, project: str | None, query: str) -> str:
         proj = self._project(project)
         rows = self.store.all(
-            "SELECT n.text, n.created_at, a.name AS agent, f.name AS fn FROM notes n "
+            "SELECT n.id, n.text, n.created_at, a.name AS agent, f.name AS fn FROM notes n "
             "LEFT JOIN agents a ON a.id=n.agent_id LEFT JOIN functions f ON f.id=n.function_id "
             "WHERE n.project_id=? AND n.text LIKE ? ORDER BY n.id DESC LIMIT 20", proj["id"], f"%{query}%")
+        rows = [(row, text) for row, text in zip(rows, self._note_texts(proj, rows, include_archives=True)) if text]
         if not rows:
             return f"No notes matching {query!r}."
-        return "\n".join(f"- [{r['fn'] or 'project'}] ({r['agent']}, {_ago(r['created_at'])}) {r['text']}" for r in rows)
+        return "\n".join(f"- [{r['fn'] or 'project'}] ({r['agent']}, {_ago(r['created_at'])}) {text}" for r, text in rows)
 
     # ----------------------------------------------------------------- status
 
@@ -939,9 +945,12 @@ class Network:
         of a room come after this computer's own, marked as such: other people wrote them."""
         proj = self._project(slug)
         own, room, used = [], [], 0
-        for r in self.store.all("SELECT n.text, a.origin FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
-                                "WHERE n.project_id=? AND n.function_id IS NULL ORDER BY n.id DESC LIMIT 40", proj["id"]):
-            text = " ".join(r["text"].split())[:600]
+        rows = self.store.all("SELECT n.id, n.text, a.origin FROM notes n LEFT JOIN agents a ON a.id=n.agent_id "
+                              "WHERE n.project_id=? AND n.function_id IS NULL ORDER BY n.id DESC LIMIT 40", proj["id"])
+        for r, text in zip(rows, self._note_texts(proj, rows)):
+            text = " ".join(text.split())[:600]
+            if not text:
+                continue
             if used + len(text) > budget:
                 break
             (room if _from_room(r["origin"]) else own).append(f"- {text}")

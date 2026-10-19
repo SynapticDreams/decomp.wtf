@@ -12,6 +12,7 @@ from pathlib import Path
 
 from ..network import NetworkError
 from ..rom.symbols import AUTO_NAME
+from . import symbol_records
 from . import banked_resplit_checks as checks, sms_resplit_revalidate as revalidate
 from .banked_resplit_changes import describe, plan_digest
 from .banked_resplit_layout import reconcile
@@ -116,7 +117,7 @@ def resplit(net, slug: str, apply: bool = False, log=print, *, expected_plan: st
             db.execute("DELETE FROM twin_misses WHERE function_id=?", (r["id"],))
             db.execute("DELETE FROM functions WHERE id=?", (r["id"],))
             if not re.search(rf"\b{re.escape(r['name'])}\b", used):
-                db.execute("DELETE FROM symbols WHERE project_id=? AND name=?", (proj["id"], r["name"]))
+                symbol_records.remove(db, proj["id"], r["name"], reason="resplit replaced original function")
         new_ids = {}
         for f in fresh:
             name = proposed_names.get(f.rom, renamed.get(f.rom, f.name))  # a name someone gave the function that started here stays
@@ -129,8 +130,8 @@ def resplit(net, slug: str, apply: bool = False, log=print, *, expected_plan: st
                 "meta) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (proj["id"], name, f.size, f.n_insns, f.code, json.dumps([list(x) for x in f.refs or []]), f.asm,
                  None, unit, f.vram, f.rom, "open", with_edges(None, getattr(f, "edges", None)))).lastrowid
-            db.execute("INSERT OR REPLACE INTO symbols(project_id,name,address,size,kind,preview) VALUES(?,?,?,?,?,?)",
-                       (proj["id"], name, f.vram, f.size, "func", None))
+            symbol_records.save(db,
+                       *(proj["id"], name, f.vram, f.size, "func", None))
         for f in fns:  # a function that stays: where its calls into the window go, as this split followed them
             r = by_off.get(f.rom)
             if r is not None and r["id"] in kept and (getattr(f, "edges", None) or "edges" in (r["meta"] or "")):

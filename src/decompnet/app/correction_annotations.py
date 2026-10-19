@@ -3,14 +3,9 @@ import copy
 import time
 
 from ..network import NetworkError
-from ..rom.annotations import dump, validate_annotation, validate_evidence
+from ..rom.annotations import dump, validate_annotation
 from . import correction_policy as policy, sms_annotation_context as context, correction_views as views
-
-
-def hypothesis():
-    return {'version': 1, 'revision': None, 'context': None, 'subject_sha256': None, 'origin': None,
-            'state': 'hypothesis', 'confidence': 'unknown', 'alternatives': [], 'links': [],
-            'review': {'state': 'pending', 'actor': None, 'at': None, 'binding_sha256': None}}
+from .annotation_proofs import hypothesis as hypothesis, bind
 
 
 def legacy_annotation(net, slug, kind, at, count, function):
@@ -36,18 +31,7 @@ def prepare(net, agent, slug, kind, at, reason, count, function, annotation, evi
             raise ValueError('annotation and explicit location disagree')
     if kind in policy.KINDS and cpu is None:
         raise ValueError('legacy hint kinds require an explicit location')
-    proof = copy.deepcopy(evidence)
-    validate_evidence(proof)
-    if proof['review']['state'] not in ('unknown', 'pending'):
-        raise ValueError('caller-supplied review receipts are not accepted')
-    for key, expected in (('revision', revision), ('context', mapping),
-                          ('subject_sha256', context.subject(value, cpu, original))):
-        if proof[key] is not None and proof[key] != expected:
-            raise ValueError('evidence belongs to another revision, context or subject')
-        proof[key] = expected
-    proof['origin'] = {'kind': 'agent', 'ref': f'agent:{agent.id}'}
-    proof['review'] = {'state': 'pending', 'actor': None, 'at': None, 'binding_sha256': None}
-    validate_evidence(proof)
+    proof = bind(evidence, agent, revision, mapping, context.subject(value, cpu, original))
     return values, {'kind': kind, 'rom_offset': flat, 'cpu': cpu,
                     'count': value['spec'].get('count', value['spec'].get('bytes_after_call', value['target']['size'] if kind == 'data' else 0)),
                     'reason': policy.reason(reason), 'annotation': dump(value), 'evidence': dump(proof)}
