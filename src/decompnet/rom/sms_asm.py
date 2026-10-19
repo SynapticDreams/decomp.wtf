@@ -8,9 +8,9 @@ A routine is accepted when all of these hold:
 2. **It survives a shift test.** Assembled again with the routine and every address the project knows moved, each
    operand that is an address (a call or jump target, a memory operand, a 16-bit constant in ROM or RAM) changes: a
    raw address left in doesn't. A 16-bit constant that only looks like an address is marked `; number`.
-3. **Names from the right bank.** A call, jump or pointer into slot 1 or 2 names a function in the bank mapped there:
-   the routine's own, when it's the slot the routine runs from. Where banks share the address and no one knows which
-   is mapped, it waits until someone does rather than accept a guess.
+3. **Names from the right source and bank.** References use the shared cartridge resolver. Only Sega's first KiB
+   is fixed; slot 0 above it can page too. A unique named CPU address does not establish its physical bank.
+   Unknown, BIOS and cartridge-RAM sources cannot name a cartridge-ROM function through a fallback guess.
 4. **Instructions stay instructions.** `.db` and `.dw` only where the map has data in the routine (a routine's
    operands after a call, a table) or an instruction a branch lands in the middle of.
 5. **Hardware by name.** Assembled once more with the hardware's names moved, each operand that is hardware (an I/O
@@ -33,7 +33,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import sms_hw, z80
+from . import sms_asm_refs
 from .gb_asm import AsmError, Verdict, _data_size, _split_comment
+from .sms_mapping import BusState
 
 BANK = 0x4000
 MAX_TEXT = 64 * 1024
@@ -63,6 +65,9 @@ class Routine:
     runs_at: dict[int, int] = field(default_factory=dict)    # ROM offset -> the address it runs at
     data: list[tuple[int, int, str]] = field(default_factory=list)  # (ROM offset, size, kind): data regions in it
     banks: int = 8
+    mapper: str = "sega"
+    rom_size: int | None = None
+    mapping: BusState | None = None  # explicit entry context; not a general caller/return contract
 
     @property
     def flat(self) -> int:
@@ -395,35 +400,7 @@ def _shift_checks(r: Routine, layout, shifted: bytes, hw_shifted: bytes) -> list
 
 
 def _bank_checks(r: Routine, layout) -> list[str]:
-    """3: a call, jump or pointer into slot 1 or 2 names a function in the bank that's mapped there."""
-    out = []
-    banks_at: dict[int, set[int]] = {}
-    for flat, cpu in r.runs_at.items():
-        if flat >= BANK:
-            banks_at.setdefault(cpu, set()).add(flat // BANK)
-    bank_of = {name: flat // BANK for flat, name in r.functions.items()}
-    for it, _off, text, ln in layout:
-        if it.kind != "insn" or (operand := _operands(text, ln)) is None:
-            continue
-        role, value, _positions = operand
-        if not 0x4000 <= value < 0xC000 or role in ("write", "port", "rel"):
-            continue
-        used = [n for n in re.findall(_IDENT, it.text) if n in bank_of]
-        if not used:
-            continue
-        if value >> 14 == r.slot:
-            want = r.bank  # into the slot it runs from: its own bank
-        else:
-            if len(banks_at.get(value, ())) > 1:
-                out.append(f"3. line {it.line}: banks {', '.join(str(b) for b in sorted(banks_at[value]))} all have "
-                           f"code at ${value:04X}, and which one is mapped there here isn't known yet: say what you "
-                           "know (correct_split) or leave it for later")
-            continue
-        for name in used:
-            if bank_of[name] != want:
-                out.append(f"3. line {it.line}: {name} is in bank {bank_of[name]}, but at ${value:04X} this routine "
-                           f"reaches bank {want}")
-    return out
+    return sms_asm_refs.bank_checks(r, layout, _operands)
 
 
 def _data_checks(r: Routine, layout) -> list[str]:
@@ -472,9 +449,6 @@ def draft(r: Routine) -> str:
     names: dict[int, str] = {}
     for name, value in sorted(r.symbols.items()):
         names.setdefault(value, name)
-    by_cpu: dict[int, list[int]] = {}
-    for flat, cpu in r.runs_at.items():
-        by_cpu.setdefault(cpu, []).append(flat)
     data = sorted((lo - r.flat, lo - r.flat + n) for lo, n, _k in r.data)
 
     def in_data(off: int):
@@ -496,17 +470,11 @@ def draft(r: Routine) -> str:
         off += ln
     starts = {p[0] for p in pieces}
 
-    def code_name(target: int) -> str:
+    def code_name(target: int, offset: int) -> str:
         if r.cpu <= target < r.cpu + len(r.code) and target - r.cpu in starts:
             return f"@l_{target:04x}"
-        if target >> 14 == r.slot and not (r.slot == 0 and target < 0x400):
-            flats = [flat_of(r.bank, target)]  # (the slot it runs from: its own bank)
-        elif target < BANK:
-            flats = [target]  # (bank 0, which the first slot holds)
-        else:
-            flats = by_cpu.get(target, [])  # (another slot: the function there, when only one bank has one)
-        named = [r.functions[f] for f in flats if f in r.functions]
-        return named[0] if len(named) == 1 else f"${target:04x}"
+        flat = sms_asm_refs.reference(r, target, offset).rom_offset
+        return r.functions.get(flat, f"${target:04x}")
 
     def address(value: int, role: str) -> str:
         if value in sms_hw.MAPPER:
@@ -524,7 +492,7 @@ def draft(r: Routine) -> str:
             continue
         out = text
         if (m := re.match(rf"^(jp|jr|call|djnz)( {_CONDITION}, | )\$([0-9a-f]{{4}})$", text)):
-            name = code_name(int(m.group(3), 16))
+            name = code_name(int(m.group(3), 16), off)
             if name.startswith("$") and m.group(1) in ("jr", "djnz"):
                 name += "-CADDR-1"  # (WLA-DX reads a number there as the offset: this is the address)
             out = f"{m.group(1)}{m.group(2)}{name}"

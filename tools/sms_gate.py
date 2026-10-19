@@ -13,6 +13,7 @@ from decompnet import toolchains
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = (
     "tests/test_sms_asm.py",
+    "tests/test_sms_asm_mapping.py",
     "tests/test_sms_documented.py",
     "tests/test_export_sms.py",
 )
