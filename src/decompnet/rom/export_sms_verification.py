@@ -2,16 +2,31 @@
 import json
 
 from .export_sms_report import identity
+from .export_sms_artifacts import read_regular
 
 MAX_REPORT = 16 * 1024 * 1024
 
 
 def verify(out, image, expected, returncode, platform, *, required=False):
     errors, report, receipt_valid = [], None, False
+    measured_input, measured_image = {'verified': False}, {'checked': False, 'equal': None}
+    built = None
     try:
+        if (out / 'build').is_symlink():
+            raise ValueError('verification_output_directory_is_a_symlink')
+        built, info = read_regular(out / 'build' / f'game.{platform}', len(image) + 1)
+        equal = built == image
+        measured_image = {'checked': True, 'equal': equal, 'original': identity(image),
+                          'built': identity(built) if info.st_size == len(built) else {'size': info.st_size, 'sha256': None},
+                          'first_difference': next((i for i, (a, b) in enumerate(zip(image, built)) if a != b),
+                                                   min(len(image), len(built))) if not equal else None}
+    except (OSError, ValueError):
+        errors.append('output_artifact_unavailable_or_changed')
+    try:
+        if (out / 'build').is_symlink():
+            raise ValueError('verification_output_directory_is_a_symlink')
         path = out / 'build' / 'verification.json'
-        with path.open('rb') as stream:
-            raw = stream.read(MAX_REPORT + 1)
+        raw, _info = read_regular(path, MAX_REPORT + 1)
         if len(raw) > MAX_REPORT:
             raise ValueError('verification_report_too_large')
         report = json.loads(raw.decode('utf-8'))
@@ -19,6 +34,7 @@ def verify(out, image, expected, returncode, platform, *, required=False):
             raise ValueError('unsupported_verification_report')
         if report['input'].get('verified') is not True or report['input'].get('normalized') != identity(image):
             raise ValueError('input_verification_missing_or_different')
+        measured_input = {'verified': True, 'normalized': identity(image)}
         rows = report['documented']['routines']
         if not isinstance(rows, list) or len(rows) != len(expected):
             raise ValueError('documented_receipt_count_differs')
@@ -33,11 +49,11 @@ def verify(out, image, expected, returncode, platform, *, required=False):
                 raise ValueError('documented_source_changed')
             if not row['inserted'] and not isinstance(row.get('omission'), str):
                 raise ValueError('omitted_source_has_no_reason')
-        with (out / 'build' / f'game.{platform}').open('rb') as stream:
-            built = stream.read(len(image) + 1)
+        if built is None:
+            raise ValueError('output_artifact_was_not_measured')
         if report['image'].get('built') != identity(built) or report['image'].get('original') != identity(image):
             raise ValueError('output_artifact_differs_from_receipt')
-        equal = built == image
+        equal = measured_image['equal']
         if report['image'].get('equal') is not equal:
             raise ValueError('image_equality_receipt_differs')
         if report['process'].get('completed') is not True:
@@ -61,5 +77,6 @@ def verify(out, image, expected, returncode, platform, *, required=False):
         errors.append('build_process_failed')
     passed = not errors
     return {'version': 1, 'passed': passed, 'receipt_valid': receipt_valid, 'errors': errors,
+            'input': measured_input, 'image': measured_image,
             'build': report if isinstance(report, dict) else None,
             'scope': 'independent input/output artifact and process check; source receipt is build-reported'}

@@ -66,6 +66,19 @@ def test_process_failure_cannot_be_hidden_by_matching_artifacts(tmp_path):
     assert not result['passed'] and 'build_process_failed' in result['errors']
 
 
+def test_actual_image_measurement_cannot_be_replaced_by_a_false_report_claim(tmp_path):
+    receipt(tmp_path)
+    (tmp_path / 'build' / 'game.sms').write_bytes(b'changed')
+    result = verify(tmp_path, b'authored', [], 0, 'sms')
+    assert result['build']['image']['equal']
+    assert result['image']['checked'] and result['image']['equal'] is False and not result['passed']
+    (tmp_path / 'build' / 'game.sms').write_bytes(b'authored')
+    (tmp_path / 'build' / 'verification.json').write_text('invalid report')
+    result = verify(tmp_path, b'authored', [], 0, 'sms')
+    assert result['image']['checked'] and result['image']['equal'] is True
+    assert not result['passed'] and not result['receipt_valid']  # Byte equality alone is not a successful build.
+
+
 @tools
 def test_standalone_reports_inserted_disabled_and_required_source_separately(exported):
     net, slug, result, out = exported

@@ -266,10 +266,36 @@ does not silently become an assembly acceptance contract. Stored source is retai
 
 Most Master System and Game Gear games are assembly. A routine set aside as hand-written is documented instead of
 matched: WLA-DX assembly that rebuilds its bytes, with names, comments and constants (`claim_function(track="asm")`,
-guide `asm`). The project's export is a WLA-DX disassembly made from the user's copy, with each documented routine
-in place of its bytes, checked to rebuild the game byte for byte.
+guide `asm`). The project's export is a WLA-DX disassembly made from the user's copy. It attempts to insert the
+documented routines, reports omissions and checks the rebuilt image byte for byte.
 
 ## The matching lane
+
+Settings and Source show separate SMS/GG evidence dimensions. Physical byte totals use range unions, so aliases
+or overlapping entries cannot inflate C-reference, documented-assembly, code or data totals. Code/data overlap
+is reported explicitly; classified data is not automatically typed data. The C percentage covers C candidates,
+with a bounded chart of current references by their stored acceptance dates, rather than overall game completion.
+Score-closeness estimates remain instruction-weighted estimates. Neither metric establishes linked replacement.
+
+The Source panel distinguishes current original-input readiness, the last build's whole-image equality, assembly
+actually inserted, and omissions. **Require every expected documented assembly routine to be inserted** enables
+strict mode; `/api/export` POST accepts the boolean `strict_documented` for SMS/GG. An omitted routine can make
+strict verification fail even when the image is equal, while other actual insertions remain counted. Standalone
+`python build.py --require-documented` applies the same policy. `build/verification.json` records process, input,
+image and source results, including failed configuration/input/tool runs; console success words are not proof.
+
+The overview API's `sms_progress` and `export.verification` separate these dimensions. Export summaries bound
+visible omissions to 100 with a truncation flag; complete per-routine results stay in the exported report. Saved
+results become historical after stored work/settings or exported inputs/results change. The current check compares
+frozen input identity, project metadata and a bounded exported-tree fingerprint, excluding generated scratch files.
+Fingerprinting caps reads at 64 MiB and 16,384 entries and refuses symlinks/special files. Unavailable evidence
+cannot qualify a current result. Tool environment and external C dependencies are outside that cached check.
+Unbound legacy inputs need a cartridge declaration to bind the revision before exact export can be verified.
+
+Stored C references retain named-unit headers and compiler settings in `c/references.json`, with safe unit folders.
+This export does not freshly compile or link them; context at export does not attest an earlier accepted attempt.
+Typed data and semantic approval stay unqualified until their evidence schemas can establish them. An absent
+review-sample flag is not proof that a person reviewed the current source/context. Runtime parity remains untested.
 
 Matching uses the pinned **GBDK-2020** toolchain: `sdcc -mz80` for C, `sdasz80` for assembly, the same
 archive as the Game Boy. The app installs it when a game is imported. The ROM's call and jump addresses are absolute, so the

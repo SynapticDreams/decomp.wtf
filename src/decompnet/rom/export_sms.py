@@ -27,6 +27,8 @@ from .sms_identity import verify_normalized
 from .sms_profile import describe
 from .export_sms_verification import verify
 from .export_sms_report import source_digest
+from .export_sms_c import write as write_c
+from .export_sms_artifacts import fingerprint as artifact_fingerprint, read_regular
 
 LABEL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")  # a name WLA-DX takes as a label
 WORD = re.compile(r"(?<![.@\w])[A-Za-z_]\w*")
@@ -36,8 +38,13 @@ DOCUMENTED = "documented"
 def export_sms(net, slug: str, out: Path, log=print, *, strict_documented=False) -> dict:
     proj = net._project(slug)
     cfg = net.cfg(proj)
+    if cfg['rom'].get('identity') is None and not re.fullmatch(r'[0-9a-f]{40}', str(cfg['rom'].get('sha1') or '')):
+        raise ValueError('frozen SMS/GG input identity is unavailable; declare a profile to bind this revision')
     rom_path = Path(proj["root"]) / cfg["rom"]["file"]
-    image = sms.strip_copier_header(rom_path.read_bytes())
+    raw, info = read_regular(rom_path, int(cfg['rom']['size']) + 513)
+    if info.st_size > int(cfg['rom']['size']) + 512:
+        raise ValueError('original SMS/GG input size differs')
+    image = sms.strip_copier_header(raw)
     verify_normalized(image, cfg["rom"].get("identity"), cfg["rom"].get("sha1"))
     profile = describe(cfg)
     if profile["status"] == "invalid":
@@ -57,18 +64,14 @@ def export_sms(net, slug: str, out: Path, log=print, *, strict_documented=False)
     hw = set(sms_hw.names())
     named = [r for r in rows if LABEL.match(r["name"]) and r["name"] not in hw]
     named_ids, documented_ids = {r["id"] for r in named}, {r["id"] for r in documented}
-    notes, matched = [], 0
+    references = write_c(net, proj, out, [row for row in named if row['status'] == 'matched' and row['matched_source']])
+    reference_paths = {row['name']: row['file'] for row in references}
+    notes, matched = [], len(references)
     for r in named:
         why = json.loads(r["meta"] or "{}").get("asm_code") or ""
         said = [f"Set aside: {why}"] if why and r["status"] == "asm" else []
-        if r["status"] == "matched" and r["matched_source"]:
-            (out / "c").mkdir(exist_ok=True)
-            (out / "c" / f"{r['name']}.c").write_text(
-                f"/* {r['name']} (bank {(r['rom_offset']) // sms.BANK_SIZE}, ${r['vram'] or 0:04x}): SDCC (GBDK-2020, "
-                f"flags {' '.join(cfg['compiler']['flags'])}) compiles this to exactly the original code, with context.h."
-                f" */\n#include \"context.h\"\n\n{r['matched_source'].strip()}\n", encoding="utf-8")
-            said.append(f"Matched in C: c/{r['name']}.c")
-            matched += 1
+        if r['name'] in reference_paths:
+            said.append(f"Stored C-byte reference: {reference_paths[r['name']]}")
         if r["id"] in documented_ids:
             said.append(f"Documented in assembly: {DOCUMENTED}/{r['name']}.asm (build.py puts it in place of its bytes)")
         for n in net.store.all("SELECT text FROM notes WHERE function_id=? ORDER BY id DESC LIMIT ?", r["id"], NOTES_PER_LABEL):
@@ -77,7 +80,7 @@ def export_sms(net, slug: str, out: Path, log=print, *, strict_documented=False)
         notes += [f"{r['name']}: {line}" for text in said for line in textwrap.wrap(text, 110)]
     (out / "comments.txt").write_text("\n".join(notes) + ("\n" if notes else ""), encoding="utf-8")
     if matched:
-        (out / "c" / "context.h").write_text(net._context(proj["id"])["header"], encoding="utf-8")
+        (out / "c" / "context.h").write_text(net._context(proj["id"])["header"] or '', encoding="utf-8", newline='')
 
     entries = _write_documented(net, proj, out, [r for r in documented if LABEL.match(r["name"])],
                                 {r["name"] for r in named})
@@ -102,7 +105,8 @@ def export_sms(net, slug: str, out: Path, log=print, *, strict_documented=False)
     shutil.copyfile(Path(__file__).with_name("sms_identity.py"), out / "tools" / "sms_identity.py")
     shutil.copyfile(Path(__file__).with_name("sms_mapping.py"), out / "tools" / "sms_mapping.py")
     shutil.copyfile(Path(__file__).with_name("sms_codemasters.py"), out / "tools" / "sms_codemasters.py")
-    for source, target in (('export_sms_report.py', 'sms_export_report.py'), ('export_sms_build_run.py', 'sms_export_build_run.py')):
+    for source, target in (('export_sms_report.py', 'sms_export_report.py'), ('export_sms_build_run.py', 'sms_export_build_run.py'),
+                           ('export_sms_artifacts.py', 'sms_export_artifacts.py')):
         shutil.copyfile(Path(__file__).with_name(source), out / 'tools' / target)
     (out / "build.json").write_text(json.dumps({"title": proj["name"], "platform": platform, "image": base,
                                                 "sha1": hashlib.sha1(image).hexdigest(), "size": len(image),
@@ -116,9 +120,21 @@ def export_sms(net, slug: str, out: Path, log=print, *, strict_documented=False)
     _docs(out, proj["name"], base, matched, len(rows), len(entries))
 
     log("building the exported project to check it rebuilds the game byte for byte")
+    input_artifacts = artifact_fingerprint(out)
     proc = subprocess.run(capped([sys.executable, "build.py", *(["--require-documented"] if strict_documented else [])]), cwd=out, capture_output=True, text=True, timeout=3600,
                           encoding="utf-8", errors="replace")
+    result_artifacts = artifact_fingerprint(out, outputs=True)
     verification = verify(out, image, expected, proc.returncode, platform, required=strict_documented)
+    verification['export_inputs_coherent'] = input_artifacts is not None and input_artifacts == artifact_fingerprint(out)
+    if not verification['export_inputs_coherent']:
+        verification['passed'] = False
+        verification['errors'].append('export_inputs_changed_or_unavailable')
+    final_artifacts = artifact_fingerprint(out, outputs=True)
+    verification['export_outputs_coherent'] = result_artifacts is not None and result_artifacts == final_artifacts
+    if not verification['export_outputs_coherent']:
+        verification['passed'] = False
+        verification['errors'].append('export_results_changed_or_unavailable')
+    verification['export_tree_sha256'] = final_artifacts if verification['export_outputs_coherent'] else None
     identical = verification['passed']
     if not identical:
         log((proc.stdout + proc.stderr)[-3000:])
@@ -148,7 +164,7 @@ def _write_documented(net, proj, out: Path, rows, labels: set[str]) -> list[dict
     (out / DOCUMENTED).mkdir()
     entries, used, own = [], set(), set()
     for r in rows:
-        text = r["matched_source"].strip() + "\n"
+        text = r["matched_source"].replace('\r\n', '\n').replace('\r', '\n').strip() + "\n"
         (out / DOCUMENTED / f"{r['name']}.asm").write_text(text, encoding="utf-8")
         entries.append({"name": r["name"], "flat": r["rom_offset"], "cpu": r["vram"], "size": r["size"],
                         "file": f"{DOCUMENTED}/{r['name']}.asm"})
@@ -173,7 +189,7 @@ def _docs(out: Path, title: str, base: str, matched: int, total: int, documented
 The game as WLA-DX assembly that rebuilds it byte for byte, with the names and notes worked out with
 [decomp.wtf](https://decomp.wtf). Most Master System and Game Gear games were written in assembly: this is their
 source, the base for mods, translations and ports. {documented} of the {total} functions found so far are documented
-in assembly (in `documented/`), and {matched} are also matched in C (in `c/`).
+in assembly (in `documented/`), and {matched} have stored C-byte references (in `c/`).
 
 ## Build
 
@@ -184,7 +200,7 @@ in assembly (in `documented/`), and {matched} are also matched in C (in `c/`).
    copy. Needs WLA-DX: decomp.wtf's pinned one when decomp.wtf is installed, else `wla-z80` and `wlalink` on `PATH`
    (or `WLA_DX` set to the folder that has them).
 
-Every attempt writes `build/verification.json`: verified input identity, actual image digests/equality,
+Build checks write `build/verification.json`: verified input identity, actual image digests/equality,
 documented source emission/insertion and omission reasons, and process/policy results. `python build.py
 --require-documented` fails if expected documented source is left out, even when raw reconstruction is identical.
 `--no-documented` deliberately omits it. C remains reference material; this build does not link C replacements,
@@ -201,10 +217,10 @@ reconstruction independently of those mapping and naming limits.
 | :-- | :-- |
 | `layout.json` | Where each function starts, the address it runs at, its size and its name; what isn't code; where each bank runs. |
 | `comments.txt` | What's known about each routine (`Name: text`), put above it in the disassembly. |
-| `documented/` | Routines documented in assembly: names, comments and constants for what the disassembly has as numbers, each checked to rebuild its bytes. `build.py` puts each in place of its bytes; `names.inc` holds the names they use that aren't labels (RAM, constants). `python build.py --no-documented` builds without them. |
+| `documented/` | Mechanically checked assembly with names, comments and constants. `build.py` attempts to insert each in place of its bytes and reports omissions; `names.inc` holds names they use that aren't labels. `python build.py --no-documented` builds without them. |
 | `include/hardware.inc` | The hardware's names the documented routines use (ports, the mapper's registers). |
-| `c/` | Functions matched in C: SDCC compiles each to exactly the original code. For reference: the build is the assembly. |
-| `tools/z80.py`, `tools/sms_identity.py`, `tools/sms_mapping.py`, `tools/sms_codemasters.py`, `build.py`, `build.json` | The decoder, revision checks, shared mapper, build and input manifest. |
+| `c/` | Stored C-byte references, not compiled or linked by this build. Each effective unit keeps its own header; `references.json` records context and compiler settings at export, without attesting prior acceptance or complete ABI/toolchain context. |
+| `tools/`, `build.py`, `build.json` | Decoder, revision/mapper helpers, build orchestration, verification receipt and input manifest. |
 
 `build/disassembly/` is made from your copy on every build, so keep your work in `layout.json`, `comments.txt` and
 `documented/`. To change the game itself, copy `build/disassembly/` elsewhere and edit it there (`game.asm` is the
