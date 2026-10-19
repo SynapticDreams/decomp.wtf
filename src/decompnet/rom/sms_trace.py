@@ -1,31 +1,14 @@
-"""Following a Master System / Game Gear game's code with the banks it maps, to find its functions and the CPU address
-each runs at.
+"""SMS/GG static discovery with full mapper/bus snapshots.
 
-The Sega mapper shows 16 KiB banks of the ROM in three slots (0x0000, 0x4000, 0x8000) and code picks the banks of
-slots 1 and 2 by writing their number to 0xFFFE and 0xFFFF. Which bank a call to 0x8123 reaches, and where a bank's
-code runs, isn't in the ROM's layout: it's in the code. So the code is followed from the reset, interrupt and pause
-entry points, instruction by instruction, keeping track of what's in each slot:
+Follow reset, calls, jumps and bounded dispatch tables using the shared address model. Known mapper stores
+update bank and RAM selection together; the next instruction is fetched from the resulting source. A call
+carries all mapping fields, and joined entries retain only facts their callers share. Sparse WRAM contents
+remain separate from device registers. Isolated symbols and sweep seeds establish only their own ROM window;
+the reset recipe applies only to the reset root.
 
-- `ld a,5 / ld ($ffff),a` (and through HL: `ld hl,$ffff / ld (hl),5`) maps a bank; the mapper reads only as many
-  bits as the ROM needs;
-- a function that writes the A it was called with to the mapper maps the bank its callers pass in A;
-- a jump or call into the slot the code runs from stays in its own bank;
-- a function that never returns (a main loop, a reset) or that takes its return address to read a table that
-  follows its call (`call dispatch / .dw a, b, c`, or `ex (sp),hl` first thing) ends the straight-line code at the
-  call; one that ends in a jump to a function that returns returns too;
-- slot 0 above 0x0400 is paged by writes to 0xFFFD; a bank kept in RAM (`ld a,5 / ld (shadow),a` ...
-  `ld a,(shadow) / ld ($ffff),a`), read back from the mapper's mirror (`ld a,($ffff)`) or saved on the stack
-  (`push af` ... `pop af`) is followed through;
-- a computed call (`ld de,.next / push de / jp (hl)`) comes back to the address it pushed, and `push rr / ret` is a
-  jump to it.
-
-Rounds repeat that with what the last one learned (functions that don't return, bank switchers) until nothing
-changes. Code tables seed more functions: the ones a game reads through a dispatcher (`ld hl,table / rst $20`), and
-the ones it indexes itself before `jp (hl)` (`ld hl,table / add hl,de / ... / jp (hl)`, a table of words or of `jp`
-instructions), as many entries as the index is bounded to (`cp 5 / jr nc` before it) or else up to the first that
-doesn't read like code. Labels from a WLA-DX symbol file next to the ROM (emulators and disassemblers write them)
-seed more, their automatic `_LABEL_..._` names among them.
-(Ideas from another fork of the original, rewritten for this lane's own disassembler and records.)
+Function extents and dispatch tables remain heuristic. General callee effects, unknown stores, multiple paths
+through one instruction and interrupt restoration still need conservative summaries and analysis budgets.
+These limits are separate from preserving full bus state on the paths this tracer follows.
 """
 
 from __future__ import annotations
@@ -34,7 +17,9 @@ import bisect
 import re
 
 from . import z80
-from .sms_mapping import BusState, Mapper, bank_mask, wram_address
+from .sms_mapping import BusState, Mapper, entry_state, join, wram_address
+from .sms_mapping import REGISTERS as MAPPER
+from .sms_mapping import bank_mask as bank_mask  # preserve the previous helper import
 from .sms_state import ARG, Found, State
 
 BANK = 0x4000
@@ -52,7 +37,6 @@ _SUB_N = re.compile(r"^sub \$([0-9a-f]{2})$")
 # what changes A's value (so an index bounded before isn't any more): not `or a`/`and a` (tests), not doubling it
 _CHANGES_A = re.compile(r"^(?:add a, (?!a$)|adc a,|sub |sbc a,|inc a$|dec a$|neg|cpl|or (?!a$)|xor |and (?!a$)|rra|"
                         r"rla|rrca|srl a|sra a|rr a|rl a|rrc a|daa|ld a,|in a,|pop af|ex af)")
-MAPPER = {0xFFFD: 0, 0xFFFE: 1, 0xFFFF: 2}  # the Sega mapper's bank registers -> the slot each pages
 _WRITES_DE = re.compile(r"^(?:ld de,|ld d,|ld e,|pop de|exx|inc de|dec de|inc d$|dec d$|inc e$|dec e$|ldi|ldd|ldir|"
                         r"lddr|ex de, hl|rlc [de]$|rrc [de]$|rl [de]$|rr [de]$|sla [de]$|sra [de]$|srl [de]$)")
 _WRITES_BC = re.compile(r"^(?:ld bc,|ld b,|ld c,|pop bc|exx|inc bc|dec bc|inc b$|dec b$|inc c$|dec c$|djnz|ldi|ldd|"
@@ -86,12 +70,6 @@ def _decode(data: bytes, flat: int, cpu: int) -> tuple[str, int]:
     return z80.decode(data[flat:min(end, flat + 4)], cpu)
 
 
-def _agreed(mappings: set) -> tuple:
-    s1 = {m[0] for m in mappings}
-    s2 = {m[1] for m in mappings}
-    return (s1.pop() if len(s1) == 1 else None), (s2.pop() if len(s2) == 1 else None)
-
-
 def can_start(data: bytes, flat: int, cpu: int) -> bool:
     """Where a call or jump can land: an instruction, and not the $FF filler of an empty bank (`rst $38` again and
     again)."""
@@ -122,12 +100,12 @@ def plausible(data: bytes, flat: int, cpu: int, limit: int = 64) -> bool:
 
 
 class Tracer:
-    def __init__(self, data: bytes, paged: set[int] | None = None, hints: dict | None = None):
-        """`paged`: the slots (1, 2) the game is known to pick banks for (a first pass learns it: `slot_writes`). Code
-        entered from somewhere nothing was followed from (the interrupt handlers, what a sweep found) can't know
-        what those slots hold, so their bank is unknown there; a slot the game never pages keeps its power-on bank.
-        None: every slot keeps its power-on bank (the first pass's view). `hints`: the project's corrections (see
-        sms.functions): bytes that aren't code, routines that read bytes after their call or never return."""
+    def __init__(self, data: bytes, paged: set[int] | None = None, hints: dict | None = None, *,
+                 mapper: str = "sega", reset: BusState | None = None):
+        """Trace under an explicit mapper/reset recipe; isolated seeds establish only their own ROM window.
+        `paged` remains accepted for callers of the previous tracer; absence of writes never establishes banks.
+        `hints`: data spans, inline operands and nonreturning routines (see sms.functions).
+        """
         self.data, self.size = data, len(data)
         self.hints = hints or {}
         cov = self.hints.get("coverage")  # (what an emulator only saw read is data too)
@@ -138,9 +116,9 @@ class Tracer:
                 self.data_spans[-1] = (last[0], max(sum(last), a + n) - last[0])
             else:
                 self.data_spans.append((a, n))
-        self.mask = bank_mask(self.size)
-        self.mapper = self.size > 3 * BANK  # 48 KiB or less: the ROM is simply at 0x0000-0xBFFF
-        self.unknown = (None if paged and 1 in paged else 1, None if paged and 2 in paged else 2)
+        self.model = Mapper(mapper, self.size)
+        self.reset = reset if reset is not None else self.model.reset()
+        self.mapper = mapper != "mapperless"
         self.found = Found()
         self.known: set[int] = set()  # function starts as the last round left them (and the seeds)
         self.prev_starts: set[int] = set()
@@ -160,7 +138,8 @@ class Tracer:
             self._returning()
             more = {**self._far_jumps(), **self._tables()}
             now = (frozenset(self.found.starts.items()), frozenset(self.found.switchers.items()),
-                   frozenset(self.found.returns), frozenset(self.found.takes_return), frozenset(more))
+                   frozenset(self.found.returns), frozenset(self.found.takes_return), frozenset(more),
+                   frozenset((flat, frozenset(states)) for flat, states in self.found.entered.items()))
             if now == before:
                 break
             before = now
@@ -173,7 +152,7 @@ class Tracer:
         f = self.found
         prev, f.entered, f.starts, f.with_hl, f.jumps, f.anchors = f.entered, {}, {}, [], [], set()
         f.indexed, f.tails, f.code = [], {}, {}
-        queue = [(flat, cpu, why, (1, 2) if flat == 0 else None) for flat, (cpu, why) in sorted(seeds.items())]
+        queue = [(flat, cpu, why, self.reset if flat == 0 else None) for flat, (cpu, why) in sorted(seeds.items())]
         for flat, _cpu, _why, m in queue:
             if m is not None:
                 f.entered.setdefault(flat, set()).add(m)
@@ -188,13 +167,10 @@ class Tracer:
             f.starts.setdefault(flat, (cpu, why))
             # a slot's bank holds inside a function only when everything that enters it agrees on it
             entries = prev.get(flat, set()) | ({mapping} if mapping is not None else set())
-            s1, s2 = (1, 2) if not self.mapper else _agreed(entries) if entries else self.unknown
-            for cflat, ccpu, m, how in self._trace(flat, cpu, State(s1, s2, ARG)):
+            context = join(entries) if entries else entry_state(flat, cpu, self.size)
+            for cflat, ccpu, m, how in self._trace(flat, cpu, State(context, ARG)):
                 f.entered.setdefault(cflat, set()).add(m)
                 queue.append((cflat, ccpu, how, m))
-
-    def _slot_value(self, val):
-        return val & self.mask if isinstance(val, int) else None
 
     def _returning(self) -> None:
         """A function returns when a path of it does: a return, or a tail jump to a function that returns or to where
@@ -219,11 +195,11 @@ class Tracer:
         k = bisect.bisect_right(self.data_spans, (flat, 1 << 30)) - 1
         return k >= 0 and self.data_spans[k][0] <= flat < sum(self.data_spans[k])
 
-    def _trace(self, entry: int, entry_cpu: int, st: State) -> list[tuple[int, int, tuple, str]]:
+    def _trace(self, entry: int, entry_cpu: int, st: State) -> list[tuple[int, int, BusState, str]]:
         """Follow one function; returns the functions it calls or jumps to: (flat, cpu, the banks mapped then,
         "call" | "jump")."""
         f, data, size = self.found, self.data, self.size
-        out: list[tuple[int, int, tuple, str]] = []
+        out: list[tuple[int, int, BusState, str]] = []
         tails = f.tails.setdefault(entry, set())
         work = [(entry, entry_cpu, st)]
         visited: set[int] = set()
@@ -231,6 +207,8 @@ class Tracer:
         while work:
             flat, cpu, st = work.pop()
             while flat not in visited and 0 <= flat < size and not self.in_data(flat):
+                if self.model.resolve(cpu, st.mapping).rom_offset != flat:
+                    break
                 visited.add(flat)
                 text, ln = _decode(data, flat, cpu)
                 if text.startswith("db "):
@@ -241,26 +219,25 @@ class Tracer:
                 kind, target = z80.flow(text)
                 # Device writes select banks and also write WRAM. WRAM aliases never select a bank.
                 slot_reg, val = None, None
-                if (m := _LD_MEM_A.match(text)) and int(m.group(1), 16) in MAPPER:
+                if m := _LD_MEM_A.match(text):
                     slot_reg, val = int(m.group(1), 16), st.a
-                elif text == "ld (hl), a" and st.hl in MAPPER:
+                elif text == "ld (hl), a" and st.hl is not None:
                     slot_reg, val = st.hl, st.a
-                elif (m := _LD_HLP_N.match(text)) and st.hl in MAPPER:
+                elif (m := _LD_HLP_N.match(text)) and st.hl is not None:
                     slot_reg, val = st.hl, int(m.group(1), 16)
                 if slot_reg is not None:
-                    slot = MAPPER[slot_reg]
-                    if not (slot == 1 and val == 1) and not (slot == 0 and val == 0):  # (power-on banks: not paging)
-                        f.slot_writes[slot] = f.slot_writes.get(slot, 0) + 1
-                    if val == ARG:
-                        f.switchers.setdefault(entry, slot)
-                    self._map(st, slot, val)
-                    st.mem[wram_address(slot_reg)] = val
-                elif (m := _LD_MEM_A.match(text)) and 0xC000 <= int(m.group(1), 16) < 0x10000:
-                    st.mem[wram_address(int(m.group(1), 16))] = st.a  # (a bank kept in RAM, say)
-                elif text == "ld (hl), a" and st.hl is not None and st.hl >= 0xC000:
-                    st.mem[wram_address(st.hl)] = st.a
-                elif (m := _LD_HLP_N.match(text)) and st.hl is not None and st.hl >= 0xC000:
-                    st.mem[wram_address(st.hl)] = int(m.group(1), 16)
+                    if self.mapper and slot_reg in MAPPER:
+                        slot = MAPPER[slot_reg]
+                        if not (slot == 1 and val == 1) and not (slot == 0 and val == 0):
+                            f.slot_writes[slot] = f.slot_writes.get(slot, 0) + 1
+                        if val == ARG:
+                            f.switchers.setdefault(entry, slot)
+                    st.mapping = self.model.write(st.mapping, slot_reg, val if type(val) is int else None)
+                    if (alias := wram_address(slot_reg)) is not None:
+                        if self.model.resolve(slot_reg, st.mapping).space == "wram":
+                            st.mem[alias] = val
+                        else:
+                            st.mem.pop(alias, None)
                 if text.startswith("push "):
                     pushes += 1
                     reg = text[5:]
@@ -273,38 +250,38 @@ class Tracer:
                     if st.stack and isinstance(st.stack[-1], int):
                         computed = st.stack.pop()
                     to = st.hl if text == "jp (hl)" else None
-                    tflat = resolve(to, flat, cpu, st.s1, st.s2, size, st.s0) if to is not None else None
+                    tflat = self.model.resolve(to, st.mapping).rom_offset if to is not None else None
                     if to is None:
                         f.dispatchers.add(entry)  # to an address it worked out: a dispatcher
                         base = st.fresh(st.base)
                         if base is not None and computed is None:  # a table it indexed itself
-                            f.indexed.append((flat, cpu, base, (st.s1, st.s2), st.fresh(st.index) or st.fresh(st.bound)))
+                            f.indexed.append((flat, cpu, base, st.mapping, st.fresh(st.index) or st.fresh(st.bound)))
                     elif tflat is not None and tflat != entry:
-                        out.append((tflat, to, (st.s1, st.s2), "call" if computed is not None else "jump"))
+                        out.append((tflat, to, st.mapping, "call" if computed is not None else "jump"))
                     if computed is None:
                         tails.add(tflat if to is not None else None)
                 elif text == "ret" and st.stack and isinstance(st.stack[-1], int) and pushes:
                     to = st.stack.pop()  # `push rr / ret`: a jump to what it pushed, not a return
-                    tflat = resolve(to, flat, cpu, st.s1, st.s2, size, st.s0)
+                    tflat = self.model.resolve(to, st.mapping).rom_offset
                     if tflat is not None and tflat != entry:
-                        out.append((tflat, to, (st.s1, st.s2), "jump"))
-                        f.jumps.append((entry, tflat, to, (st.s1, st.s2)))
+                        out.append((tflat, to, st.mapping, "jump"))
+                        f.jumps.append((entry, tflat, to, st.mapping))
                     tails.add(tflat)
                     break
                 elif kind in ("ret", "cret"):
                     f.returns.add(entry)
                 if target is not None and kind in ("call", "jump", "cjump"):
-                    tflat = resolve(target, flat, cpu, st.s1, st.s2, size, st.s0)
+                    tflat = self.model.resolve(target, st.mapping).rom_offset
                     if tflat is not None:
                         inside = (tflat // BANK == entry // BANK and target >> 14 == cpu >> 14 and tflat != entry
                                   and tflat not in self.known)
                         if kind != "call" and tflat != entry:  # every jump: the next round sees which are far
-                            f.jumps.append((entry, tflat, target, (st.s1, st.s2)))
+                            f.jumps.append((entry, tflat, target, st.mapping))
                         if kind == "call" or not inside:
                             if tflat != entry:  # a call, or a jump to another function: a tail call
-                                out.append((tflat, target, (st.s1, st.s2), "call" if kind == "call" else "jump"))
+                                out.append((tflat, target, st.mapping, "call" if kind == "call" else "jump"))
                                 if st.hl is not None:
-                                    f.with_hl.append((flat, cpu, st.hl, (st.s1, st.s2), tflat, st.fresh(st.bound)))
+                                    f.with_hl.append((flat, cpu, st.hl, st.mapping, tflat, st.fresh(st.bound)))
                                 if kind == "jump":
                                     tails.add(tflat)
                         else:  # a branch within the function
@@ -330,7 +307,7 @@ class Tracer:
                 if kind != "call":
                     self._registers(st, text)
                 if computed is not None:  # back from the computed call: on at the address it pushed
-                    back = resolve(computed, flat, cpu, st.s1, st.s2, size, st.s0)
+                    back = self.model.resolve(computed, st.mapping).rom_offset
                     if back is not None and back // BANK == entry // BANK:
                         nxt = st.copy()
                         nxt.a, nxt.hl, nxt.de, nxt.bc = None, None, None, None
@@ -341,18 +318,21 @@ class Tracer:
                 if kind in ("cjump", "cret"):  # what the condition says on the way on (`cp 5 / jr nc`: A < 5)
                     self._condition(st, text, taken=False)
                 nxt = flat + max(1, ln) + skip
+                next_cpu = cpu + max(1, ln) + skip
+                mapped = self.model.resolve(next_cpu, st.mapping).rom_offset
+                if mapped is None:
+                    break
+                if mapped != nxt:
+                    out.append((mapped, next_cpu, st.mapping, "jump"))
+                    tails.add(mapped)
+                    break
                 if nxt // BANK != flat // BANK:
                     break  # ran off the end of the bank
-                flat, cpu = nxt, cpu + max(1, ln) + skip
+                flat, cpu = mapped, next_cpu
         return out
 
     def _map(self, st: State, slot: int, val) -> None:
-        if slot == 0:
-            st.s0 = self._slot_value(val)
-        elif slot == 1:
-            st.s1 = self._slot_value(val)
-        else:
-            st.s2 = self._slot_value(val)
+        st.mapping = self.model.write(st.mapping, 0xFFFD + slot, val if type(val) is int else None)
 
     def _branch(self, st: State, text: str) -> State:
         out = st.copy()
@@ -404,9 +384,9 @@ class Tracer:
             st.a = 0
         elif m := _LD_A_MEM.match(text):
             addr = int(m.group(1), 16)
-            st.a = st.mem.get(wram_address(addr))
+            st.a = st.mem.get(wram_address(addr)) if self.model.resolve(addr, st.mapping).space == "wram" else None
         elif text == "ld a, (hl)" and st.hl is not None and st.hl >= 0xC000:
-            st.a = st.mem.get(wram_address(st.hl))
+            st.a = st.mem.get(wram_address(st.hl)) if self.model.resolve(st.hl, st.mapping).space == "wram" else None
         elif _WRITES_A.match(text):
             st.a = None
         if m := _LD_RR_NN.match(text):
@@ -457,13 +437,12 @@ class Tracer:
             out.update({k: v for k, v in self._table(from_flat, from_cpu, table, slots, bound).items() if k not in out})
         return out
 
-    def _table(self, from_flat: int, from_cpu: int, table: int, slots: tuple, bound: tuple | None) -> dict:
+    def _table(self, from_flat: int, from_cpu: int, table: int, slots: BusState, bound: tuple | None) -> dict:
         """The functions a table holds, in the bank its reader had mapped: words, or `jp` instructions (a table of
         jumps, three bytes each). With the index bounded exactly (`cp 5 / jr nc`), that many entries (one that
         isn't code is a gap: no handler there); else up to the first that doesn't read like a function's start, and
         no more than a mask allows (`and $7f`)."""
-        s1, s2 = slots
-        tflat = resolve(table, from_flat, from_cpu, s1, s2, self.size)
+        tflat = self.model.resolve(table, slots).rom_offset
         out: dict[int, tuple[int, str]] = {}
         if tflat is None:
             return out
@@ -490,7 +469,7 @@ class Tracer:
                 break
             if not bound and len(out) >= 4 and lowest is not None and table < word < lowest:
                 break  # into the table's own bytes, or what follows them: past the table's end
-            cflat = resolve(word, from_flat, from_cpu, s1, s2, self.size)
+            cflat = self.model.resolve(word, slots).rom_offset
             if cflat is None:
                 if bound:
                     continue

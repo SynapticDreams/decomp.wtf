@@ -14,6 +14,7 @@ from .test_sms import make_rom
 
 WHY = "the menu code at 00:0100 reads these with ld a,(hl) in a loop"
 CODE = {
+    **{at: b"\xc9" for at in (*range(8, 0x40, 8), 0x66)},  # independent interrupt paths return
     0x0000: bytes.fromhex("c30001"),
     0x0100: bytes.fromhex("cd0003" "c3"  # call $0300 · db $c3   (the byte it reads: as code, `jp $053e`)
                           "3e05" "32ffff" "cd0080"  # ld a,5 · ld ($ffff),a · call $8000   (bank 5)

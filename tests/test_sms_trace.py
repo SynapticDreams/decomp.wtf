@@ -15,7 +15,8 @@ TO_BANK5 = "3e05" "32ffff" "cd0080"  # ld a,5 · ld ($ffff),a · call $8000: rea
 
 
 def starts(code: dict) -> dict:
-    return sms.candidates(make_rom(size=SIZE, code={0x0000: bytes.fromhex("c30001"), **code}))[0]
+    vectors = {at: b"\xc9" for at in sms.VECTORS if at}  # interrupt paths must not fall into reset-only setup
+    return sms.candidates(make_rom(size=SIZE, code={**vectors, 0x0000: bytes.fromhex("c30001"), **code}))[0]
 
 
 def test_a_function_that_ends_in_a_jump_to_one_that_returns_returns():
