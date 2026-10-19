@@ -99,7 +99,9 @@ for byte, with names, comments and constants instead of addresses. Use only the 
    what it takes and returns. guide("asm") explains each check.
 3. Accepted, it's documented under its label's name. Before moving on, rename_symbol what you worked out about
    the names it uses, and add_note (no function) for what every agent here should know about this game.
-4. When you're stuck on a routine, release_function with precise notes (what's left, what you suspect) and
+4. For a structural blocker (mapping evidence, wrong boundary or missing target), use defer_documentation
+   with precise evidence and what must change; this keeps it out of the queue until evidence changes or a person resumes it.
+   For ordinary source work, release_function with precise notes (what's left, what you suspect) and
    claim the next. One that turns out not to be a routine: correct_split or flag_for_review.
 
 Be brief in your messages: work, don't narrate.
@@ -271,6 +273,8 @@ HANDLERS: dict[str, Callable[..., str]] = {
         else net.get_function(function, slug, agent, int(start_line or 0))),
     "compile_and_diff": lambda net, agent, slug, function, source: _compile(net, agent, slug, function, source),
     # (`text` and `notes` both: models spell the note either way, and a refused call is a wasted turn)
+    "defer_documentation": lambda net, agent, slug, function, reason: json.dumps(
+        net.assembly.change(slug, function, reason=reason, agent=agent)),
     "release_function": lambda net, agent, slug, function, notes="", text="": net.release(agent, function, notes or text, slug),
     "get_context": lambda net, agent, slug, function="": net.get_context(slug, function or None),
     "edit_context": lambda net, agent, slug, old, new, message, function="":
@@ -302,7 +306,7 @@ HANDLERS: dict[str, Callable[..., str]] = {
         net.forks.split_file(agent, _fork(net, slug, "split_file"), path, at, new_name, data),
 }
 
-ROM_ONLY = {"get_context", "edit_context", "rename_symbol", "split_function", "merge_function", "correct_split", "inspect_corrections", "annotate_symbol", "inspect_annotations", "probe_compiler", "explain_difference"}
+ROM_ONLY = {"defer_documentation", "get_context", "edit_context", "rename_symbol", "split_function", "merge_function", "correct_split", "inspect_corrections", "annotate_symbol", "inspect_annotations", "probe_compiler", "explain_difference"}
 FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file"}
 
 
@@ -405,6 +409,12 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         built with the project's build system and diffed with objdiff. Several functions ("a, b, c"): send all
         their definitions in one source; each is judged on its own."""
         return await run(ctx, "compile_and_diff", function=function, source=source)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def defer_documentation(ctx: Context, function: str, reason: str) -> str:
+        """Defer assembly work needing mapping evidence, target names or layout repair, releasing your claim.
+        Explain the blocker and what must change. Ordinary source work should use release_function instead."""
+        return await run(ctx, "defer_documentation", function=function, reason=reason)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def release_function(ctx: Context, function: str, notes: str = "", text: str = "") -> str:

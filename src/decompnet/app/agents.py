@@ -961,8 +961,8 @@ class Manager:
     @staticmethod
     def _asm_left(net, proj) -> int:
         """Hand-written routines of a project still to document (the assembly track)."""
-        return sum(1 for r in net.store.all("SELECT status, meta FROM functions WHERE project_id=? AND status='asm'",
-                                            proj["id"]) if net.asm_track(r))
+        return sum(1 for r in net.store.all("SELECT * FROM functions WHERE project_id=? AND status='asm'",
+                                            proj["id"]) if net.assembly.eligible(proj, r))
 
     def _left(self, slug: str, track: str = "") -> int:
         proj = self.net.project_row(slug)
@@ -1243,6 +1243,14 @@ class Manager:
             fn = self.net._function(pin, s.slug)
         except Exception:
             return f"{pin} isn't in the project any more"
+        if s.options.get("track") == "asm":
+            if fn["status"] == "documented":
+                return f"{pin} documented"
+            if not self.net.assembly.eligible(self.net.project_row(s.slug), fn):
+                return f"{pin} is deferred or no longer awaiting documentation"
+            if s.pin_stall >= (int(s.options.get("stall") or 0) or PIN_STALL_RUNS):
+                return f"no progress in {s.pin_stall} runs"
+            return ""
         if fn["status"] == "matched":
             return f"{pin} matched 🎉"
         if fn["status"] != "open":
@@ -1285,7 +1293,7 @@ class Manager:
         if fn["status"] == "open" and fn["best_source"] and s.options.get("polish"):
             self._polish(s, fn)
             fn = self.net._function(pin, s.slug)
-        now = fn["best_score"] if fn["status"] == "open" else 0
+        now = fn["best_score"] if fn["status"] in ("open", "asm") else 0
         gained = now is not None and (before is None or now < before)
         s.pin_stall = 0 if gained else s.pin_stall + 1
 
@@ -1344,6 +1352,9 @@ class Manager:
 
     def _prompt(self, s: Session) -> str:
         ov = self.net.overview(s.slug)
+        if s.options.get("pin") and s.options.get("track") == "asm":
+            return (tools.ASM_PROMPT.format(title=ov["title"], count=1, **tools.asm_words(ov.get("platform") or ""))
+                    + f"\nWork only on {s.options['pin']}. Stop when documented, deferred, or no longer eligible.\n")
         if s.options.get("pin") and ov.get("kind") != "fork":
             return tools.PIN_PROMPT.format(title=ov["title"], name=s.options["pin"], compiler_guide=compiler_guide(ov))
         if ov.get("kind") == "fork":
@@ -1885,6 +1896,9 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
         "compile_and_diff": ("Compile C for the function, link it at its address and diff against the ROM. "
                              "Score 0 = matched. Several functions: names comma-separated, all definitions in source.",
                              s(function=st("function name, or several: a, b, c", True), source=st("C source", True))),
+        "defer_documentation": ("Defer an assembly routine needing external evidence or layout repair; release its claim. "
+                                "It becomes eligible when evidence changes or the user resumes it.",
+                                s(function=st("function", True), reason=st("what evidence or repair is needed", True))),
         "release_function": ("Give up a function with notes for the next agent.",
                              s(function=st("function", True), notes=st("what you tried, what is left", True))),
         "get_context": ("The shared header included in every compile.", s()),

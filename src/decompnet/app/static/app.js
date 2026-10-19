@@ -703,7 +703,7 @@ async function poll(first) {
     const matches = [];
     for (const ev of live.events) {
       S.e = Math.max(S.e, ev.id);
-      if (["match", "split", "merge", "rename", "reopen", "review", "documented", "reviewed"].includes(ev.kind)) mapDirty = true;
+      if (["match", "split", "merge", "rename", "reopen", "review", "documented", "reviewed", "assembly_queue"].includes(ev.kind)) mapDirty = true;
       if (!fresh(ev)) continue;
       if (ev.kind === "match") {
         S.flash.set(ev.detail, performance.now());
@@ -917,7 +917,7 @@ function renderCompilerNotice(ov) {
 
 function fnCounts() {
   const c = { matched: 0, working: 0, tried: 0, open: 0, asm: 0, documented: 0 };
-  for (const f of S.map) { const k = fnState(f); c[k === "review" ? "asm" : k]++; }
+  for (const f of S.map) { const k = fnState(f); c[["review", "deferred"].includes(k) ? "asm" : k]++; }
   return c;
 }
 
@@ -2226,7 +2226,7 @@ function fnBadge(d = S.fnDetail) {
   const st = $("fnStatus");
   st.className = "badge " + (d.status === "matched" ? "matched" : d.status === "documented" ? "documented" : working ? "working" : "");
   st.textContent = d.status === "matched" ? "matched" : d.status === "documented" ? (d.sample ? "documented · look it over" : "documented")
-    : d.status === "asm" ? (d.review ? "needs review" : d.track ? "to document" : "set aside") : working ? `${working.agent} working` : d.best != null ? `best ${pctText(pctOf(d.best, d.insns))}` : "not started";
+    : d.status === "asm" ? (d.assembly_work?.deferred ? "documentation deferred" : d.review ? "needs review" : d.track ? "to document" : "set aside") : working ? `${working.agent} working` : d.best != null ? `best ${pctText(pctOf(d.best, d.insns))}` : "not started";
   st.title = d.status === "asm" ? (d.why || "") : d.status === "documented" ? "hand-written: documented in assembly that rebuilds it byte for byte" : "";
 }
 
@@ -2263,11 +2263,43 @@ async function refreshFn(first) {
     $("fnPin").classList.toggle("on", pinned);
     $("fnPin").textContent = pinned ? "★ Next (on)" : "★ Next";
     $("fnPin").onclick = () => togglePrio(d.name, !pinned).then(() => refreshFn(false));
-    $("fnWork").hidden = S.ov.kind === "fork" || d.status !== "open" || (S.ov.room || {}).role === "guest";
-    $("fnWork").onclick = () => openPinHelper(d.name);
+    const asm = d.status === "asm" && d.track;
+    const deferred = !!d.assembly_work?.deferred;
+    const guestHere = (S.ov.room || {}).role === "guest";
+    const held = S.claims.find(c => c.name === d.name);
+    const otherHeld = held && held.agent !== "you";
+    $("fnWork").hidden = S.ov.kind === "fork" || !(d.status === "open" || asm) || guestHere;
+    $("fnWork").textContent = asm ? "Document this function" : "Work on this";
+    $("fnWork").title = asm ? "One helper documents this routine in assembly" : "One helper works on this C function";
+    $("fnWork").disabled = held || deferred;
+    $("fnWork").onclick = () => openPinHelper(d.name, asm);
+    $("fnDefer").hidden = !asm || deferred || guestHere;
+    $("fnDefer").disabled = !!otherHeld;
+    $("fnResume").hidden = !asm || !deferred || guestHere;
+    const queue = async body => {
+      const slug = S.slug;
+      await api("/api/assembly/queue", { method: "POST", body: { slug, function: d.name, ...body } });
+      if (S.slug === slug && S.fn === d.name) await refreshFn(false);
+      poll(false);
+    };
+    $("fnResume").onclick = () => queue({ resume: true }).catch(e => toast(esc(e.message), "err"));
+    $("fnDefer").onclick = () => {
+      const body = dialog("Defer documentation", `<p>Explain the evidence or layout repair this routine needs. Helpers will skip it until that evidence changes or you resume it.</p>
+        <label class="field"><span>Blocker and next step</span><textarea id="asmDeferReason" maxlength="1000"></textarea></label>
+        <button class="primary" id="asmDeferGo" type="button">Defer routine</button>`);
+      body.querySelector("#asmDeferGo").onclick = async e => {
+        e.target.disabled = true;
+        try { await queue({ reason: body.querySelector("#asmDeferReason").value }); $("dialog").hidden = true; }
+        catch (error) { toast(esc(error.message), "err"); e.target.disabled = false; }
+      };
+    };
+    window.AssemblyWorkUI.render($("fnAssemblyWork"), d);
+    $("tryBtn").disabled = deferred || !!otherHeld;
+    $("tryBtn").textContent = asm ? "Validate assembly" : "Compile and compare";
+    $("fnEdit").setAttribute("aria-label", asm ? "The function's assembly" : "The function's C");
     // a set-aside function back to agents: a rule was wrong about it, or a review found it worth doing
     $("fnGiveBack").hidden = d.status !== "asm" || (S.ov.room || {}).role === "guest";
-    $("fnGiveBack").title = `${d.review ? "Set aside for review" : "Set aside"}${d.why ? `: ${d.why}` : ""}. Give it back to agents: the set-aside rules leave it alone after.`;
+    $("fnGiveBack").title = `${d.review ? "Set aside for review" : "Set aside"}${d.why ? `: ${d.why}` : ""}. Move this routine to C matching; the set-aside rules leave it alone after.`;
     $("fnGiveBack").onclick = async () => {
       try {
         await api("/api/give_back", { method: "POST", body: { slug: S.slug, function: d.name } });
@@ -2361,13 +2393,15 @@ async function tryIt() {
     const r = await api("/api/try", { method: "POST", body: { slug: S.slug, name, source } });
     if (r.matched) {
       S.myClaim = null;
-      msg.className = "try-msg ok"; msg.textContent = "Byte-identical. Saved as a match, credited to you.";
-      toast(`<code>${esc(name)}</code>&nbsp;matched by you`, "match");
+      if (r.assembly && r.name) S.fn = r.name;
+      msg.className = "try-msg ok"; msg.textContent = S.fnDetail?.track ? "Assembly checks passed. Saved as documented." : "Byte-identical. Saved as a match, credited to you.";
+      toast(`<code>${esc(r.name || name)}</code>&nbsp;${r.assembly ? "documented" : "matched"} by you`, "match");
     } else {
       S.myClaim = name;
       msg.className = "try-msg" + (r.score == null ? " bad" : "");
       msg.textContent = r.score == null ? "It didn't compile:" : (r.text.split("\n")[0] || `score ${r.score}`);
       if (r.score == null) msg.textContent += "\n" + r.text.split("\n").slice(1, 12).join("\n");
+      if (r.assembly) { S.myClaim = null; msg.textContent = r.text; }
     }
     S.editDirty = false;
     S.diffKey = null;
@@ -2389,8 +2423,8 @@ function giveBack(next) {
 function renderFnChart(d) {
   const wrap = $("fnChartWrap"), svg = $("fnChart");
   const pts = d.scores;
-  wrap.hidden = !pts.length;
-  if (!pts.length) return;
+  wrap.hidden = !pts.length || d.track || d.status === "documented";
+  if (wrap.hidden) return;
   const w = Math.max(300, svg.clientWidth || 600), h = 92, padL = 34, padR = 10, padT = 8, padB = 16;
   svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
   const n = pts.length;
@@ -2506,24 +2540,24 @@ $("fnNext").onclick = () => stepFn(1);
 const L = { q: "", filter: "all", sort: "i", dir: 1, limit: 200, rows: [], hideAsm: true };
 try { L.hideAsm = localStorage.getItem("fnHideAsm") !== "0"; } catch { /* no storage: the default */ }
 const FILTERS = [["all", "All"], ["open", "To do"], ["working", "Working"], ["tried", "Tried"], ["matched", "Matched"], ["review", "Needs review"],
-  ["document", "To document"], ["documented", "Documented"], ["lookover", "Look over"]];
+  ["document", "To document"], ["deferred", "Deferred"], ["documented", "Documented"], ["lookover", "Look over"]];
 // "review": set aside by an agent for a person to look at (flag_for_review), shown even when assembly is hidden.
 // The assembly track (Game Boy): "document" is a hand-written routine still to document, "lookover" a documented one
 // picked for a person to look over.
-const fnState = (f) => (f.status === "matched" ? "matched" : f.status === "documented" ? "documented" : f.status === "asm" ? (f.review ? "review" : "asm") : f.status === "working" ? "working" : f.best != null ? "tried" : "open");
-const STATE_RANK = { working: 0, tried: 1, open: 2, review: 3, documented: 4, matched: 4, asm: 5 };
+const fnState = (f) => (f.status === "matched" ? "matched" : f.status === "documented" ? "documented" : f.status === "asm" ? (f.deferred ? "deferred" : f.review ? "review" : "asm") : f.status === "working" ? "working" : f.best != null ? "tried" : "open");
+const STATE_RANK = { working: 0, tried: 1, open: 2, review: 3, documented: 4, matched: 4, asm: 5, deferred: 6 };
 const inFilter = (f, k) => (k === "document" ? fnState(f) === "asm" && f.track : k === "lookover" ? f.status === "documented" && f.sample : fnState(f) === k);
 
 function renderList() {
   if (!S.map.length || S.tab !== "functions") return;
-  const counts = { all: S.map.length, open: 0, working: 0, tried: 0, matched: 0, asm: 0, review: 0, documented: 0, document: 0, lookover: 0 };
+  const counts = { all: S.map.length, open: 0, working: 0, tried: 0, matched: 0, asm: 0, review: 0, documented: 0, document: 0, lookover: 0, deferred: 0 };
   for (const f of S.map) { counts[fnState(f)]++; if (inFilter(f, "document")) counts.document++; if (inFilter(f, "lookover")) counts.lookover++; }
   if (L.hideAsm) counts.all -= counts.asm;
   $("fnHideAsm").checked = L.hideAsm;
   $("fnHideAsmN").textContent = counts.asm ? ` (${counts.asm.toLocaleString()})` : "";
   $("fnHideAsmBox").hidden = !counts.asm;
-  if (["review", "document", "documented", "lookover"].includes(L.filter) && !counts[L.filter]) L.filter = "all";
-  $("fnFilter").innerHTML = FILTERS.filter(([k]) => !["review", "document", "documented", "lookover"].includes(k) || counts[k]).map(([k, label]) => `<button type="button" role="radio" aria-checked="${L.filter === k}" class="${L.filter === k ? "on" : ""}" data-filter="${k}">${label}<span>${counts[k].toLocaleString()}</span></button>`).join("");
+  if (["review", "document", "deferred", "documented", "lookover"].includes(L.filter) && !counts[L.filter]) L.filter = "all";
+  $("fnFilter").innerHTML = FILTERS.filter(([k]) => !["review", "document", "deferred", "documented", "lookover"].includes(k) || counts[k]).map(([k, label]) => `<button type="button" role="radio" aria-checked="${L.filter === k}" class="${L.filter === k ? "on" : ""}" data-filter="${k}">${label}<span>${counts[k].toLocaleString()}</span></button>`).join("");
   const q = L.q.trim().toLowerCase();
   let rows = S.map.filter((f) => (L.filter === "all" ? !(L.hideAsm && fnState(f) === "asm") : inFilter(f, L.filter))
     && (!q || f.name.toLowerCase().includes(q) || hex8(f.vram).toLowerCase().includes(q) || (f.unit || "").toLowerCase().includes(q)));
@@ -2536,12 +2570,12 @@ function renderList() {
   const fork = S.ov && S.ov.kind === "fork";
   $("fnRows").innerHTML = rows.slice(0, L.limit).map((f) => {
     const st = fnState(f), p = pctOf(f.best, f.insns);
-    const best = st === "matched" || st === "documented" ? `<span class="ok">100%</span>` : p == null ? `<span class="dim">–</span>` : pctText(p);
-    const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">matched</span>` : st === "documented" ? `<span class="st documented" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">documented${f.sample ? " · look over" : ""}</span>` : st === "review" ? `<span class="st review" title="${esc((f.review_by ? f.review_by + ": " : "") + (f.why || ""))}">needs review</span>` : st === "asm" ? `<span class="st" title="${esc(f.why || "hand-written assembly: no C compiles to it")}">${/padding|data|its end isn't known/.test(f.why || "") ? "not code" : f.track ? "to document" : "assembly"}</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
+    const best = f.track ? (f.assembly_bytes === true ? "Bytes exact" : f.attempts ? "Checks pending" : "–") : st === "matched" || st === "documented" ? `<span class="ok">100%</span>` : p == null ? `<span class="dim">–</span>` : pctText(p);
+    const status = st === "matched" ? `<span class="st matched" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">matched</span>` : st === "documented" ? `<span class="st documented" title="${esc(f.matched_by ? "by " + f.matched_by : "")}">documented${f.sample ? " · look over" : ""}</span>` : st === "deferred" ? `<span class="st review">deferred</span>` : st === "review" ? `<span class="st review" title="${esc((f.review_by ? f.review_by + ": " : "") + (f.why || ""))}">needs review</span>` : st === "asm" ? `<span class="st" title="${esc(f.why || "hand-written assembly: no C compiles to it")}">${/padding|data|its end isn't known/.test(f.why || "") ? "not code" : f.track ? "to document" : "assembly"}</span>` : st === "working" ? `<span class="st working">${esc(f.agent || "working")}</span>`
       : st === "tried" ? `<span class="st tried">tried</span>` : `<span class="st">to do</span>`;
     const pinned = (S.ov?.priority || []).includes(f.name);
     // ☆/★ right in the row: pin many functions for the agents without opening each one (not for done or git-project ones)
-    const star = fork || st === "matched" || st === "documented" || st === "asm" || st === "review" ? (pinned ? `<span class="star" title="agents take it next">★</span>` : "")
+    const star = fork || st === "matched" || st === "documented" || st === "asm" || st === "review" || st === "deferred" ? (pinned ? `<span class="star" title="agents take it next">★</span>` : "")
       : `<button type="button" class="star-btn ${pinned ? "on" : ""}" data-star="${esc(f.name)}" title="${pinned ? "Remove from Next in line" : "Agents take it next (★ Next in line)"}">${pinned ? "★" : "☆"}</button>`;
     return `<tr data-fn="${esc(f.name)}" class="${S.fn === f.name ? "sel" : ""}" tabindex="0"><td class="mono dim">${fork ? esc(f.unit || "") : hex8(f.vram)}</td>
       <td class="mono name">${star}${esc(f.name)}</td><td class="r mono">${f.insns.toLocaleString()}</td><td class="r mono">${best}</td>
@@ -2639,7 +2673,7 @@ function wireCopies(root) {
    their own loop, a fresh session per run. Either stops at a match, or when it stops getting closer. */
 const LEAN_NAME = { one: "one version per call", several: "several versions per call", both: "one and several per call in turn" };
 
-function openPinHelper(name) {
+function openPinHelper(name, assembly = false) {
   const eps = S.st.settings.endpoints || [];
   const kinds = (S.st.agents || []).filter((a) => a.installed && a.id !== "api");
   const last = S.st.settings.pin_helper || {};
@@ -2650,7 +2684,7 @@ function openPinHelper(name) {
     return;
   }
   const pick = choices.find((c) => c.key === last.who) || choices[0];
-  const body = dialog(`Work on ${name} until it matches`, `<p class="muted">One helper on this function only. Each try starts from the closest version so far; it stops at a match, or when it stops getting closer, and leaves a note with what it tried.</p>
+  const body = dialog(assembly ? `Document ${name}` : `Work on ${name} until it matches`, `<p class="muted">${assembly ? "One helper documents this routine in assembly. It stops when documented, deferred, or no further progress is made." : "One helper on this function only. Each try starts from the closest version so far; it stops at a match, or when it stops getting closer, and leaves a note with what it tried."}</p>
     <label class="field"><span>Helper</span><select id="phWho">${choices.map((c) => `<option value="${esc(c.key)}" ${c === pick ? "selected" : ""}>${esc(c.label)}</option>`).join("")}</select></label>
     <div id="phSetup" class="group">
       <label class="field"><span>Model</span><select id="phModel"></select></label>
@@ -2706,9 +2740,10 @@ function openPinHelper(name) {
     $("phMethod").innerHTML = Object.entries(opts).map(([k, v]) => `<option value="${k}" ${k === keep ? "selected" : ""}>${v}</option>`).join("");
   };
   const sync = () => {
-    const c = which(), on = !!(c.ep || c.lean);
+    const c = which(), on = !assembly && !!(c.ep || c.lean);
     $("phLean").hidden = !on;
     $("phEscField").hidden = !c.ep;
+    $("phPolish").closest("label").hidden = assembly;
     $("phNField").hidden = $("phMethod").value === "one" || !lean();
     const calls = on && lean();
     $("phUnit").textContent = calls ? "calls" : "runs";
@@ -2731,17 +2766,19 @@ function openPinHelper(name) {
   sync();
   body.querySelector("#phGo").onclick = async () => {
     const c = which(), go = $("phGo");
-    const options = { pin: name, stall: Number($("phStall").value) || 0, polish: $("phPolish").checked };
+    const options = { pin: name, stall: Number($("phStall").value) || 0, polish: !assembly && $("phPolish").checked };
+    if (assembly) options.track = "asm";
     let kind = c.kind;
     if (c.ep) {
       kind = "api";
-      Object.assign(options, { endpoints: [c.ep], lean: $("phMethod").value, variants: Number($("phN").value) || 3 });
+      options.endpoints = [c.ep];
+      if (!assembly) Object.assign(options, { lean: $("phMethod").value, variants: Number($("phN").value) || 3 });
       if ($("phEsc").value) options.escalate = $("phEsc").value;
     } else {
       const cur = setupOf(c.kind);
       if (cur.model) options.model = cur.model;
       if (cur.effort && !$("phEffortField").hidden) options.effort = cur.effort;
-      if (c.lean && lean()) Object.assign(options, { lean: $("phMethod").value, variants: Number($("phN").value) || 3 });
+      if (!assembly && c.lean && lean()) Object.assign(options, { lean: $("phMethod").value, variants: Number($("phN").value) || 3 });
     }
     go.disabled = true;
     try {

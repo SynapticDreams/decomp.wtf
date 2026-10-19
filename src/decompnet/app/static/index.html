@@ -499,7 +499,9 @@
       <div class="row">
         <span class="badge" id="fnStatus"></span>
         <button class="ghost small-btn" id="fnWork" type="button" title="One helper on this function only, getting it closer until it matches">Work on this</button>
-        <button class="ghost small-btn" id="fnGiveBack" type="button" hidden>Back to agents</button>
+        <button class="ghost small-btn" id="fnGiveBack" type="button" hidden>Move to C queue</button>
+        <button class="ghost small-btn" id="fnDefer" type="button" hidden>Defer documentation…</button>
+        <button class="ghost small-btn" id="fnResume" type="button" hidden>Resume documentation</button>
         <button class="ghost small-btn" id="fnLooksRight" type="button" hidden>Looks right</button>
         <button class="ghost small-btn" id="fnSendBack" type="button" hidden>Send back…</button>
         <button class="ghost small-btn pin" id="fnPin" type="button" title="Agents take this function next">★ Next</button>
@@ -509,6 +511,7 @@
       </div>
     </header>
     <div class="drawer-body">
+      <section id="fnAssemblyWork" aria-label="Assembly validation" hidden></section>
       <div class="fn-chart" id="fnChartWrap"><svg id="fnChart" aria-label="Match per compile"></svg><div class="fn-chart-note" id="fnChartNote"></div></div>
       <div class="fn-tabs">
         <div class="tabs" role="tablist" aria-label="Function view">
@@ -569,6 +572,7 @@
 <script src="/assets/resplit-archive.js"></script>
 <script src="/assets/resplit-history.js"></script>
 <script src="/assets/resplit-inspection.js"></script>
+<script src="/assets/assembly-work.js"></script>
 <script src="/assets/app.js"></script>
 </body>
 </html>
