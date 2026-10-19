@@ -42,6 +42,7 @@ def exported(tmp_path, request):
     rom = tmp_path / f"game.{request.param}"
     rom.write_bytes(make_rom(size=0x20000, region=6 if request.param == "gg" else 4, code=CODE))
     slug = net.import_rom(rom, confirmed=True, log=lambda *_: None)
+    net.sms.configure(slug, "sega", "annotated-original", "The authored fixture specifies Sega cartridge mapping.")
     pid = net.project_row(slug)["id"]
     fn = net.store.one("SELECT * FROM functions WHERE project_id=? AND rom_offset=?", pid, 0x200)
     with net.store.tx() as db:  # documented in assembly, its name the project's
@@ -124,8 +125,28 @@ def test_standalone_build_normalizes_small_copier_inputs(tmp_path, size, region,
     slug = net.import_rom(rom, confirmed=True, name=f"input.{platform}", log=lambda *_: None)
     res = net.export_rom(slug, log=lambda *_: None)
     assert res["identical"], res["log"]
+    assert not res["sms_profile"]["supported"]  # byte reconstruction does not establish the mapper
     out = Path(res["path"])
     (out / f"baserom.{platform}").write_bytes(bytes(512) + rom)
     proc = subprocess.run([sys.executable, "build.py"], cwd=out, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert (out / "build" / f"game.{platform}").read_bytes() == rom
+
+
+def test_export_records_experimental_intent_without_retargeting_original_bytes(exported):
+    net, slug, _res, out = exported
+    before = net.cfg(net.project_row(slug))["rom"]
+    net.sms.configure(slug, "sega", "experimental", "Study modifications separately from original reconstruction.")
+    result = net.export_rom(slug, log=lambda *_: None)
+    assert result["identical"] and not result["exact_original_intent"]
+    manifest = json.loads((out / "build.json").read_text())
+    assert manifest["sms_profile"]["profile"]["variant"] == "experimental"
+    assert net.cfg(net.project_row(slug))["rom"] == before
+
+
+def test_legacy_export_keeps_byte_verification_separate_from_mapping_declaration(exported):
+    net, slug, _res, _out = exported
+    net._update_cfg(slug, lambda cfg: cfg.pop("sms_profile"))
+    result = net.export_rom(slug, log=lambda *_: None)
+    assert result["identical"] and result["documented"] == 1
+    assert result["sms_profile"]["status"] == "legacy" and not result["sms_profile"]["supported"]

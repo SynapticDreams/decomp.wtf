@@ -729,6 +729,14 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             return net.resplit_banked(slug, apply=apply, log=log)
         return {"job": jobs.start("resplit", work)}
 
+    def p_sms_profile(slug, request, data):
+        if request.method == "GET":
+            return net.sms.inspect(slug)
+        if any(s.slug == slug and s.state in ("starting", "working", "waiting") and not s.stop.is_set()
+               for s in manager.sessions.values()):
+            raise NetworkError("stop this project's helpers before changing cartridge mapping")
+        return net.sms.configure(slug, data.get("mapper"), data.get("variant"), data.get("reason"))
+
     def p_open(slug, request, data):
         why = hostenv.open_folder(Path(net.project_row(slug)["root"]))
         return {"ok": why is None, "message": why}
@@ -796,6 +804,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
     routes = {
         "/api/project": (p_overview, ["GET"]),
+        "/api/sms/profile": (p_sms_profile, ["GET", "POST"]),
         "/api/live": (p_live, ["GET"]),
         "/api/function": (lambda s, r, d: net.function_detail(s, r.query_params.get("name", "")), ["GET"]),
         "/api/diff": (lambda s, r, d: net.function_diff(s, r.query_params.get("name", ""),

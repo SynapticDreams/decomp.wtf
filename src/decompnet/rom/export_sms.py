@@ -24,6 +24,7 @@ from ..limits import capped
 from . import sms, sms_asm, sms_hw
 from .export_gb import NOTE_CHARS, NOTES_PER_LABEL, _documented
 from .sms_identity import verify_normalized
+from .sms_profile import describe
 
 LABEL = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")  # a name WLA-DX takes as a label
 WORD = re.compile(r"(?<![.@\w])[A-Za-z_]\w*")
@@ -36,6 +37,9 @@ def export_sms(net, slug: str, out: Path, log=print) -> dict:
     rom_path = Path(proj["root"]) / cfg["rom"]["file"]
     image = sms.strip_copier_header(rom_path.read_bytes())
     verify_normalized(image, cfg["rom"].get("identity"), cfg["rom"].get("sha1"))
+    profile = describe(cfg)
+    if profile["status"] == "invalid":
+        raise ValueError(profile["message"])
     if out.exists():
         for child in out.iterdir():
             if child.name != ".git":
@@ -90,7 +94,8 @@ def export_sms(net, slug: str, out: Path, log=print) -> dict:
     shutil.copyfile(Path(__file__).with_name("sms_identity.py"), out / "tools" / "sms_identity.py")
     (out / "build.json").write_text(json.dumps({"title": proj["name"], "platform": platform, "image": base,
                                                 "sha1": hashlib.sha1(image).hexdigest(), "size": len(image),
-                                                "identity": cfg["rom"].get("identity")},
+                                                "identity": cfg["rom"].get("identity"),
+                                                "sms_profile": profile},
                                                indent=1), encoding="utf-8")
     shutil.copyfile(Path(__file__).with_name("export_sms_build.py"), out / "build.py")
     (out / base).write_bytes(image)
@@ -108,7 +113,9 @@ def export_sms(net, slug: str, out: Path, log=print) -> dict:
     if left_out:
         log(f"{len(left_out)} documented routines left as the disassembly has them: "
             + "; ".join(f"{n}: {why}" for n, why in left_out[:6]))
-    return {"path": str(out), "identical": identical, "matched": matched, "functions": len(rows),
+    return {"path": str(out), "identical": identical, "sms_profile": profile,
+            "exact_original_intent": profile["exact_original_intent"],
+            "matched": matched, "functions": len(rows),
             "documented": len(entries) - sum(1 for n, _ in left_out if any(e["name"] == n for e in entries)),
             "left_out": left_out, "fallback": [], "log": (proc.stdout + proc.stderr)[-3000:]}
 

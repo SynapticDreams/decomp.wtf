@@ -105,7 +105,7 @@ def read_info(data: bytes, name: str = "") -> dict:
         "compiler_guess": "SDCC or a hand-written assembler (unknown)",
         "gp": 0,
         "header": off is not None,
-        "cartridge": f"Sega mapper, {banks} bank{'s' if banks != 1 else ''}",
+        "cartridge": f"Unresolved mapper, {banks} bank{'s' if banks != 1 else ''}",
         "rom_banks": banks,
     }
     if off is not None:

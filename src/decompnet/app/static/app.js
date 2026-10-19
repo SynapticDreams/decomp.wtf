@@ -19,7 +19,7 @@ const mappedText = (ov) => {
   const m = ov.mapped;
   if (!m || !m.rom) return "";
   const pct = (100 * Math.min(m.rom, m.code + m.data)) / m.rom;
-  return `${pctNum(pct)}% of the ROM mapped`;
+  return `${pctNum(pct)}% of the ROM mapped${ov.sms_profile && !ov.sms_profile.supported ? " (provisional listing)" : ""}`;
 };
 const asideText = (n) => (n ? ` · ${n.toLocaleString()} set aside` : "");
 /* A match percentage that never reads 100% before the function really matches (99.6% stays 99.6%). */
@@ -3015,6 +3015,16 @@ async function renderProjectSettings() {
   const ov = S.ov;
   if (!ov) return;
   const fork = ov.kind === "fork";
+  const smsProfile = $("smsProfilePanel");
+  smsProfile.hidden = !ov.sms_profile || fork || ov.room?.role === "guest";
+  if (!smsProfile.hidden) window.SMSProfileUI.render(smsProfile, ov.sms_profile, async (choice) => {
+    try {
+      await api("/api/sms/profile", { method: "POST", body: { slug: S.slug, ...choice } });
+      S.ov = await api(`/api/project?slug=${encodeURIComponent(S.slug)}`);
+      renderProjectSettings();
+      toast("Cartridge profile saved.");
+    } catch (e) { toast(esc(e.message), "err"); }
+  });
   $("compilerPanel").hidden = fork;
   $("compilerDiagnostic").hidden = fork || !["psx", "ps2"].includes(ov.platform);
   if (!fork) {

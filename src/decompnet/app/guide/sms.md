@@ -2,7 +2,16 @@
 
 The Master System (SMS) and Game Gear (GG) run a **Zilog Z80**. capstone has no Z80 backend, so the fork
 carries its own disassembler (`decompnet.rom.z80`), checked against SDCC's assembler on every instruction
-encoding. Both consoles use the same mapper and the same compiler, so everything here covers both.
+encoding. Cartridge mapping and original compiler depend on the project; an SMS/GG extension does not establish them.
+
+Choose the cartridge mapping and build intent in project Settings, with the evidence for that choice.
+New imports and legacy projects with no declaration remain readable as provisional Sega-based listings;
+accepting new C or documented assembly requires a supported declaration. Sega is currently supported under
+the static-analysis limits below. Mapperless, Codemasters and other mappings can be recorded but remain
+unsupported until their analysis models are integrated. A declaration does not establish hardware accuracy.
+Profile changes retain existing work and refuse mapping changes that would reinterpret accepted source.
+Experimental build intent is recorded separately from original reconstruction; whole-image equality still
+compares against the frozen original input. The local operator API is `/api/sms/profile` (GET or POST).
 
 ## What the importer does with a .sms / .gg file
 

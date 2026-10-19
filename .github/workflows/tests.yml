@@ -29,5 +29,6 @@ jobs:
       # real problems only (see pyproject.toml): undefined or unused names, syntax errors
       - run: uvx ruff@0.14.0 check src tests
       - run: node --check src/decompnet/app/static/app.js
+      - run: node --check src/decompnet/app/static/sms-profile.js
       # compilers and emulator-side tools aren't installed here: the tests that need them skip themselves
       - run: uv run pytest -q -p no:cacheprovider

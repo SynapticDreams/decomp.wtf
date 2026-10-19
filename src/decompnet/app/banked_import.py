@@ -97,13 +97,18 @@ def import_project(net, picked, slug: str, workdir: Path, log, context_header: s
                   "confirmed_at": time.time()},
         "context": {"file": None},
     }
+    if sega:
+        from ..rom.sms_profile import initial
+        cfg["sms_profile"] = initial(cfg["rom"])
+        log("cartridge mapping is unresolved: the Sega-based listing is provisional until declared in Settings")
     mode = info["region"] if sega or famicom else info["cgb"]["mode"]
     now = time.time()
     with net.store.tx() as db:
         pid = db.execute("INSERT INTO projects(slug,name,description,arch,big_endian,root,config) VALUES(?,?,?,?,?,?,?)",
                          (slug, info["title"],
                           f"{info['cartridge']} · {mode} · {len(fns)} functions · "
-                          + ("matched with SDCC/GBDK-2020" if matchable else "reading lane only (no C toolchain yet)")
+                          + ("provisional Sega-based listing" if sega else "matched with SDCC/GBDK-2020" if matchable
+                             else "reading lane only (no C toolchain yet)")
                           + (" · approximate split (mgbdis and rgbds not installed)"
                              if arch == "sm83" and report.get("splitter") == "built-in" else ""),
                           arch, 0, str(workdir), json.dumps(cfg))).lastrowid
@@ -127,7 +132,10 @@ def import_project(net, picked, slug: str, workdir: Path, log, context_header: s
                    "VALUES(?,?,?,?,?,?,?)", (pid, 1, context_header, None, "basic types", now, ""))
         net._store_regions(db, pid, report.get("regions") or [])
         net._event(db, pid, None, "import", f"{len(fns)} functions from {info['title']}")
-    if matchable:
+    if sega:
+        log(f"ready: {len(fns)} functions in a provisional listing. Declare the cartridge mapping in Settings "
+            "before accepting source.")
+    elif matchable:
         log(f"ready: {len(fns)} functions to decompile with SDCC/GBDK-2020 ({gb_build.TOOLCHAIN})")
     else:
         log(f"ready: {len(fns)} functions disassembled. The C toolchain (GBDK-2020) is not installed, "
