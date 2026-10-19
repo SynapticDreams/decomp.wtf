@@ -182,8 +182,19 @@ The browser verifies complete text against its SHA-256 and character count befor
 A separate download includes the selected text and its snapshot/function/item provenance. The **Full saved
 provenance** item recovers complete original metadata when a listing reports clipped fields.
 
+**Saved project context** works even when the snapshot has no functions. It exposes project-owned notes, all
+saved unit headers, corrections, data records, symbols, compiler settings and claims as historical references.
+Notes with missing former functions keep that unknown association; projectless orphan references are never
+assigned to a project. The selected **Saved compiler dependency bundle** contains the captured files and metadata;
+binary content uses base64 in `$blob` objects, and capture does not establish their earlier acceptance context.
+The project manifest includes declared input/profile identity and record counts, without dumping unrelated settings.
+Nothing is restored or accepted by browsing, copying or downloading these records.
+
 The private operator GET route is `/api/resplit/archive`, with `slug` and `history`. Without a `function` ID it
-pages saved functions; with one it pages available `items`. Metadata pages contain at most 25 entries, with
+pages saved functions; with one it pages available `items`. Use `scope=project` to page project context instead;
+it cannot be combined with a `function` ID. Select `project`,
+`compiler`, `symbols`, `claims`, `dependencies`, or a listed `note:ID`, `header:VERSION`, `correction:ID` or
+`data:OFFSET` item in that scope. Both scopes return at most 25 metadata entries per page, with
 `next_offset` for subsequent requests and explicit clipping flags on long metadata strings. Selecting `item`
 returns text, its SHA-256, character count and `next_start`; pass that as `start` until it is null. Offsets count
 Unicode code points. Text chunks default to 16,384 characters and accept `limit` up to 262,144 (at most 1 MiB of

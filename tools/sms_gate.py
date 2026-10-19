@@ -25,6 +25,8 @@ TESTS = (
     "tests/test_sms_resplit_undo_validation.py",
     "tests/test_sms_profile_migration.py",
     "tests/test_sms_resplit_inspection.py",
+    "tests/test_sms_project_archive.py",
+    "tests/test_sms_resplit_legacy_integration.py",
     "tests/test_sms_documented.py",
     "tests/test_export_sms.py",
 )
@@ -106,6 +108,14 @@ def verify_report(report: Path) -> int:
     if not all(f'test_every_changed_check_and_overlap_record_can_be_inspected_without_saving[{platform}-{migrate}]'
                in inspection for platform in ('sms', 'gg') for migrate in ('False', 'True')):
         raise ValueError('SMS gate report is missing complete SMS/GG preview inspection checks')
+    project = {case.get('name') for case in cases if case.get('classname') == 'tests.test_sms_project_archive'}
+    if not all(f'test_project_note_context_and_binary_dependencies_are_recoverable_after_new_work_blocks_undo[{platform}]'
+               in project for platform in ('sms', 'gg')):
+        raise ValueError('SMS gate report is missing SMS/GG project-context recovery checks')
+    legacy = {case.get('name') for case in cases if case.get('classname') == 'tests.test_sms_resplit_legacy_integration'}
+    if not all(f'test_old_schema_source_is_migrated_revalidated_and_restored_without_losing_work[{platform}-{kind}]'
+               in legacy for platform in ('sms', 'gg') for kind in ('c', 'asm')):
+        raise ValueError('SMS gate report is missing actual SMS/GG old-database source integration checks')
     return len(cases)
 
 

@@ -2,6 +2,9 @@
 /* Read-only recovery. Text is copied/downloaded only after complete, digest-checked retrieval. */
 window.ResplitArchiveUI = {
   async render(panel, load, active = () => true) {
+    const renderToken = Symbol();
+    panel.archiveToken = renderToken;
+    const isActive = () => panel.archiveToken === renderToken && panel.isConnected && active();
     panel.replaceChildren();
     const el = (tag, text, parent = panel) => {
       const node = document.createElement(tag);
@@ -19,9 +22,9 @@ window.ResplitArchiveUI = {
     const status = el("p", "");
     status.setAttribute("role", "status");
     const functions = el("div"), details = el("div"), viewer = el("div");
-    let version = 0, itemVersion = 0, cursor = 0;
-    const current = token => active() && token === version;
-    const showItem = async (fid, key) => {
+    let version = 0, itemVersion = 0, cursor = 0, projectShown = false;
+    const current = token => isActive() && token === version;
+    const showItem = async (selection, key) => {
       const token = version, selected = ++itemVersion;
       const alive = () => current(token) && selected === itemVersion;
       viewer.replaceChildren();
@@ -53,7 +56,7 @@ window.ResplitArchiveUI = {
         complete.disabled = true;
         try {
           do {
-            const part = await load({ function: fid, item: key, start: next, limit: all ? 262144 : 16384 });
+            const part = await load({ ...selection, item: key, start: next, limit: all ? 262144 : 16384 });
             if (!alive()) return;
             if (part.start !== next || (total !== null && (total !== part.characters || digest !== part.sha256)) ||
                 part.characters > 67108864 || (part.next_start !== null && part.next_start <= next)) {
@@ -61,7 +64,8 @@ window.ResplitArchiveUI = {
             }
             total = part.characters; digest = part.sha256; filename = part.filename;
             chunks.push(part.text); next = part.next_start;
-            provenance = { origin: part.origin, function: part.function, item: part.item, sha256: part.sha256 };
+            provenance = { origin: part.origin, function: part.function, project_context: part.project_context,
+              item: part.item, sha256: part.sha256 };
             description.textContent = JSON.stringify(provenance, null, 2);
             status.textContent = next === null ? "Checking complete saved text…" : `Loaded ${next} of ${total} characters.`;
           } while (all && next !== null);
@@ -85,7 +89,7 @@ window.ResplitArchiveUI = {
       }
       await retrieve(false);
     };
-    const showFunction = async fid => {
+    const showSubject = async selection => {
       const token = ++version;
       ++itemVersion;
       details.replaceChildren(); viewer.replaceChildren();
@@ -95,11 +99,11 @@ window.ResplitArchiveUI = {
       const page = async () => {
         more.disabled = true;
         try {
-          const result = await load({ function: fid, offset });
+          const result = await load({ ...selection, offset });
           if (!current(token)) return;
-          for (const entry of result.items) button(entry.label, entries, () => showItem(fid, entry.key));
+          for (const entry of result.items) button(entry.label, entries, () => showItem(selection, entry.key));
           offset = result.next_offset; more.hidden = offset === null;
-          status.textContent = `${result.function.name}: ${result.total} saved sources, notes and context records.`;
+          status.textContent = `${(result.function || result.project_context).name}: ${result.total} saved sources, notes and context records.`;
         } catch (error) { if (current(token)) status.textContent = error.message; }
         finally { if (current(token)) more.disabled = false; }
       };
@@ -110,15 +114,19 @@ window.ResplitArchiveUI = {
       more.disabled = true;
       try {
         const result = await load({ offset: cursor });
-        if (!active()) return;
+        if (!isActive()) return;
+        if (result.project_context_available && !projectShown) {
+          projectShown = true;
+          button("Saved project context", functions, () => showSubject({ scope: "project" }));
+        }
         for (const fn of result.functions) {
           const row = document.createElement("p");
           functions.insertBefore(row, more);
-          button(`${fn.name} (${fn.status}; ROM ${fn.rom_offset}, CPU ${fn.vram})`, row, () => showFunction(fn.id));
+          button(`${fn.name} (${fn.status}; ROM ${fn.rom_offset}, CPU ${fn.vram})`, row, () => showSubject({ function: fn.id }));
         }
         cursor = result.next_offset; more.hidden = cursor === null;
-        if (!version) status.textContent = `${result.total} saved functions. Select one to inspect its work.`;
-      } catch (error) { if (active()) status.textContent = error.message; }
+        if (!version) status.textContent = `${result.total} saved functions. Select project context or a function to inspect saved work.`;
+      } catch (error) { if (isActive()) status.textContent = error.message; }
       finally { more.disabled = false; }
     };
     await page();

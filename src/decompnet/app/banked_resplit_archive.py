@@ -1,7 +1,6 @@
 """Bounded, operator-facing forward recovery from SMS/GG resplit snapshots."""
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 
@@ -9,6 +8,7 @@ from ..network import NetworkError
 from . import banked_resplit_state as state
 from .sms_resplit_dependencies import MAX_FILES
 from .banked_resplit_archive_items import function_info, items, metadata
+from . import banked_resplit_project_archive as project_archive, banked_resplit_archive_text as archive_text
 
 PAGE = 25
 MAX_CHARS = 262_144
@@ -34,7 +34,7 @@ def _page(rows, offset):
     return {'total': len(rows), 'next_offset': end if end < len(rows) else None, 'limit': PAGE}, rows[offset:end]
 
 
-def read(net, slug, history_id, *, function_id=None, item=None, offset=0, start=0, limit=CHARS):
+def read(net, slug, history_id, *, function_id=None, item=None, offset=0, start=0, limit=CHARS, scope='function'):
     """Explicit inspection only: never restore rows, accept source, release claims or verify against current work."""
     proj = net._project(slug)
     if net.cfg(proj).get('arch') != 'z80' or slug in net.links or net.fork_slug(slug):
@@ -43,9 +43,13 @@ def read(net, slug, history_id, *, function_id=None, item=None, offset=0, start=
     offset = integer(offset, 'archive offset', maximum=state.MAX_ROWS + MAX_FILES + 10)
     start = integer(start, 'text start', maximum=state.MAX_BYTES)
     limit = integer(limit, 'text chunk limit', minimum=1, maximum=MAX_CHARS)
-    if item is not None and (not isinstance(item, str) or not re.fullmatch(r'(accepted|best|compiler|symbols|review|provenance|dependencies|(?:attempt|note|header|dependency):[0-9]{1,19})', item)):
+    if scope not in ('function', 'project') or (scope == 'project' and function_id is not None):
+        raise NetworkError('select either project context or a saved function')
+    pattern = (r'(project|compiler|symbols|claims|dependencies|(?:note|header|correction|data):[0-9]{1,19})' if scope == 'project' else
+               r'(accepted|best|compiler|symbols|review|provenance|dependencies|(?:attempt|note|header|dependency):[0-9]{1,19})')
+    if item is not None and (not isinstance(item, str) or not re.fullmatch(pattern, item)):
         raise NetworkError('unknown archive item selector')
-    if function_id is None and (item is not None or start):
+    if scope == 'function' and function_id is None and (item is not None or start):
         raise NetworkError('select a saved function before requesting text')
     if item is None and start:
         raise NetworkError('select a saved item before requesting text')
@@ -55,12 +59,12 @@ def read(net, slug, history_id, *, function_id=None, item=None, offset=0, start=
         raise NetworkError('saved resplit is unavailable in this project')
     snapshot = state.decode(saved['before_state'], saved['before_digest'])
     try:
-        return _read(snapshot, saved, proj['id'], history_id, function_id, item, offset, start, limit)
+        return _read(snapshot, saved, proj['id'], history_id, function_id, item, offset, start, limit, scope)
     except (KeyError, TypeError, ValueError, AttributeError):
         raise NetworkError('saved resplit records are malformed') from None
 
 
-def _read(snapshot, saved, pid, history_id, function_id, item, offset, start, limit):
+def _read(snapshot, saved, pid, history_id, function_id, item, offset, start, limit, scope):
     if snapshot['project']['id'] != pid:
         raise NetworkError('saved resplit belongs to a different project')
     tables = snapshot['tables']
@@ -77,10 +81,17 @@ def _read(snapshot, saved, pid, history_id, function_id, item, offset, start, li
     origin['normalized'] = metadata({key: (identity.get('normalized') or {}).get(key) for key in ('sha256', 'size')})
     if any(row['project_id'] != pid for row in tables['functions']):
         raise NetworkError('saved function belongs to a different project')
+    if scope == 'project':
+        options = project_archive.items(snapshot)
+        subject = {'project_context': {'name': 'Saved project context', 'scope': 'project'}}
+        if item is None:
+            page, options = _page(options, offset)
+            return {'origin': origin, **subject, **page, 'items': [entry.summary() for entry in options]}
+        return archive_text.read(options, item, origin, subject, f'project_{pid}', start, limit)
     if function_id is None:
         rows = sorted(tables['functions'], key=lambda r: r['id'])
         page, rows = _page(rows, offset)
-        return {'origin': origin, **page, 'functions': [function_info(row) for row in rows]}
+        return {'origin': origin, **page, 'functions': [function_info(row) for row in rows], 'project_context_available': True}
     fid = integer(function_id, 'function ID', minimum=1)
     row = next((row for row in tables['functions'] if row['id'] == fid), None)
     if row is None:
@@ -89,22 +100,11 @@ def _read(snapshot, saved, pid, history_id, function_id, item, offset, start, li
     if item is None:
         page, options = _page(options, offset)
         return {'origin': origin, 'function': function_info(row), **page, 'items': [entry.summary() for entry in options]}
-    entry = next((entry for entry in options if entry.key == item), None)
-    if entry is None:
-        raise NetworkError('saved item is unavailable for this function')
-    text = entry.body()
-    if len(text.encode('utf-8')) > state.MAX_BYTES:
-        raise NetworkError('saved text exceeds the recovery budget')
-    if start > len(text):
-        raise NetworkError('text start is outside the saved item')
-    end = start + limit
-    return {'origin': origin, 'function': function_info(row), 'item': entry.summary(), 'text': text[start:end],
-            'start': start, 'characters': len(text), 'next_start': end if end < len(text) else None,
-            'sha256': hashlib.sha256(text.encode('utf-8')).hexdigest(), 'chunk_characters': limit,
-            'filename': f'function_{fid}_{entry.key.replace(":", "_")}.{entry.extension}'}
+    return archive_text.read(options, item, origin, {'function': function_info(row)}, f'function_{fid}', start, limit)
 
 
 def query(net, slug, params):
     """Keep query parsing out of the shared server's route body."""
     return read(net, slug, params.get('history'), function_id=params.get('function'), item=params.get('item'),
-                offset=params.get('offset', 0), start=params.get('start', 0), limit=params.get('limit', CHARS))
+                offset=params.get('offset', 0), start=params.get('start', 0), limit=params.get('limit', CHARS),
+                scope=params.get('scope', 'function'))
