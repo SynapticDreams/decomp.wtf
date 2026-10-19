@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from decompnet.rom import sms_mapping
+from decompnet.rom import sms_hw, sms_mapping
 
 
 @pytest.fixture
@@ -16,7 +16,9 @@ def standalone(tmp_path):
     source = Path(sms_mapping.__file__).parent
     shutil.copyfile(source / "export_sms_build.py", tmp_path / "build.py")
     (tmp_path / "tools").mkdir()
-    for name in ("z80.py", "sms_identity.py", "sms_mapping.py"):
+    (tmp_path / "include").mkdir()
+    (tmp_path / "include" / "hardware.inc").write_text(sms_hw.inc())
+    for name in ("z80.py", "sms_identity.py", "sms_mapping.py", "sms_codemasters.py"):
         shutil.copyfile(source / name, tmp_path / "tools" / name)
     (tmp_path / "build.json").write_text(json.dumps({"sms_profile": {"profile": {
         "version": 1, "mapper": "sega", "origin": "operator"}}}))
@@ -32,6 +34,7 @@ from dataclasses import replace
 scope = runpy.run_path('build.py')
 from sms_mapping import BusState as S
 D = scope['Disassembly']
+scope['hardware']()
 d = D(bytes([0xc9]) * 0xc000, False)
 d.decode()
 """
@@ -77,3 +80,13 @@ def test_declared_mapperless_is_flat_without_default_sega_registers(standalone):
                       "d = D(bytes([0xc9]) * 0xc000, False)\nd.decode()\n"
                       "print(json.dumps([d.resolve(0x4123, 0x100), d.resolve(0x8123, 0x100),"
                       "d.resolve(0xc123, 0x100)]))") == [0x4123, 0x8123, None]
+
+
+def test_codemasters_standalone_uses_own_paged_prefix_and_write_only_names(standalone):
+    assert standalone("""scope['B']['sms_profile']['profile']['mapper'] = 'codemasters'
+d = D(bytes([0xc9]) * 0x20000, False)
+d.decode()
+print(json.dumps([d.resolve(0x123, 0x100), d.resolve(0x4123, 0x100),
+    d.operand(0x100, 'ld ($8000), a'), d.operand(0x100, 'ld a, ($8000)'),
+    d.operand(0x100, 'in a, ($00)')]))
+""") == [0x123, None, 'ld (CodemastersSlot2), a', 'ld a, ($8000)', 'in a, (PortGGStart)']

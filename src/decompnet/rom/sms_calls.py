@@ -106,6 +106,9 @@ class Evaluator:
                     kind, to = "jump", st.hl if text == "jp (hl)" else None
                 writes = sms_effects.memory_writes(text, {"a": st.a, "hl": st.hl, "de": st.de, "bc": st.bc})
                 source_change = sms_effects.port_may_change_source(text, st.bc)
+                if reasons := sms_trace_writes.limits(writes, self.model):
+                    result.reasons.update(reasons)
+                    break
                 if any(write.cpu is None for write in writes) or source_change:
                     result.reasons.add("callee has unqualified memory or source-control writes")
                     break

@@ -145,7 +145,7 @@ def test_explicit_bus_state_wins_over_instruction_geometry_in_adapters():
                              mapping=replace(state, control=8)) is None
 
 
-@pytest.mark.parametrize("kind,size", [("unknown", SIZE), ("codemasters", SIZE), ("mapperless", SIZE),
+@pytest.mark.parametrize("kind,size", [("unknown", SIZE), ("codemasters", 0x100000), ("mapperless", SIZE),
                                       ("sega", 1), ("sega", True), ("sega", 0x2001)])
 def test_unsupported_models_are_rejected(kind, size):
     with pytest.raises(ValueError):

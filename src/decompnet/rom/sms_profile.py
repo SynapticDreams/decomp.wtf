@@ -9,7 +9,7 @@ from .sms_mapping import Mapper
 VERSION = 1
 MAPPERS = ("unknown", "sega", "mapperless", "codemasters", "unsupported")
 VARIANTS = ("exact-original", "annotated-original", "experimental")
-SUPPORTED = ("sega", "mapperless")
+SUPPORTED = ("sega", "mapperless", "codemasters")
 FIELDS = {"version", "mapper", "variant", "origin", "reason", "sha256", "size"}
 
 

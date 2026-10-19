@@ -43,7 +43,8 @@ def resolve(target: int, here_flat: int, here_cpu: int, s1, s2, size: int, s0=0,
     """
     if mapping is None:
         banks = [s0, s1, s2]
-        if 0x0400 <= here_cpu < 0xC000 and 0 <= here_flat < size and here_flat % BANK == here_cpu % BANK:
+        if (0 if mapper == "codemasters" else 0x0400) <= here_cpu < 0xC000 and \
+                0 <= here_flat < size and here_flat % BANK == here_cpu % BANK:
             banks[here_cpu // BANK] = here_flat // BANK
         mapping = BusState.cartridge_only([v if type(v) is int else None for v in banks])
     return Mapper(mapper, size).resolve(target, mapping).rom_offset
@@ -196,7 +197,10 @@ class Tracer:
                 if reason := sms_stack.write_alias(st, writes):
                     self._unresolved(entry, reason)
                     break
-                if source_change or any(write.cpu is None for write in writes):
+                write_limits = sms_trace_writes.limits(writes, self.model)
+                for reason in write_limits:
+                    self._unresolved(entry, reason)
+                if source_change or any(write.cpu is None for write in writes) or write_limits:
                     self._unresolved(entry, "explicit memory or source-control write is unqualified")
                     f.unknown_writes.add(entry)
                     f.switchers.pop(entry, None)
@@ -435,7 +439,7 @@ class Tracer:
         """The CPU address each bank's code was found running at: the slot most of its functions run from."""
         votes: dict[int, dict[int, int]] = {}
         for flat, (cpu, _why) in self.found.starts.items():
-            if cpu >= 0x0400:
+            if cpu >= 0x0400 or self.model.kind == "codemasters":
                 v = votes.setdefault(flat // BANK, {})
                 v[cpu & ~(BANK - 1)] = v.get(cpu & ~(BANK - 1), 0) + 1
         self.found.bank_base = {b: max(v, key=v.get) for b, v in votes.items()}

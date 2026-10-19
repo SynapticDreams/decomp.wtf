@@ -95,7 +95,7 @@ def test_mapperless_coordinates_must_match_flat_wiring():
         read("01:8100", image(size=0xC000), mapper="mapperless")
 
 
-@pytest.mark.parametrize("mapper", ["unknown", "unsupported", "codemasters"])
+@pytest.mark.parametrize("mapper", ["unknown", "unsupported"])
 def test_unqualified_models_are_not_silently_interpreted_as_sega(mapper):
-    with pytest.raises(CoverageError, match="declared Sega or mapperless"):
+    with pytest.raises(CoverageError, match="declared supported model"):
         read("00:0100", mapper=mapper)

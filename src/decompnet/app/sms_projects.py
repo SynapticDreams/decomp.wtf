@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from ..network import NetworkError
-from ..rom import sms_identity, sms_locations, sms_profile
+from ..rom import sms_identity, sms_locations, sms_mapper_evidence, sms_profile
 from ..rom.sms_mapping import Mapper
 
 
@@ -34,11 +34,19 @@ class SMSProjects:
             raise NetworkError("mapperless mapping differs from the current function coordinates; preview and apply a resplit first")
 
     def inspect(self, slug):
-        cfg = self.net.cfg(self.net._project(slug))
+        proj = self.net._project(slug)
+        cfg = self.net.cfg(proj)
         view = sms_profile.describe(cfg)
         if view is None or cfg.get("kind") != "rom":
             raise NetworkError("cartridge profiles are for SMS/GG ROM projects")
-        return {**view, "mappers": list(sms_profile.MAPPERS), "variants": list(sms_profile.VARIANTS)}
+        try:
+            image = sms_identity.strip_copier_header((Path(proj["root"]) / cfg["rom"]["file"]).read_bytes())
+            sms_identity.verify_normalized(image, cfg["rom"].get("identity"), cfg["rom"].get("sha1"))
+            suggestions = sms_mapper_evidence.inspect(image)
+        except (OSError, ValueError):
+            suggestions = {"available": False, "message": "Mapper evidence unavailable: original input is missing or differs."}
+        return {**view, "mappers": list(sms_profile.MAPPERS), "variants": list(sms_profile.VARIANTS),
+                "suggestions": suggestions}
 
     def model(self, proj):
         cfg = self.net.cfg(proj)

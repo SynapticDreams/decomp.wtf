@@ -3024,7 +3024,7 @@ async function renderProjectSettings() {
       renderProjectSettings();
       toast("Cartridge profile saved.");
     } catch (e) { toast(esc(e.message), "err"); }
-  });
+  }, () => api(`/api/sms/profile?slug=${encodeURIComponent(S.slug)}`));
   $("compilerPanel").hidden = fork;
   $("compilerDiagnostic").hidden = fork || !["psx", "ps2"].includes(ov.platform);
   if (!fork) {
