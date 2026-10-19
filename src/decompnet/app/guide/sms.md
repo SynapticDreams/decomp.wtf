@@ -87,6 +87,10 @@ Instruction counters cover tracing/evaluation; cold scans keep their separate in
 Function-entry back-edges revisit changed path facts without replaying reset state; unchanged loops converge.
 A run within budget remains heuristic and subject to unqualified sources and execution-coverage limits.
 The resplit preview includes these diagnostics before work is applied.
+Resplit verifies the normalized input against the frozen revision before and after discovery, and again around
+database updates. Legacy SHA-1 identities and equivalent recognized copier wrappers remain usable. A missing,
+malformed or changed identity stops the operation; profile or other project settings edited during analysis require a retry.
+If an input change is detected during database updates, that transaction rolls back.
 Explicit nonreturn corrections apply; an incomplete trace never supplies a preserving or nonreturning contract.
 This remains static analysis under an ordinary virtual-stack contract; asynchronous interrupt preservation,
 physical byte/flag stack emulation and complete execution qualification remain pending. Neither adapter is a CPU emulator.
