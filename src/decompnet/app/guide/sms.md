@@ -23,8 +23,13 @@ change that readback without selecting a new bank. Reset register values are a s
 not a guarantee for every mapper revision. The tracer carries full bus snapshots through calls and tables,
 and joins incoming mapping facts conservatively. Known mapper-control writes update RAM selection; a bank change
 updates the next instruction's source. The reset root uses an explicit cartridge-only recipe. Isolated seeds
-establish only their own ROM window. General callee effects, unknown stores, multiple paths through one instruction
-and interrupt restoration remain analysis limits; this does not qualify BIOS, cartridge-RAM or peripheral execution.
+establish only their own ROM window. Distinct register, RAM, stack and mapper facts at the same instruction are
+followed separately. Each function has instruction, per-address context, stack and sparse-memory budgets;
+unchanged loops converge as table/bound marks age and expire. Exhausted entries appear in split logs and the
+`analysis_exhausted` report/resplit result with their ROM offsets and reasons. Their discovered callees retain
+only conditional entry-window facts; exhausted analysis cannot prove a mapper helper or a nonreturning routine.
+General callee effects, unknown stores and interrupt restoration remain analysis limits; this does not qualify
+BIOS, cartridge-RAM or peripheral execution, or establish complete discovery when no budget was exhausted.
 Control knowledge is tracked per bit: a Sega ROM entry in slot 2 establishes that RAM is deselected there, without inventing
 shift/write-enable bits or raw register latches. Joins keep agreed bits even when another control bit differs.
 Standalone exports include this shared resolver. Generated reference names require a declared model and established
