@@ -301,7 +301,7 @@ OPENCODE_GO_MODELS = {
     "deepseek-v4.1-flash": "OpenCode Go · value pick",
     "mimo-v2.6-flash": "OpenCode Go · low cost",
     "glm-5.3-flash": "OpenCode Go · low cost",
-    "qwen3.7-plus": "OpenCode Go · budget alternative",
+    "qwen3.8-flash": "OpenCode Go · budget alternative",
 }
 
 

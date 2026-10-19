@@ -263,7 +263,7 @@ GameCube and Wii projects (dtk-template) decomp.wtf takes care of the steps betw
 | **Anything else** | Point any MCP client (Cursor, Claude Desktop, your own) at `decomp mcp`, or at the app with **Connect another agent**. |
 
 OpenCode's model picker keeps available free models and a small [Go subscription](https://opencode.ai/v2/docs/console/go/)
-selection: DeepSeek V4.1 Flash, MiMo V2.6 Flash, GLM-5.3 Flash and Qwen3.7 Plus. Go choices appear when OpenCode's own
+selection: DeepSeek V4.1 Flash, MiMo V2.6 Flash, GLM-5.3 Flash and Qwen3.8 Flash. Go choices appear when OpenCode's own
 CLI offers them after sign-in; the list refreshes within a minute. Other configured providers remain available, and
 **Another model…** accepts a model outside the shortlist. Go choices use their `opencode-go/` IDs.
 

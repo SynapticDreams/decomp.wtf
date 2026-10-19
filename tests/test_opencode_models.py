@@ -32,7 +32,7 @@ def test_signed_in_catalog_adds_only_budget_go_models_and_freebies():
         ("opencode/deepseek-v4.1-flash", priced("DeepSeek V4.1 Flash", .15, .6)),
         ("opencode-go/beam-free", priced("Beam Free")),
         ("opencode-go/kimi-k3", priced("Kimi K3", 3, 15)),
-        ("opencode-go/qwen3.7-plus", priced("Qwen3.7 Plus", .4, 1.6)),
+        ("opencode-go/qwen3.8-flash", priced("Qwen3.8 Flash", .15, .47)),
         ("opencode-go/glm-5.3-flash", priced("GLM-5.3-Flash", .15, .5)),
         ("opencode-go/mimo-v2.6-flash", priced("MiMo-V2.6-Flash", .14, .28)),
         ("opencode-go/deepseek-v4.1-flash", priced("DeepSeek V4.1 Flash", .15, .6)),
@@ -43,7 +43,7 @@ def test_signed_in_catalog_adds_only_budget_go_models_and_freebies():
     models = agents._opencode_models(output)
     assert [m["id"] for m in models] == [
         "opencode-go/deepseek-v4.1-flash", "opencode-go/mimo-v2.6-flash",
-        "opencode-go/glm-5.3-flash", "opencode-go/qwen3.7-plus",
+        "opencode-go/glm-5.3-flash", "opencode-go/qwen3.8-flash",
         "opencode/big-pickle", "opencode-go/beam-free", "opencode-go/longcat-2.5-preview-free",
         "opencode-go/new-free-offer", "openrouter/user-model",
     ]
