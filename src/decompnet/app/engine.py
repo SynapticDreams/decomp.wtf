@@ -201,6 +201,8 @@ class RomNetwork(Network):
         self.permuter = Permuter(self)
         from .mapping import MappingEngine
         self.mapping = MappingEngine(self)
+        from .sms_projects import SMSProjects
+        self.sms = SMSProjects(self)
 
     # ------------------------------------------------------------------ basics
 
@@ -397,6 +399,7 @@ class RomNetwork(Network):
         return match.canonical_target(self._rom_target(fn), self.symbols(proj["id"], fn["unit"]))
 
     def _evaluate(self, fn, proj, obj: bytes):
+        self.sms.require(row=proj)
         if not self.is_rom(proj):
             return super()._evaluate(fn, proj, obj)
         if (self.cfg(proj).get("arch") or "").lower() in BANKED_ARCHS:
@@ -725,7 +728,7 @@ class RomNetwork(Network):
         else:
             return False
         proj = self._project(p["slug"])
-        if not self._untouched(proj["id"]):
+        if not self._untouched(proj["id"]) or cfg.get("platform") in ("sms", "gg"):
             if why != "it was split without mgbdis and rgbds, which are installed now":
                 self._reopen_banked(proj, arch, log)
                 log(f"{p['slug']} was imported when it could not be matched ({why}); it has work in it, so it was kept "
@@ -884,6 +887,7 @@ class RomNetwork(Network):
     def _compile(self, proj, header: str, source: str):
         """Within a batch (attempt_many) the same source compiles once: the build holds every function it defines,
         and each is judged from it. Otherwise every call compiles."""
+        self.sms.require(row=proj)
         memo = getattr(self._batch, "memo", None)
         if memo is None:
             return self._compile_now(proj, header, source)
@@ -1158,7 +1162,7 @@ class RomNetwork(Network):
             # guessable from other platforms, and the lane has no machine draft to start from.
             return self._gb_brief(fn, proj) + shared
         if arch == "z80":
-            return ["", *self.SMS_NOTES] + shared
+            return ["", *self.sms.brief(proj), *self.SMS_NOTES] + shared
         if arch == "mos6502":
             return ["", *self.NES_NOTES] + shared
         return shared
@@ -1813,6 +1817,7 @@ class RomNetwork(Network):
               track: str = "") -> str:
         if (fork := self.fork_slug(project)):
             return self.forks.claim(agent, fork, function, strategy)
+        self.sms.require(project, function)
         track = (track or "").strip().lower()
         if track not in ("", "c", "asm", "assembly"):
             raise NetworkError("track is c (match it in C) or asm (document a hand-written Game Boy routine)")
@@ -1935,6 +1940,7 @@ class RomNetwork(Network):
             time.sleep(0.2)
 
     def attempt(self, agent: Agent, function: str, source: str, project: str | None = None) -> dict:
+        self.sms.require(project, function)
         self._yield_autopilot(function, project)
         if (fork := self.fork_slug(project)):
             return self.forks.attempt(agent, fork, function, source)
@@ -2404,6 +2410,7 @@ class RomNetwork(Network):
         """The routine a claim on the assembly track takes here (None: nothing left), claimed for `agent`. A room's host
         hands its members' claims out with it."""
         proj = self._project(project)
+        self.sms.require(row=proj)
         now = time.time()
         with self.store.tx() as db:
             self._expire_claims(db)
@@ -2562,6 +2569,7 @@ class RomNetwork(Network):
         self._require_budget(agent)
         fn = self._function(function, project)
         proj = self._project(project) if project else self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
+        self.sms.require(row=proj)
         if (self.cfg(proj).get("arch") or "").lower() not in ASM_ARCHS:
             raise NetworkError("documented assembly is for Game Boy, Master System, Game Gear and NES projects for now")
         judge = self._asm_judge(proj)  # (RGBDS or WLA-DX)
@@ -2646,6 +2654,8 @@ class RomNetwork(Network):
     def review_documented(self, slug: str, function: str, ok: bool, note: str = "") -> dict:
         """A person's look at a documented routine picked for review: it's right (it stays documented), or it goes back
         to the assembly track with what's wrong, its text kept as the best attempt to start from."""
+        if ok:
+            self.sms.require(slug, function)
         fn = self._function(function, slug)
         if fn["status"] != "documented":
             raise NetworkError(f"{fn['name']} isn't documented ({fn['status']})")
@@ -2808,6 +2818,8 @@ class RomNetwork(Network):
         """Mirror the routines the room's host documented in assembly (it judged them on the same ROM). Only text the
         judge would take is: a member checks what it keeps (no INCLUDE, INCBIN or macros)."""
         proj = self._project(slug)
+        if rows:
+            self.sms.require(row=proj)
         judge = self._asm_judge(proj)
         for r in rows:
             row = self._room_function(proj["id"], r.get("name"), r.get("vram"), r.get("rom_offset"), r.get("size"))
@@ -3059,9 +3071,11 @@ class RomNetwork(Network):
             "SUM(status='documented') AS documented, SUM(CASE WHEN status='documented' THEN size ELSE 0 END) AS documented_bytes "
             "FROM functions WHERE project_id=?", proj["id"])
         tc = toolchains.get(cfg["compiler"]["toolchain"])
+        from ..rom.sms_profile import describe
         return {
             "slug": proj["slug"], "title": proj["name"], "description": proj["description"],
             "platform": cfg.get("platform", "n64"), "platform_name": detect.PLATFORMS.get(cfg.get("platform", "n64"), ""),
+            "sms_profile": describe(cfg),
             "compilers": PLATFORM_COMPILERS.get(cfg.get("platform", "n64"), []),
             "rom": {k: cfg["rom"].get(k) for k in ("title", "game_code", "region", "size", "sha1", "byte_order", "compiler_guess")},
             # what built a banked game, as its bytes say (rom/fingerprint.py): None, most likely assembly; absent, not read
@@ -3202,6 +3216,7 @@ class RomNetwork(Network):
             project_id, n, since)}
 
     def claim_row(self, agent: Agent, project: str | None = None, function: str | None = None, strategy: str = "easiest"):
+        self.sms.require(project, function)
         if (pin := self.pinned.get(agent.id)) is not None:  # a helper pinned to one function gets it, and only it
             if function is not None and self._function(function, project)["name"] != pin:
                 raise NetworkError(f"this helper works on {pin} only (the user pinned it there): keep improving it")

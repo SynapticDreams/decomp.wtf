@@ -380,6 +380,9 @@ class Room:
         kinds = {ev["kind"] for ev in events}
         names = {ev["detail"] for ev in events if ev["kind"] in ("match",)}
         out: dict = {"e": max_e, "events": [dict(ev) for ev in events]}
+        cfg = self.cfg
+        if cfg.get("platform") in ("sms", "gg") and cfg.get("sms_profile") is not None:
+            out["sms_profile"] = cfg["sms_profile"]
         first = e == 0
         if first or names:
             rows = net.store.all("SELECT f.name, f.vram, f.rom_offset, f.size, f.matched_source, a.name AS agent "
@@ -908,6 +911,8 @@ class Link:
         net, slug = self.net, self.slug
         proj = net.project_row(slug)
         pid = proj["id"]
+        if "sms_profile" in st:
+            net.sms.follow_host(slug, st["sms_profile"])
         mine = f"{self.member}."
         if st.get("symbols") is not None or st.get("functions") is not None:
             net.apply_remote_layout(slug, st.get("functions") or [], st.get("symbols") or [])

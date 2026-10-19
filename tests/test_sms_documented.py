@@ -33,6 +33,9 @@ def game(tmp_path):
                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (pid, name, len(code), 1, code, "[]", "", "bank005", cpu, flat,
                                                            status, meta))
             db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)", (pid, name, cpu, len(code), "func"))
+    from .test_sms import make_rom
+    (tmp_path / "rom.sms").write_bytes(make_rom(size=0x20000, code={0x14A10: CODE, 0x0F31: b"\xc9"}))
+    net.sms.configure("s", "sega", "annotated-original", "The authored fixture specifies Sega cartridge mapping.")
     return net, net.authenticate(net.register_agent("writer"))
 
 

@@ -237,6 +237,7 @@ def test_functions_compiled_by_sdcc_are_found_and_matched_by_the_app(tmp_path, r
     rom = _compiled_rom(region)
     net = RomNetwork(tmp_path / "d.db", tmp_path)
     slug = net.import_rom(rom, name=filename, confirmed=True, log=lambda *_: None)
+    net.sms.configure(slug, "sega", "annotated-original", "The authored fixture specifies Sega cartridge mapping.")
     ov = net.overview(slug)
     assert ov["platform"] == platform and ov["compiler"]["toolchain"] == "gbdk-2020" and ov["compiler"]["flags"] == ["--fsigned-char"]
     rows = {r["name"]: r for r in net.store.all("SELECT name, vram, size, status FROM functions WHERE project_id=1")}
@@ -261,6 +262,7 @@ def test_a_projects_compiler_flags_reach_sdcc(tmp_path):
     assert by_default != fast and len(fast) > len(by_default)
     net = RomNetwork(tmp_path / "d.db", tmp_path)
     slug = net.import_rom(_compiled_rom(4), name="game.sms", confirmed=True, log=lambda *_: None)
+    net.sms.configure(slug, "sega", "annotated-original", "The authored fixture specifies Sega cartridge mapping.")
     agent, _ = net.local_agent("tester")
     net.claim(agent, slug, "func_000_0120")
     net.set_compiler(slug, "gbdk-2020", ["--opt-code-speed"])
@@ -316,6 +318,7 @@ def test_an_rst_call_matches_through_the_app(tmp_path):
     rom = make_rom(code={0x28: b"\xc9", 0x80: bytes.fromhex("cd0001" "18fe"), 0x100: RST_BYTES})
     net = RomNetwork(tmp_path / "d.db", tmp_path)
     slug = net.import_rom(rom, name="game.sms", confirmed=True, log=lambda *_: None)
+    net.sms.configure(slug, "sega", "annotated-original", "The authored fixture specifies Sega cartridge mapping.")
     agent, _ = net.local_agent("tester")
     net.claim(agent, slug, "func_000_0100")
     out = net.compile_and_diff(agent, "func_000_0100", RST_SOURCE, slug)

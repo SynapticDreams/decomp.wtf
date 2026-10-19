@@ -19,7 +19,7 @@ def strip_copier_header(data: bytes) -> bytes:
 def verify_normalized(rom: bytes, identity: dict | None, legacy_sha1: str | None = None) -> None:
     """Refuse a replacement comparison target before generating or deleting export artifacts."""
     if identity is not None:
-        if identity.get("version") != VERSION:
+        if type(identity.get("version")) is not int or identity["version"] != VERSION:
             raise ValueError("unsupported SMS identity version")
         actual = {"sha256": hashlib.sha256(rom).hexdigest(), "size": len(rom)}
         if identity.get("normalized") != actual:
@@ -47,7 +47,8 @@ def identify(raw: bytes, normalized: bytes, info: dict) -> dict:
 
 def merge_inputs(previous: dict | None, incoming: dict) -> dict:
     """An alternate dump wrapper is evidence for the same revision, not a new comparison target."""
-    if incoming.get("version") != VERSION or (previous and previous.get("version") != VERSION):
+    if type(incoming.get("version")) is not int or incoming["version"] != VERSION or \
+            (previous and (type(previous.get("version")) is not int or previous["version"] != VERSION)):
         raise ValueError("unsupported SMS identity version")
     if previous is None:
         return incoming
