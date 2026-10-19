@@ -8,18 +8,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from . import sms_effects, sms_registers, sms_trace_writes, z80
+from . import sms_effects, sms_registers, sms_stack, sms_trace_writes, z80
 from .sms_decode import decode
 from .sms_mapping import BusState, Mapper, join
 from .sms_paths import Limits, Paths
 from .sms_state import State
 from .sms_analysis import Budget
-
-
-@dataclass(frozen=True)
-class StackWord:
-    kind: str
-    value: object
+from .sms_stack import StackWord as StackWord
 
 
 @dataclass
@@ -32,6 +27,7 @@ class Result:
         if self.reasons:
             out = caller.copy()
             out.mapping, out.mem, out.stack = BusState(), {}, []
+            out.sp = out.stack_top = None
         else:
             states = self.returns + ([caller] if conditional else [])
             if not states:
@@ -40,6 +36,9 @@ class Result:
             out.mapping = join(state.mapping for state in states)
             out.mem = {key: value for key, value in states[0].mem.items()
                        if all(state.mem.get(key) == value for state in states[1:])}
+            for name in ("sp", "stack_top"):
+                values = {getattr(state, name) for state in states}
+                setattr(out, name, next(iter(values)) if len(values) == 1 else None)
         out.a = out.hl = out.de = out.bc = None
         out.cmp = out.low = out.bound = out.index = out.base = None
         return out
@@ -55,11 +54,18 @@ class Evaluator:
         self.limits, self.depth = limits or Limits(steps=2048), depth
         self.budget = budget
 
-    def evaluate(self, target: int, caller: State, return_cpu: int, *, skip: int = 0) -> Result:
-        return self._frame(target, caller, return_cpu, skip, 0, [self.limits.steps])
+    def evaluate(self, target: int, caller: State, return_cpu: int, *, skip: int = 0,
+                 already_pushed: bool = False) -> Result:
+        return self._frame(target, caller, return_cpu, skip, 0, [self.limits.steps], already_pushed)
 
-    def _frame(self, target, caller, return_cpu, skip, depth, fuel):
+    def _frame(self, target, caller, return_cpu, skip, depth, fuel, already_pushed=False):
         result = Result()
+        st = State(caller.mapping, caller.a, caller.hl, caller.de, caller.bc,
+                   dict(caller.mem), [StackWord("return", return_cpu)], sp=caller.sp, stack_top=caller.stack_top)
+        reason = sms_stack.pop(st, self.model, apply=False) if already_pushed else sms_stack.push(st, self.model)
+        if reason:
+            result.reasons.add(reason)
+            return result
         if (flat := self.model.resolve(target, caller.mapping).rom_offset) is not None and not self.in_data(flat):
             result.entries.append((flat, target, caller.mapping))
             if self.budget is not None and not self.budget.enter(flat, target):
@@ -68,8 +74,6 @@ class Evaluator:
         if depth >= self.depth:
             result.reasons.add("call depth budget exhausted")
             return result
-        st = State(caller.mapping, caller.a, caller.hl, caller.de, caller.bc,
-                   dict(caller.mem), [StackWord("return", return_cpu)])
         work, paths = [(target, st)], Paths(self.limits)
         expected = (return_cpu + skip) & 65535
         while work:
@@ -92,33 +96,39 @@ class Evaluator:
                 if text.startswith("db "):
                     result.reasons.add("callee instruction is undecoded")
                     break
-                if text in ("halt", "ei"):
-                    result.reasons.add("callee interrupt-dependent continuation is unqualified")
+                if reason := sms_effects.interrupt_limit(text):
+                    result.reasons.add(reason)
                     break
                 st.n += 1
                 next_cpu = (cpu + length) & 65535
                 kind, to = z80.flow(text)
                 if text.startswith("jp ("):
                     kind, to = "jump", st.hl if text == "jp (hl)" else None
-                if text in ("reti", "retn"):
-                    result.reasons.add("interrupt return in an ordinary callee is unqualified")
-                    break
                 writes = sms_effects.memory_writes(text, {"a": st.a, "hl": st.hl, "de": st.de, "bc": st.bc})
                 source_change = sms_effects.port_may_change_source(text, st.bc)
                 if any(write.cpu is None for write in writes) or source_change:
                     result.reasons.add("callee has unqualified memory or source-control writes")
+                    break
+                if reason := sms_stack.write_alias(st, writes):
+                    result.reasons.add(reason)
                     break
                 if text.startswith("ld sp, ") or text in ("inc sp", "dec sp"):
                     result.reasons.add("callee changes physical stack placement")
                     break
                 sms_trace_writes.apply(st, writes, source_change, self.model)
                 if text.startswith("push "):
+                    if reason := sms_stack.push(st, self.model):
+                        result.reasons.add(reason)
+                        break
                     reg = text[5:]
                     st.stack.append(StackWord(reg, st.a if reg == "af" else getattr(st, reg, None)))
                     st.pushed = True
                 elif text.startswith("pop "):
                     if not st.stack:
                         result.reasons.add("callee reads beyond its virtual return stack")
+                        break
+                    if reason := sms_stack.pop(st, self.model):
+                        result.reasons.add(reason)
                         break
                     saved, reg = st.stack.pop(), text[4:]
                     value = saved.value
@@ -130,6 +140,12 @@ class Evaluator:
                         setattr(st, "a" if reg == "af" else reg, value)
                 elif kind in ("ret", "cret"):
                     returned = st.copy()
+                    if reason := sms_stack.pop(returned, self.model):
+                        result.reasons.add(reason)
+                        if kind == "ret":
+                            break
+                        cpu = next_cpu
+                        continue
                     if not returned.stack or returned.stack[-1].kind == "af":
                         result.reasons.add("callee return destination is unqualified")
                     else:

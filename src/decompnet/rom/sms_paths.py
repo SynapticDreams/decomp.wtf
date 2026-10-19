@@ -31,7 +31,8 @@ def signature(state: State) -> tuple:
         return (state.n - value[0], *value[1:])
 
     return (state.mapping, state.a, state.hl, state.de, state.bc,
-            frozenset(state.mem.items()), tuple(state.stack), state.pushed, min(state.n, 3),
+            frozenset(state.mem.items()), tuple(state.stack), state.pushed,
+            state.sp, state.stack_top, min(state.n, 3),
             *(mark(getattr(state, name)) for name in ("cmp", "low", "bound", "index", "base")))
 
 

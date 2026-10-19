@@ -118,7 +118,7 @@ def test_unresolved_callee_effects_reach_split_reports_and_logs():
     report, logs = {}, []
     sms.functions(rom, report=report, log=logs.append)
     assert any(row["rom_offset"] == 0 for row in report["analysis_unresolved"])
-    assert any("callee effects remain unresolved" in line for line in logs)
+    assert any("execution effects remain unresolved" in line for line in logs)
 
 
 def test_callee_self_paging_changes_the_callers_next_instruction_source():

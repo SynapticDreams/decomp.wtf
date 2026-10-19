@@ -149,3 +149,14 @@ def test_a_call_without_a_return_contract_cannot_preserve_a_named_reference():
     assert verdict.same == verdict.size == 7
     assert not verdict.ok and any(p.startswith("3.") and "isn't known yet" in p for p in verdict.problems)
     assert "call $8200" in sms_asm.draft(r)
+
+
+@NEEDS_WLA
+@pytest.mark.parametrize(("encoded", "instruction"), [("fb", "ei"), ("76", "halt"), ("310000", "ld sp, $0000")])
+def test_interrupt_or_stack_relocation_cannot_supply_a_named_rom_contract(encoded, instruction):
+    r = routine(0x8200, 0x14200, bank=5, cpu=0x8100, mapping=BusState.cartridge_only((0, 1, 5)))
+    r.code = bytes.fromhex(encoded + " cd0082 c9")
+    text = HEADER + f"RouteEntry:\n    {instruction}\n    call Handler\n    ret\n"
+    verdict = sms_asm.judge(r, text)
+    assert verdict.same == verdict.size == len(r.code)
+    assert not verdict.ok and any(p.startswith("3.") and "isn't known yet" in p for p in verdict.problems)

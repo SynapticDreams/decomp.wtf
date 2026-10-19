@@ -21,7 +21,7 @@ class State:
     de: int | None = None
     bc: int | None = None
     mem: dict = field(default_factory=dict)  # RAM this function stored a known value to (a bank kept in RAM)
-    stack: list = field(default_factory=list)  # what it pushed: values (an int, ARG or None)
+    stack: list = field(default_factory=list)  # typed saved words (sms_stack.StackWord); legacy values stay readable
     n: int = 0  # instructions so far on this path
     cmp: tuple | None = None  # (n, the number A was just compared with)
     low: tuple | None = None  # (n, the least A can be here: `cp 5 / jr c` passed)
@@ -30,6 +30,8 @@ class State:
     index: tuple | None = None  # the same, for the index once A is copied into another register (`ld e, a`)
     base: tuple | None = None  # (n, the last ROM address loaded into a register pair: a table to index)
     pushed: bool = False  # whether this path has pushed before inspecting its incoming return address
+    sp: int | None = None  # explicit physical SP, otherwise the ordinary virtual-stack assumption
+    stack_top: int | None = None  # exclusive upper boundary of the tracked active physical stack
 
     def copy(self) -> State:
         return replace(self, mem=dict(self.mem), stack=list(self.stack))
@@ -62,4 +64,4 @@ class Found:
     bank_base: dict[int, int] = field(default_factory=dict)  # bank -> the CPU address its code was found running at
     exhausted: dict[int, set[str]] = field(default_factory=dict)  # entry -> bounded traversal limits reached
     unknown_writes: set[int] = field(default_factory=set)  # entries with unqualified explicit write effects
-    unresolved: dict[int, set[str]] = field(default_factory=dict)  # entry -> unqualified callee effects
+    unresolved: dict[int, set[str]] = field(default_factory=dict)  # entry -> unqualified execution/effect boundaries
