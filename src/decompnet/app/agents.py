@@ -295,6 +295,49 @@ _models: dict[str, tuple[float, list[dict]]] = {}
 CLAUDE_MODELS = [("fable", "Fable", "Anthropic's most capable model"), ("opus", "Opus", "very capable"),
                  ("sonnet", "Sonnet", "fast and capable, cheaper"), ("haiku", "Haiku", "fastest, cheapest")]
 
+# A small starting set from https://opencode.ai/v2/docs/console/go/ (2026-10-19). Free Go models are included
+# separately from the CLI's prices; expensive Go models can still be entered through "Another model".
+OPENCODE_GO_MODELS = {
+    "deepseek-v4.1-flash": "OpenCode Go · value pick",
+    "mimo-v2.6-flash": "OpenCode Go · low cost",
+    "glm-5.3-flash": "OpenCode Go · low cost",
+    "qwen3.7-plus": "OpenCode Go · budget alternative",
+}
+
+
+def _opencode_models(output: str) -> list[dict]:
+    """Use only models the CLI offers for its current sign-in. Its verbose catalog supplies display names and
+    prices, so free models need no maintained list and paid Zen models do not crowd out the Go shortlist."""
+    entries = list(re.finditer(r"(?m)^([\w.-]+/[\w.:/-]+)[ \t]*\r?$", output))
+    out = {}
+    for i, entry in enumerate(entries):
+        model = entry[1]
+        provider, slug = model.split("/", 1)
+        end = entries[i + 1].start() if i + 1 < len(entries) else len(output)
+        try:
+            info, _ = json.JSONDecoder().raw_decode(output[entry.end():end].lstrip())
+        except ValueError:
+            info = {}
+        if not isinstance(info, dict):
+            info = {}
+        cost = info.get("cost")
+        free = (cost.get("input") == 0 and cost.get("output") == 0) if isinstance(cost, dict) else \
+            (slug.endswith("-free") or model == "opencode/big-pickle")  # older, plain catalogs
+        note = provider
+        if provider == "opencode-go":
+            if not free and slug not in OPENCODE_GO_MODELS:
+                continue
+            note = "OpenCode Go · free" if free else OPENCODE_GO_MODELS[slug]
+        elif provider == "opencode":
+            if not free:
+                continue
+            note = "OpenCode · free"
+        name = info.get("name")
+        out[model] = {"id": model, "name": name if isinstance(name, str) and name else slug, "note": note}
+    # Put the Go shortlist where it is easy to find, followed by free models and the user's other providers.
+    picks = [out.pop(f"opencode-go/{slug}") for slug in OPENCODE_GO_MODELS if f"opencode-go/{slug}" in out]
+    return (picks + list(out.values()))[:200]
+
 
 def _codex_config() -> dict:
     """The user's Codex settings (~/.codex/config.toml, or $CODEX_HOME's)."""
@@ -364,21 +407,21 @@ def models(kind: str, path: str | None) -> list[dict]:
     if kind not in ("opencode", "antigravity", "codex") or not path:
         return []
     cached = _models.get(kind)
-    if cached and time.time() - cached[0] < 600:
+    if cached and time.time() - cached[0] < (60 if kind == "opencode" else 600):
         return cached[1]
     if kind == "codex":
         out = _codex_models(path)
         _models[kind] = (time.time(), out)
         return out
     try:
-        res = subprocess.run(argv([path, "models"]), capture_output=True, text=True, encoding="utf-8", errors="replace",
+        res = subprocess.run(argv([path, "models", *(["--verbose"] if kind == "opencode" else [])]),
+                             capture_output=True, text=True, encoding="utf-8", errors="replace",
                              stdin=subprocess.DEVNULL, timeout=30)
         lines = [line.strip() for line in res.stdout.splitlines()]
     except (OSError, subprocess.TimeoutExpired):
         lines = []
     if kind == "opencode":
-        rows = [r for r in lines if re.fullmatch(r"[\w.-]+/[\w.:/-]+", r)]
-        out = [{"id": r, "name": r.split("/", 1)[1], "note": r.split("/", 1)[0]} for r in rows[:200]]
+        out = _opencode_models("\n".join(lines))
     else:  # agy: "<slug>\t<name>" per model
         rows = [r.split("\t", 1) for r in lines if re.fullmatch(r"[\w.:-]+\t.+", r)]
         out = [{"id": slug, "name": name.strip(), "note": slug.split("-", 1)[0]} for slug, name in rows[:200]]
