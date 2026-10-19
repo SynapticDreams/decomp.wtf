@@ -37,8 +37,8 @@ def _program(data: bytes, name: str = "") -> Picked | None:
         info = gb.read_info(data)
         return Picked(info["platform"], data, f"rom.{'gbc' if info['platform'] == 'gbc' else 'gb'}", info, False)
     if sms.is_sms(data, name):
-        data = sms.strip_copier_header(data)
         info = sms.read_info(data, name)
+        data = sms.strip_copier_header(data)
         return Picked(info["platform"], data, f"rom.{info['platform']}", info, False)
     if data[:4] in n64.MAGIC:
         rom, info = n64.read_info(data)

@@ -89,3 +89,28 @@ def test_the_build_refuses_another_game(exported):
     (out / base).write_bytes(make_rom(size=0x20000, code={**CODE, 0x0200: bytes.fromhex("3e01c9")}))
     proc = subprocess.run([sys.executable, "build.py"], cwd=out, capture_output=True, text=True)
     assert proc.returncode != 0 and "isn't the version" in proc.stderr
+
+
+def test_export_refuses_a_changed_comparison_target_before_replacing_output(exported):
+    net, slug, _res, out = exported
+    proj = net.project_row(slug)
+    cfg = net.cfg(proj)
+    manifest = (out / "build.json").read_bytes()
+    image = Path(proj["root"]) / cfg["rom"]["file"]
+    changed = bytearray(image.read_bytes())
+    changed[0x200] ^= 1
+    image.write_bytes(changed)
+    with pytest.raises(ValueError, match="frozen normalized identity"):
+        net.export_rom(slug, log=lambda *_: None)
+    assert (out / "build.json").read_bytes() == manifest
+    assert net.cfg(net.project_row(slug))["rom"] == cfg["rom"]
+
+
+def test_standalone_build_enforces_normalized_identity(exported):
+    _net, _slug, _res, out = exported
+    path = out / "build.json"
+    manifest = json.loads(path.read_text())
+    manifest["identity"]["normalized"]["sha256"] = "0" * 64
+    path.write_text(json.dumps(manifest))
+    proc = subprocess.run([sys.executable, "build.py"], cwd=out, capture_output=True, text=True)
+    assert proc.returncode != 0 and "frozen normalized identity" in proc.stderr

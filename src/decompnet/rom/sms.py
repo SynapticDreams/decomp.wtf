@@ -44,7 +44,7 @@ MAX_FUNCTION = 0x800  # a function longer than this is more likely a run of code
 
 def strip_copier_header(data: bytes) -> bytes:
     """Dumps from old copiers start with 512 bytes that are not part of the ROM."""
-    if len(data) % BANK_SIZE == COPIER_HEADER and header_offset(data[COPIER_HEADER:]) is not None:
+    if _size_ok(len(data) - COPIER_HEADER) and header_offset(data[COPIER_HEADER:]) is not None:
         return data[COPIER_HEADER:]
     return data
 
@@ -90,6 +90,7 @@ def _product(data: bytes, off: int) -> str:
 
 def read_info(data: bytes, name: str = "") -> dict:
     """The cartridge header, in the shape the rest of the fork expects from a ROM reader."""
+    raw = data
     data = strip_copier_header(data)
     platform = platform_of(data, name)
     if platform is None:
@@ -126,6 +127,9 @@ def read_info(data: bytes, name: str = "") -> dict:
             "checksum": f"0x{data[off + 0xA] | (data[off + 0xB] << 8):04x}",
             "checksum_ok": checksum(data, off) == (data[off + 0xA] | (data[off + 0xB] << 8)),
         })
+    from .sms_identity import identify
+
+    info["identity"] = identify(raw, data, info)
     return info
 
 
