@@ -15,6 +15,21 @@ In a room, the host hands the routines out. A routine that passes every check on
 judges it again on its own copy and keeps it for the room; members get the room's documented routines as they sync.
 The host picks the ones a person looks over, and one sent back comes back on the track with what's wrong in a note.
 
+## Working from the frontend
+
+Open a routine and choose **Document this function** to start one helper on that routine's assembly track.
+The drawer shows the latest submitted source's byte equality and six checks separately; an old receipt is marked
+when names, layout, mapping or the validator change. **Validate assembly** submits edits through the same judge.
+These mechanical checks do not approve the routine's semantic description.
+
+Use **Defer documentation** for work needing an entry correction, mapping evidence or layout repair. Include what
+must change. Agents can use `defer_documentation(function, reason)` while holding the claim. Deferral releases that
+claim and keeps the routine off automatic and pinned queues; it preserves the source and attempts. Exact-byte
+drafts whose remaining mapping checks explicitly need evidence are deferred automatically. Incorrect-bank names
+and ordinary source errors stay available for correction. **Resume documentation** permits another attempt;
+a change to the actual judge inputs also makes deferred work eligible again. Resume does not bypass validation.
+The **Deferred** filter lists those routines. Active claims cannot be taken from another helper by these actions.
+
 ## The six checks
 
 1. **The same bytes.** It's assembled at the routine's address in its bank (rgbasm and rgblink, with hardware.inc

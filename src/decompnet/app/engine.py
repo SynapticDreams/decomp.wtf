@@ -204,6 +204,8 @@ class RomNetwork(Network):
         self.mapping = MappingEngine(self)
         from .sms_projects import SMSProjects
         self.sms = SMSProjects(self)
+        from .assembly_work import AssemblyWork
+        self.assembly = AssemblyWork(self)
 
     # ------------------------------------------------------------------ basics
 
@@ -1651,6 +1653,10 @@ class RomNetwork(Network):
         track = (track or "").strip().lower()
         if track not in ("", "c", "asm", "assembly"):
             raise NetworkError("track is c (match it in C) or asm (document a hand-written Game Boy routine)")
+        if (pin := self.pinned.get(agent.id)) is not None:
+            if function and self._function(function, project)["name"] != pin:
+                raise NetworkError(f"this helper works on {pin} only")
+            function = pin
         if track in ("asm", "assembly") or (function and self._on_asm_track(function, project)):
             return self.claim_asm(agent, project, function)
         link = self._link(project)
@@ -2130,7 +2136,7 @@ class RomNetwork(Network):
             asked = self._function(function, proj["slug"])["name"] if function else None
             name = link.claim(agent, asked, "easiest", track="asm")
             if name is None:
-                return "Nothing left on the assembly track in this room: every hand-written routine is documented or being worked on. 🎉"
+                return "Nothing left on the assembly track in this room: routines are documented, deferred, or being worked on. Review deferred blockers before retrying."
             link.sync()
             if not self.asm_track(self._function(name, proj["slug"])):  # (a host without the track hands out C)
                 try:
@@ -2142,7 +2148,7 @@ class RomNetwork(Network):
             function = name
         fn = self.claim_asm_row(agent, proj["slug"], function)
         if fn is None:
-            return f"Nothing left on the assembly track in {proj['slug']}: every hand-written routine is documented or being worked on. 🎉"
+            return f"Nothing left on the assembly track in {proj['slug']}: routines are documented, deferred, or being worked on. Review deferred blockers before retrying."
         return self._brief(fn, agent, header="CLAIMED")
 
     def claim_asm_row(self, agent: Agent, project: str, function: str | None = None):
@@ -2150,6 +2156,10 @@ class RomNetwork(Network):
         hands its members' claims out with it."""
         proj = self._project(project)
         self.sms.require(row=proj)
+        if (pin := self.pinned.get(agent.id)) is not None:
+            if function and self._function(function, proj["slug"])["name"] != pin:
+                raise NetworkError(f"this helper works on {pin} only")
+            function = pin
         now = time.time()
         with self.store.tx() as db:
             self._expire_claims(db)
@@ -2162,6 +2172,8 @@ class RomNetwork(Network):
                 db.execute("UPDATE claims SET expires_at=? WHERE function_id=?", (now + self.claim_ttl, fn["id"]))
             elif function:
                 fn = self._function(function, proj["slug"])
+                if self.assembly.view(proj, fn)["deferred"]:
+                    raise NetworkError(f"{fn['name']} is deferred; review its blocker and resume documentation first")
                 if not self.asm_track(fn):
                     raise NetworkError(f"{fn['name']} isn't a hand-written routine set aside from C ({fn['status']})")
                 other = db.execute("SELECT agent_id FROM claims WHERE function_id=?", (fn["id"],)).fetchone()
@@ -2176,7 +2188,7 @@ class RomNetwork(Network):
                         "(SELECT function_id FROM claims) ORDER BY f.abandons >= ?, f.name IN (SELECT detail FROM events "
                         "WHERE project_id=? AND agent_id=? AND kind='release'), f.n_insns, f.rom_offset",
                         (proj["id"], GIVEN_UP, proj["id"], agent.id)):
-                    if self.asm_track(row):
+                    if self.assembly.eligible(proj, row):
                         fn = row
                         break
                 if fn is None:
@@ -2312,6 +2324,8 @@ class RomNetwork(Network):
         fn = self._function(function, project)
         proj = self._project(project) if project else self.store.one("SELECT * FROM projects WHERE id=?", fn["project_id"])
         self.sms.require(row=proj)
+        if (pin := self.pinned.get(agent.id)) is not None and fn["name"] != pin:
+            raise NetworkError(f"this helper works on {pin} only")
         if (self.cfg(proj).get("arch") or "").lower() not in ASM_ARCHS:
             raise NetworkError("documented assembly is for Game Boy, Master System, Game Gear and NES projects for now")
         judge = self._asm_judge(proj)  # (RGBDS or WLA-DX)
@@ -2320,6 +2334,8 @@ class RomNetwork(Network):
         if not self.asm_track(fn):
             raise NetworkError(f"{fn['name']} isn't a hand-written routine set aside from C ({fn['status']}): "
                                "it's matched in C (compile_and_diff), or isn't code")
+        if self.assembly.view(proj, fn)["deferred"]:
+            raise NetworkError("documentation is deferred; resume it after reviewing the blocker")
         now = time.time()
         with self.store.tx() as db:  # (as compile_and_diff: you can't score, or get credit, on someone else's claim)
             self._expire_claims(db)
@@ -2337,9 +2353,11 @@ class RomNetwork(Network):
             raise NetworkError(f"{ {'z80': 'WLA-DX', 'mos6502': 'cc65'}.get(proj['arch'], 'RGBDS') } isn't installed: "
                                "install it from Setup")
         try:
-            verdict = judge.judge(self._routine(proj, fn), text)
+            routine = self._routine(proj, fn)
+            verdict = judge.judge(routine, text)
         except judge.AsmError as e:
             raise NetworkError(str(e)) from None
+        receipt = self.assembly.receipt(proj, fn, routine, text, verdict)
         link, hosted = self._link(proj["slug"]), ""
         if verdict.ok and link is not None:  # a room: its host judges it again on its own copy, and keeps it
             try:
@@ -2358,8 +2376,9 @@ class RomNetwork(Network):
             db.execute("UPDATE functions SET attempts=attempts+1 WHERE id=?", (fn["id"],))
             db.execute("UPDATE functions SET best_score=?, best_source=?, best_agent_id=? WHERE id=? AND status='asm' "
                        "AND (best_score IS NULL OR best_score > ?)", (score, text, agent.id, fn["id"], score))
+            deferred = self.assembly.record(db, fn, receipt, ok)
             if ok:  # (a room's host picks what a person looks over, not its members)
-                meta = json.loads(fn["meta"] or "{}") | ({"sample": True} if link is None and random.random() < self.REVIEW_SAMPLE else {})
+                meta = json.loads(db.execute("SELECT meta FROM functions WHERE id=?", (fn["id"],)).fetchone()["meta"] or "{}") | ({"sample": True} if link is None and random.random() < self.REVIEW_SAMPLE else {})
                 db.execute("UPDATE functions SET status='documented', matched_source=?, matched_agent_id=?, matched_at=?, "
                            "meta=? WHERE id=? AND status='asm'", (verdict.text, agent.id, now, json.dumps(meta), fn["id"]))
                 for name, value in verdict.defines.items():
@@ -2369,7 +2388,8 @@ class RomNetwork(Network):
                 self._event(db, proj["id"], agent.id, "documented", fn["name"])
         if not verdict.ok:
             return (f"❌ not yet ({len(fn['target'] or b'')} bytes, {verdict.same} the same):\n"
-                    + "\n".join(f"- {p}" for p in verdict.problems))
+                    + "\n".join(f"- {p}" for p in verdict.problems)
+                    + ("\nDocumentation deferred: mapping evidence must change, or a person must resume it. Claim another routine." if deferred else ""))
         if link is not None:
             if not ok:
                 return ("❌ it passes every check on your copy, but the room's host didn't take it (what the host has may "
@@ -2856,6 +2876,7 @@ class RomNetwork(Network):
                  "matched_at": r["matched_at"], "matched_by": r["matched_by"],
                  **(_set_aside(r["meta"]) if r["status"] == "asm" else {}),
                  **({"track": True} if sm83 and r["status"] == "asm" and self.asm_track(r) else {}),
+                 **(self.assembly.map_view(proj, r) if sm83 and r["status"] == "asm" else {}),
                  **({"sample": True} if r["status"] == "documented" and json.loads(r["meta"] or "{}").get("sample") else {})}
                 for r in rows]
 
@@ -2872,7 +2893,8 @@ class RomNetwork(Network):
                            "JOIN functions f ON f.id=c.function_id WHERE f.project_id=?", proj["id"])
         link = self.links.get(slug)
         remote = sorted(str(x.get("vram") or x.get("name")) + x.get("agent", "") for x in (link.claims if link else []))
-        return f"{f['n']}.{f['hi']}.{f['at']}.{f['m']}.{f['bs']}.{f['ma']}.{c['n']}.{c['k']}.{hash(tuple(remote)) & 0xFFFFFF}"
+        event = self.store.one("SELECT COALESCE(MAX(id),0) AS n FROM events WHERE project_id=?", proj["id"])["n"]
+        return f"{event}.{f['n']}.{f['hi']}.{f['at']}.{f['m']}.{f['bs']}.{f['ma']}.{c['n']}.{c['k']}.{hash(tuple(remote)) & 0xFFFFFF}"
 
     # ------------------------------------------------------------------ what agents spend, and steering them
 
@@ -3204,6 +3226,7 @@ class RomNetwork(Network):
                            "best" if fn["best_source"] else "latest" if latest else "asm_draft" if draft else
                            "draft" if fn["seed"] else None,
             "track": track,
+            "assembly_work": self.assembly.view(proj, fn) if track or fn["status"] == "documented" and proj["arch"] in ASM_ARCHS else None,
             "sample": fn["status"] == "documented" and bool(json.loads(fn["meta"] or "{}").get("sample")),
             "scores": [{"score": a["score"], "t": a["created_at"], "agent": a["agent"]} for a in attempts],
             "notes": [dict(n) for n in notes],

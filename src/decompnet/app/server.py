@@ -252,7 +252,12 @@ def _pin_options(net, settings: Settings, kind: str, slug: str, given: dict) -> 
         raise ValueError("pinning a helper to one function works on your own ROM projects (not a git project or a "
                          "room's copy) for now")
     fn = net._function(str(given["pin"]), slug)
-    if fn["status"] != "open":
+    if given.get("track") == "asm":
+        if given.get("lean"):
+            raise ValueError("pinned assembly uses the agent tool loop, not the C lean loop")
+        if not net.assembly.eligible(net.project_row(slug), fn):
+            raise ValueError("this routine is deferred or not awaiting documentation")
+    elif fn["status"] != "open":
         raise ValueError(f"{fn['name']} isn't open ({fn['status']}): nothing to work on")
     if net._hash_only(fn):
         raise ValueError("this project keeps fingerprints only: there's no diff to get closer by")
@@ -261,7 +266,7 @@ def _pin_options(net, settings: Settings, kind: str, slug: str, given: dict) -> 
         raise ValueError(f"{fn['name']} is being worked on by {held['name']}: stop that helper first")
     out = {"pin": fn["name"], "stall": max(2, min(int(given.get("stall") or 0) or
                                                   (lean.STALL if given.get("lean") else agents.PIN_STALL_RUNS), 50)),
-           "polish": given.get("polish") is not False}
+           "polish": False if given.get("track") == "asm" else given.get("polish") is not False}
     method = str(given.get("lean") or "")
     if method:
         if kind not in agents.LEAN_KINDS:
@@ -584,7 +589,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
 
     MAP_KEYS = ("name", "vram", "size", "insns", "unit", "status", "best", "attempts", "agent", "matched_at", "matched_by",
                 "why", "review", "review_by",  # (why a function is set aside, and whether an agent set it aside for review)
-                "track", "sample")  # (the assembly track: a routine to document; a documented one to look over)
+                "track", "sample", "deferred", "assembly_bytes")  # (the assembly track: a routine to document; a documented one to look over)
 
     @mcp.custom_route("/api/map", methods=["GET"])
     async def api_map(request: Request) -> Response:
@@ -785,8 +790,11 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         agent, _ = net.local_agent("you")
         name, source = str(data.get("name", "")), str(data.get("source", ""))
         if net._on_asm_track(name, slug):  # a hand-written routine: its documented assembly, judged
+            fid = net._function(name, slug)["id"]
             text = net.document_function(agent, slug, name, source)
-            return {"score": 0 if text.startswith("✅") else None, "matched": text.startswith("✅"), "text": text[-4000:]}
+            current = net.store.one("SELECT name FROM functions WHERE id=?", fid)
+            return {"score": 0 if text.startswith("✅") else None, "matched": text.startswith("✅"),
+                    "assembly": True, "name": current["name"] if current else name, "text": text[-4000:]}
         res = net.attempt(agent, name, source, slug)
         return {"score": res["score"], "matched": res["matched"], "text": res["text"][-4000:]}
 
@@ -832,6 +840,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/debug/psx": (p_psx_debug, ["POST"]),
         "/api/resplit": (p_resplit, ["GET", "POST"]),
         "/api/resplit/archive": (p_resplit_archive, ["GET"]),
+        "/api/assembly/queue": (lambda s, r, d: net.assembly.change(
+            s, str(d.get("function", "")), reason=d.get("reason"), resume=d.get("resume") is True), ["POST"]),
         "/api/give_back": (lambda s, r, d: net.give_to_agents(s, str(d.get("function", ""))), ["POST"]),
         "/api/corrections": (lambda s, r, d: correction_routes.handle(net, s, r, d), ["GET", "POST"]),
         "/api/corrections/undo": (lambda s, r, d: net.undo_correction(s, d.get("id")), ["POST"]),
@@ -1119,7 +1129,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             if (proj["arch"] or "") not in ASM_ARCHS or net.fork_slug(slug):
                 return fail(ValueError("the assembly track is for Game Boy, Master System, Game Gear and NES projects"))
             if not agents.Manager._asm_left(net, proj):
-                return fail(ValueError("Nothing to start on: every hand-written routine is documented or being worked on."))
+                return fail(ValueError("Nothing to start on: assembly routines are documented, deferred, or being worked on."))
             options["track"] = "asm"
             options.pop("focus", None)
         options.setdefault("per_session", settings.data.get("per_session", agents.PER_SESSION))
