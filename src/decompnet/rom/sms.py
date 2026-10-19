@@ -499,10 +499,12 @@ def functions(data: bytes, log=lambda *_: None, labels: dict | None = None,
 
 
 def split(path: Path, workdir: Path, log=lambda *_: None, report: dict | None = None,
-          hints: dict | None = None) -> list[gb.GbFunction]:
+          hints: dict | None = None, *, symbol_layout: dict | None = None) -> list[gb.GbFunction]:
     """A ROM file's functions. (`report` gets {"splitter": "built-in"}: there is no external tool for the Z80, and
     the banks' addresses.) A WLA-DX symbol file next to the ROM (`game.sym` for `game.sms`) seeds and names them;
-    `hints` are the project's corrections (functions)."""
+    `hints` are the project's corrections (functions). `symbol_layout` opts into a revision-bound WLA declaration
+    separating assembler banks/slots from physical 16 KiB banks. Its records/aliases are returned in the report;
+    the original file is unchanged. Without a declaration the historical physical-bank interpretation remains."""
     if report is not None:
         report["splitter"] = "built-in"
     data = strip_copier_header(Path(path).read_bytes())
@@ -513,7 +515,20 @@ def split(path: Path, workdir: Path, log=lambda *_: None, report: dict | None = 
         f"{', header found' if info['header'] else ', no header'})")
     labels = seeds = None
     sym = Path(path).with_suffix(".sym")
-    if sym.is_file():
+    if symbol_layout is not None:
+        from . import wla_layout, wla_symbols
+        from .export_sms_artifacts import read_regular
+
+        raw, stat = read_regular(sym, wla_symbols.MAX_BYTES + 1)
+        if stat.st_size > wla_symbols.MAX_BYTES:
+            raise ValueError('WLA symbol source exceeds the 8 MiB budget')
+        layout = wla_layout.declare(symbol_layout, data, mapper=(hints or {}).get('mapper', 'sega'))
+        imported = wla_symbols.normalize(wla_symbols.read(raw), layout, data)
+        labels, seeds = imported.names, imported.seeds
+        if report is not None:
+            report['symbol_import'] = imported.report()
+        log(f'{len(imported.records)} WLA records through declared layout; {len(seeds)} seed suggestions')
+    elif sym.is_file():
         text = sym.read_text(encoding="utf-8", errors="replace")
         labels, seeds = sms_trace.read_sym(text), sms_trace.read_sym(text, seeds=True)
         log(f"{len(labels)} labels from {sym.name}" + (f", and {len(seeds) - len(labels)} places it says code starts"

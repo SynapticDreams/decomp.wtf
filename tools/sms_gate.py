@@ -33,6 +33,9 @@ TESTS = (
     "tests/test_sms_c_reference_export.py",
     "tests/test_sms_progress_routes.py",
     "tests/test_sms_export_artifacts.py",
+    "tests/test_sms_wla_layout.py",
+    "tests/test_sms_wla_symbols.py",
+    "tests/test_sms_wla_tool.py",
     "tests/test_sms_documented.py",
     "tests/test_export_sms.py",
 )
@@ -154,6 +157,13 @@ def verify_report(report: Path) -> int:
     for module, required in required_progress.items():
         if not required <= {case.get('name') for case in cases if case.get('classname') == module}:
             raise ValueError(f'SMS gate report is missing required progress/export evidence: {module}')
+    wla = {case.get('name') for case in cases if case.get('classname') == 'tests.test_sms_wla_tool'}
+    symbols = {case.get('name') for case in cases if case.get('classname') == 'tests.test_sms_wla_symbols'}
+    if not all(f'test_actual_nonuniform_wla_symbols_seed_the_right_bytes_and_keep_aliases[{p}]' in wla
+               for p in ('sms', 'gg')) or not {
+                   'test_nonuniform_banks_aliases_duplicate_cpu_windows_and_automatic_seeds_are_distinct',
+                   'test_data_ram_locals_unknown_and_impossible_fixed_prefix_do_not_seed_code'} <= symbols:
+        raise ValueError('SMS gate report is missing declared WLA symbol normalization checks')
     return len(cases)
 
 
