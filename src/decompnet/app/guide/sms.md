@@ -234,9 +234,10 @@ does not silently become an assembly acceptance contract. Stored source is retai
   `ld hl,table / add hl,de / ... / jp (hl)`, as many entries as a `cp n / jr nc` before it allows), plus a sweep for
   `call`s in the banks that hold code and code that starts right where a function ends. The following also keeps
   slot 0 paged by 0xFFFD, a bank kept in RAM or saved on the stack and mapped again, and a computed call
-  (`ld de,.next / push de / jp (hl)`), which comes back to `.next`. A symbol file next to the ROM names functions,
-  and its automatic `_LABEL_..._` names say where code starts. Code reached only through pointers kept in RAM may
-  still be missing, and data inside a function's range is not told apart from code.
+  (`ld de,.next / push de / jp (hl)`), which comes back to `.next`. Symbol sources contribute names and entry
+  seeds only through declared assembler geometry; automatic labels seed entries without establishing semantic
+  names. Code reached only through pointers kept in RAM may still be missing; undocumented bytes inside a
+  routine can remain ambiguous.
 - When the split took data for code, missed a function, or decoded the bytes after a call as instructions, say so
   with `correct_split(kind, at, reason, count)`, with how you know (what reads it, what calls it, what it holds):
   `data` (`count` bytes at `at` aren't code), `code` (a function starts at `at`), `table` (`count` handler
@@ -246,6 +247,23 @@ does not silently become an assembly acceptance contract. Stored source is retai
   game again (they can undo it first); ten an hour at most. Table corrections retain their explicit CPU window.
   An unqualified SMS address resolves only with established window evidence; use `NN:AAAA` or a function
   name when a bank is required. A unique function at a CPU address is insufficient mapping evidence.
+- Prefer bound SMS/GG proposals with `correct_split(..., apply=false)`, then the same arguments with
+  `apply=true, expected_plan=plan` from the preview. Counts are strict integers and full extents must fit.
+  New data/table claims cannot override accepted C or documented assembly. A saved structured fact remains
+  pending operator review. `inspect_corrections(limit=50)` lists status and a `next_before` cursor; pass
+  `before_id=next_before` for more, or `correction_id=ID` for full geometry and evidence. Workers cannot approve
+  facts. Confidence and evidence state never substitute for review. Unknown/future facts stay visible and inactive.
+  The five old kinds may use their usual arguments with `apply=false`; they become bound proposals.
+  Explicit structured geometry uses `annotation={version:1, kind, target:{space:"rom",offset,size}, spec}`.
+  A simple example is kind `record`, target size 16 at physical offset 256, and
+  `spec:{count:4,stride:4,overlap:"reject",fields:[{name:"flags",offset:0,type:"u8"}]}`.
+  Omit legacy count with an explicit annotation. Other kinds include `pointers`, `split_pointers`, `number`
+  and `mapping`; these remain stored research while their discovery consumers are qualified. They cannot
+  change live bus state. Forced numeric values must equal the original bytes. Evidence can retain alternatives,
+  links, observation/static_derivation/interpretation/hypothesis state and confidence. The server derives origin,
+  revision, mapping context and subject bindings. Imported accepted/rejected receipts are refused.
+  See [version 1 schemas and workflow](https://github.com/SynapticDreams/decomp.wtf/blob/main/docs/sms-annotations.md)
+  for full record/bitfield, near/far/split-pointer and evidence fields. Notes/symbol metadata editing is separate.
 - A person can also import what an emulator saw while they played (Settings, a Mesen2 code/data log or a
   `bank:address` trace): splitting the game again then starts functions where calls entered and where code ran that
   wasn't reached, and keeps what was only read as data out of functions.

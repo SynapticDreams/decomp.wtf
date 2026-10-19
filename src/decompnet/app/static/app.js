@@ -3148,7 +3148,10 @@ async function loadCorrections() {
 function showCorrections(r) {
   const rows = r.corrections || [];
   const when = (t) => ago(new Date(t * 1000).toISOString());
-  $("correctionsList").innerHTML = rows.length ? `<table class="fn-table corrections"><thead><tr><th>Where</th><th>What</th><th>How they know</th><th>By</th><th></th></tr></thead><tbody>${rows.map((c) => `<tr class="${c.undone ? "undone" : ""}"><td class="mono">${esc(c.where)}</td><td>${esc(c.says)}${c.count ? ` (${c.count.toLocaleString()} ${esc(c.unit)})` : ""}</td><td>${esc(c.reason || "")}</td><td class="muted small">${esc(c.by || "")}<br>${esc(when(c.at))}</td><td>${c.undone ? `<span class="muted small">undone</span>` : `<button class="ghost small-btn" data-undo="${c.id}" type="button">Undo</button>`}</td></tr>`).join("")}</tbody></table>`
+  const status = (c) => c.application === "awaiting_consumer" ? "stored for research"
+    : c.application === "legacy_hint" ? (c.annotation_status === "legacy_unknown" ? "legacy hint · provenance unknown" : "reviewed hint")
+    : (c.application || "unknown").replaceAll("_", " ");
+  $("correctionsList").innerHTML = rows.length ? `<table class="fn-table corrections"><thead><tr><th>Where</th><th>What</th><th>Application</th><th>How they know</th><th>By</th><th></th></tr></thead><tbody>${rows.map((c) => `<tr class="${c.undone ? "undone" : ""}"><td class="mono">${esc(c.where)}</td><td>${esc(c.says)}${c.count ? ` (${c.count.toLocaleString()} ${esc(c.unit)})` : ""}</td><td class="small" title="${esc(c.conflict || "")}">${esc(status(c))}</td><td>${esc(c.reason || "")}</td><td class="muted small">${esc(c.by || "")}<br>${esc(when(c.at))}</td><td>${c.undone ? `<span class="muted small">undone</span>` : `<button class="ghost small-btn" data-undo="${c.id}" type="button">Undo</button>`}</td></tr>`).join("")}</tbody></table>`
     : `<p class="muted small">None yet. Agents add them with <code>correct_split</code> when they find bytes that aren't code, a function start, a table, or a routine that reads bytes after its call.</p>`;
   $("correctionsList").querySelectorAll("[data-undo]").forEach((b) => { b.onclick = async () => {
     b.disabled = true;

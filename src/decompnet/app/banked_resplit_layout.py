@@ -2,6 +2,8 @@
 from dataclasses import dataclass
 from collections import Counter
 
+from .correction_records import active
+
 
 @dataclass
 class Layout:
@@ -45,8 +47,7 @@ def reconcile(net, proj, before, old, fns, report):
            "bytes_before": sum(r["size"] or 0 for r in old),
            "bytes_after": sum((r["size"] or 0) for r in old if r["id"] in kept or (before is None and r["status"] == "matched"))
            + sum(f.size for f in fresh),
-           "corrections": net.store.one("SELECT COUNT(*) AS n FROM corrections WHERE project_id=? AND undone_at IS "
-                                         "NULL", proj["id"])["n"]}
+           "corrections": len(active(net, proj))}
     source = report.get('symbol_import')
     if isinstance(source, dict):
         records = source.get('records') or []
