@@ -892,7 +892,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             return bad
         data = await body(request)
         try:
-            return JSONResponse(await call(lambda: net.forks.policy(str(data.get("repo", "")))))
+            return JSONResponse(await call(lambda: net.forks.review_policy(str(data["slug"])) if data.get("slug")
+                                           else net.forks.policy(str(data.get("repo", "")))))
         except NetworkError as e:
             return fail(e)
 

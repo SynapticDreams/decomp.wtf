@@ -25,6 +25,7 @@ from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from .. import similarity, toolchains
+from ..forks import policy as contribution_policy
 from ..forks import catalog, csource, datadiff, drafts, dtksplits, ghidra, scratch_dsd, scratch_dtk
 from ..forks.objdiff import ObjdiffError
 from ..forks.project import EDITABLE, STATE, ForkError, ForkProject
@@ -405,6 +406,13 @@ class ForkEngine:
             raise NetworkError("give a GitHub/GitLab/Codeberg repository URL (https://github.com/owner/repo)")
         return {"repo": m.group(1), **policy.check(m.group(1))}
 
+    def review_policy(self, slug: str) -> dict:
+        proj, fp, cfg = self.get(slug)
+        review = contribution_policy.inspect(fp.root, working_tree=True)
+        cfg["contribution_policy"] = review
+        self._save_cfg(proj, cfg)
+        return review
+
     def clone(self, repo: str, *, name: str = "", platform: str = "", version: str | None = None, log=print) -> str:
         repo = repo.strip()
         local = Path(repo).expanduser()
@@ -432,7 +440,8 @@ class ForkEngine:
         versions = fp.versions()
         version = version if version in versions else (versions[0] if versions else version)
         cfg = {"kind": "fork", "repo_url": url, "platform": platform, "version": version, "fork_kind": kind,
-               "ready": False, "legal": {"basis": "personal-copy", "license": "the project's own license"}}
+               "ready": False, "contribution_policy": contribution_policy.inspect(dest),
+               "legal": {"basis": "personal-copy", "license": "the project's own license"}}
         self._register(slug, name or url.rstrip("/").split("/")[-1], f"fork of {url}", dest, cfg, f"cloned {url}")
         log(f"cloned into {dest} ({kind} project)")
         return slug
@@ -2353,6 +2362,7 @@ class ForkEngine:
             "slug": slug, "title": proj["name"], "description": proj["description"], "kind": "fork",
             "platform": cfg.get("platform"), "platform_name": catalog.PLATFORMS.get(cfg.get("platform"), cfg.get("platform") or ""),
             "repo_url": cfg.get("repo_url"), "fork_kind": cfg.get("fork_kind"), "version": cfg.get("version"),
+            "contribution_policy": cfg.get("contribution_policy"),
             "origin": cfg.get("origin"), "compiler_name": cfg.get("compiler"),
             "versions": fp.versions(), "ready": bool(cfg.get("ready")), "needs": need,
             "rom": {"game_code": cfg.get("version") or "", "region": catalog.PLATFORMS.get(cfg.get("platform"), ""),
