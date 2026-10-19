@@ -30,5 +30,7 @@ jobs:
       - run: uvx ruff@0.14.0 check src tests
       - run: node --check src/decompnet/app/static/app.js
       - run: node --check src/decompnet/app/static/sms-profile.js
+      - run: node --check src/decompnet/app/static/resplit-history.js
+      - run: node --check src/decompnet/app/static/resplit-archive.js
       # compilers and emulator-side tools aren't installed here: the tests that need them skip themselves
       - run: uv run pytest -q -p no:cacheprovider

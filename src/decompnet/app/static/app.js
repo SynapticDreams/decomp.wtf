@@ -3069,7 +3069,7 @@ async function renderProjectSettings() {
         S.ov = await api(`/api/project?slug=${encodeURIComponent(slug)}`);
         renderProjectSettings();
         poll(false);
-      });
+      }, (id, params) => api(`/api/resplit/archive?${new URLSearchParams({ slug, history: id, ...params })}`));
   }
   const corrects = ["gb", "gbc", "sms", "gg", "nes"].includes(ov.platform) && !fork && ov.room?.role !== "guest";
   $("correctionsPanel").hidden = !corrects;

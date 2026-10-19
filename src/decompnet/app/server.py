@@ -739,6 +739,11 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             return net.resplit_banked(slug, apply=apply, log=log, expected_plan=data.get("plan"))
         return {"job": jobs.start("resplit", work)}
 
+    def p_resplit_archive(slug, request, data):
+        from .banked_resplit_archive import query
+
+        return query(net, slug, request.query_params)
+
     def p_sms_profile(slug, request, data):
         if request.method == "GET":
             return net.sms.inspect(slug)
@@ -825,6 +830,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/libraries/psyq": (p_psyq, ["POST"]),
         "/api/debug/psx": (p_psx_debug, ["POST"]),
         "/api/resplit": (p_resplit, ["GET", "POST"]),
+        "/api/resplit/archive": (p_resplit_archive, ["GET"]),
         "/api/give_back": (lambda s, r, d: net.give_to_agents(s, str(d.get("function", ""))), ["POST"]),
         "/api/corrections": (lambda s, r, d: net.corrections(s), ["GET"]),
         "/api/corrections/undo": (lambda s, r, d: net.undo_correction(s, int(d.get("id") or 0)), ["POST"]),

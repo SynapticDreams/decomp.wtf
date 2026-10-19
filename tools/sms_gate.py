@@ -19,6 +19,7 @@ TESTS = (
     "tests/test_sms_resplit_history.py",
     "tests/test_sms_resplit_source_check.py",
     "tests/test_sms_resplit_revalidate.py",
+    "tests/test_sms_resplit_archive.py",
     "tests/test_sms_documented.py",
     "tests/test_export_sms.py",
 )
@@ -74,6 +75,10 @@ def verify_report(report: Path) -> int:
                     for platform in ('sms', 'gg'))
     if not required <= revalidation:
         raise ValueError('SMS gate report is missing actual C/assembly resplit revalidation checks')
+    archive = {case.get('name') for case in cases if case.get('classname') == 'tests.test_sms_resplit_archive'}
+    if not all(f'test_saved_source_can_be_recovered_and_rejudged_after_new_work_blocks_undo[{platform}-{kind}]' in archive
+               for platform in ('sms', 'gg') for kind in ('c', 'asm')):
+        raise ValueError('SMS gate report is missing actual SMS/GG forward recovery checks')
     return len(cases)
 
 
