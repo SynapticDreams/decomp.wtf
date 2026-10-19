@@ -23,8 +23,11 @@ change that readback without selecting a new bank. Reset register values are a s
 not a guarantee for every mapper revision. The tracer carries full bus snapshots through calls and tables,
 and joins incoming mapping facts conservatively. Known mapper-control writes update RAM selection; a bank change
 updates the next instruction's source. The reset root uses an explicit cartridge-only recipe. Isolated seeds
-establish only their own ROM window. Distinct register, RAM, stack and mapper facts at the same instruction are
-followed separately. Each function has instruction, per-address context, stack and sparse-memory budgets;
+establish only their own ROM window. Entry/reset/register facts come from the selected model. Mapperless wiring
+has no selector/control latches. Reset facts apply to the actual CPU-zero reset-vector root; a symbol at CPU zero
+or ROM offset zero running in another window does not imply reset. A matching entry correction preserves reset.
+Distinct register, RAM, stack and mapper facts at the same instruction are followed separately.
+Each function has instruction, per-address context, stack and sparse-memory budgets;
 unchanged loops converge as table/bound marks age and expire. Exhausted entries appear in split logs and the
 `analysis_exhausted` report/resplit result with their ROM offsets and reasons. Their discovered callees retain
 only conditional entry-window facts; exhausted analysis cannot prove a mapper helper or a nonreturning routine.

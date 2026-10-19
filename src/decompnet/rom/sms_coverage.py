@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from . import z80
 from .coverage import Coverage, CoverageError, _TRACE
-from .sms_mapping import Mapper, entry_state
+from .sms_mapping import Mapper
 from .sms_mapping import rom_coordinate as trace_address
 from .sms_profile import read as read_profile
 
@@ -52,7 +52,7 @@ def read_trace(text: str, rom: bytes, *, mapper: str) -> Coverage:
         cov.code[flat] = 1  # even an incompletely fetched instruction has an observed first byte
         if previous is not None and previous[0] == cpu and (previous[1] is None or previous[1] == flat):
             cov.entries.add(flat)
-        state = entry_state(flat, cpu, model.size)
+        state = model.entry(flat, cpu)
         chunk = bytearray()
         for offset in range(4):
             address = model.resolve(cpu + offset, state)

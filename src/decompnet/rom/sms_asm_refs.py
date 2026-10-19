@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 
 from . import sms_effects, z80
-from .sms_mapping import BANK, Address, BusState, Mapper, entry_state
+from .sms_mapping import BANK, Address, BusState, Mapper
 
 
 def _prefix(routine, offset):
@@ -26,7 +26,7 @@ def reference(routine, target: int, offset: int = 0, *, prefix=None) -> Address:
         model = Mapper(routine.mapper, routine.rom_size or routine.banks * BANK)
     except ValueError as exc:
         return Address(target, "unknown", reason=str(exc))
-    state = routine.mapping if routine.mapping is not None else entry_state(routine.flat, routine.cpu, model.size)
+    state = routine.mapping if routine.mapping is not None else model.entry(routine.flat, routine.cpu)
     # Do not reuse an entry bank after a store changes its selection. Value/path summaries are not
     # established here, so known mapper stores use unknown values rather than guessing an A/HL value.
     for text in prefix if prefix is not None else _prefix(routine, offset):

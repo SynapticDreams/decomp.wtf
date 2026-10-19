@@ -95,9 +95,25 @@ class Mapper:
             raise ValueError("a mapperless cartridge cannot expose more than 48 KiB")
 
     def reset(self) -> BusState:
-        """The 315-5235/emulator power-up recipe; callers must choose it explicitly."""
+        """Selected wiring/recipe, without assigning one mapper's raw registers to another."""
+        if self.kind == "mapperless":
+            return BusState.cartridge_only((0, 1, 2), control=None)
+        # Sega's selected 315-5235/emulator recipe is not a reset guarantee for every chip revision.
         banks = tuple(bank & bank_mask(self.size) for bank in (0, 1, 2))
         return BusState.cartridge_only(banks, registers=(0, 1, 2))
+
+    def entry(self, flat: int, cpu: int) -> BusState:
+        """Conditional ROM-entry facts under this model, separate from reset and section placement."""
+        if self.kind == "mapperless":
+            return BusState.cartridge_only((0, 1, 2), control=None)
+        return entry_state(flat, cpu, self.size)
+
+    def register_slot(self, cpu: int) -> int | None:
+        """The canonical bank selector at a CPU address, if this model has one there."""
+        return REGISTERS.get(cpu) if self.kind == "sega" and type(cpu) is int else None
+
+    def is_mapper_register(self, cpu: int) -> bool:
+        return self.kind == "sega" and type(cpu) is int and (cpu == 0xFFFC or self.register_slot(cpu) is not None)
 
     def resolve(self, cpu: int, state: BusState) -> Address:
         if type(cpu) is not int or not 0 <= cpu <= 0xFFFF:
@@ -216,7 +232,7 @@ def join(states) -> BusState:
 def rom_coordinate(model: Mapper, bank: int, cpu: int, mapping: BusState | None = None) -> Address:
     """Validate an explicit physical ROM-bank/CPU coordinate; never reattribute contradictory coordinates."""
     flat = bank * BANK + (cpu & (BANK - 1))
-    state = mapping if mapping is not None else entry_state(flat, cpu, model.size)
+    state = mapping if mapping is not None else model.entry(flat, cpu)
     result = model.resolve(cpu, state)
     if result.rom_offset is not None and result.offset != flat:
         return Address(cpu, "unknown", reason="coordinate bank contradicts the selected cartridge mapping")

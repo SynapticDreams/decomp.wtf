@@ -18,8 +18,8 @@ import bisect
 import re
 
 from . import sms_calls, sms_effects, sms_registers, sms_seeds, sms_stack, sms_trace_writes, z80
-from .sms_mapping import BusState, Mapper, entry_state, join
-from .sms_mapping import REGISTERS as MAPPER
+from .sms_mapping import BusState, Mapper, REGISTERS, join
+from .sms_mapping import entry_state as entry_state  # legacy Sega helper; analysis uses the selected model
 from .sms_mapping import bank_mask as bank_mask  # preserve the previous helper import
 from .sms_decode import decode as _decode, can_start as can_start, plausible as plausible
 from .sms_paths import Limits, Paths
@@ -31,6 +31,7 @@ from .sms_state import ARG, Found, State
 
 BANK = 0x4000
 VECTORS = (0x0000, 0x0008, 0x0010, 0x0018, 0x0020, 0x0028, 0x0030, 0x0038, 0x0066)
+MAPPER = REGISTERS  # preserve the previous Sega-specific import
 
 
 def resolve(target: int, here_flat: int, here_cpu: int, s1, s2, size: int, s0=0, *,
@@ -101,7 +102,7 @@ class Tracer:
             before = now
         else:
             self.budget.note("convergence round budget exhausted")
-        self.budget.qualify(self.found, self.size)
+        self.budget.qualify(self.found, self.model)
         self._bank_bases()
         return self.found
 
@@ -111,7 +112,7 @@ class Tracer:
         f = self.found
         prev, f.entered, f.starts, f.with_hl, f.jumps, f.anchors = f.entered, {}, {}, [], [], set()
         f.indexed, f.tails, f.code = [], {}, {}
-        queue = [(flat, cpu, why, self.reset if flat == 0 else None)
+        queue = [(flat, cpu, why, self.reset if (flat, cpu, why) == (0, 0, "vector") else None)
                  for flat, (cpu, why) in sorted(seeds.items(), reverse=True)]  # reset before isolated entries
         for flat, _cpu, _why, m in queue:
             if m is not None:
@@ -131,7 +132,7 @@ class Tracer:
             f.starts.setdefault(flat, (cpu, why))
             # a slot's bank holds inside a function only when everything that enters it agrees on it
             entries = prev.get(flat, set()) | ({mapping} if mapping is not None else set())
-            context = join(entries) if entries else entry_state(flat, cpu, self.size)
+            context = join(entries) if entries else self.model.entry(flat, cpu)
             for cflat, ccpu, m, how in self._trace(flat, cpu, State(context, ARG)):
                 f.entered.setdefault(cflat, set()).add(m)
                 queue.append((cflat, ccpu, how, m))
@@ -200,8 +201,7 @@ class Tracer:
                     f.unknown_writes.add(entry)
                     f.switchers.pop(entry, None)
                 for slot_reg, val in ((write.cpu, write.value) for write in writes):
-                    if self.mapper and slot_reg in MAPPER:
-                        slot = MAPPER[slot_reg]
+                    if (slot := self.model.register_slot(slot_reg)) is not None:
                         if not (slot == 1 and val == 1) and not (slot == 0 and val == 0):
                             f.slot_writes[slot] = f.slot_writes.get(slot, 0) + 1
                         if val == ARG and entry not in f.unknown_writes:
@@ -307,7 +307,7 @@ class Tracer:
             f.switchers.pop(entry, None)
             del f.with_hl[tables_at:]
             del f.indexed[indexed_at:]
-            out = [(at, pc, entry_state(at, pc, size), how) for at, pc, _mapping, how in out]
+            out = [(at, pc, self.model.entry(at, pc), how) for at, pc, _mapping, how in out]
         return list(dict.fromkeys(out))
 
     def _unresolved(self, entry, reason):
@@ -321,7 +321,7 @@ class Tracer:
         for reason in result.reasons:
             self._unresolved(entry, reason)
         nested = result.entries[1:] if result.entries and result.entries[0][:2] == (flat, target) else result.entries
-        entries.extend((at, pc, entry_state(at, pc, self.size) if result.reasons else mapping, "call")
+        entries.extend((at, pc, self.model.entry(at, pc) if result.reasons else mapping, "call")
                        for at, pc, mapping in nested)
         return result.resume(state, conditional=conditional)
 

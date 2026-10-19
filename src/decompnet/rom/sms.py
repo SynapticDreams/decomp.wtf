@@ -26,7 +26,7 @@ from pathlib import Path
 from . import gb, sms_seeds, sms_trace, z80
 from .n64 import RomError
 from .sms_identity import strip_copier_header as strip_copier_header
-from .sms_mapping import BusState, Mapper, entry_state
+from .sms_mapping import BusState, Mapper
 from .sms_analysis import AnalysisLimits, Budget, Session, GAP_PASSES
 
 BANK_SIZE = 0x4000
@@ -168,7 +168,7 @@ def target_flat(cpu: int, from_bank: int, size: int, here: int | None = None, *,
         return None
     if mapping is None:
         flat = from_bank * BANK_SIZE + (here & (BANK_SIZE - 1)) if here is not None else -1
-        mapping = entry_state(flat, here if here is not None else -1, size)
+        mapping = model.entry(flat, here if here is not None else -1)
     return model.resolve(cpu, mapping).rom_offset
 
 
@@ -286,7 +286,7 @@ def candidates(data: bytes, limit: int = 4000, labels: dict | None = None,
     """
     hints = hints or {}
     mapper = mapper if mapper is not None else hints.get("mapper", "sega")
-    Mapper(mapper, len(data))  # reject unsupported explicit model requests rather than silently substituting
+    model = Mapper(mapper, len(data))  # reject unsupported explicit model requests rather than silently substituting
     if type(limit) is not int or not 1 <= limit <= 1_000_000:
         raise ValueError("candidate output limit must be between 1 and 1000000")
     budget = Budget(analysis_limits)
@@ -294,7 +294,8 @@ def candidates(data: bytes, limit: int = 4000, labels: dict | None = None,
                                                       limits=limits, budget=account), budget)
     size = len(data)
     seeds = {v: (v, "vector") for v in VECTORS if v < size}
-    seeds.update({f: (cpu, "hint") for f, cpu in (hints.get("entries") or {}).items() if f < size})
+    seeds.update({f: (cpu, "hint") for f, cpu in (hints.get("entries") or {}).items()
+                  if f < size and (f not in seeds or seeds[f][0] != cpu)})
     if labels:
         seeds.update({f: c for f, c in sms_trace.sym_seeds(labels, data, mapper=mapper).items() if f not in seeds})
     cov = hints.get("coverage")
@@ -347,7 +348,7 @@ def candidates(data: bytes, limit: int = 4000, labels: dict | None = None,
         if not budget.stopped and _after_functions(data, found.starts, hints.get("inline"), mapper=mapper):
             budget.note("gap discovery pass budget exhausted")
     starts = dict(sorted(found.starts.items())[:limit])
-    summary = session.report(found, size, limit)
+    summary = session.report(found, model, limit)
     if report is not None:
         report.update(summary)
     return starts, bases

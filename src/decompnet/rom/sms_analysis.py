@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-from .sms_mapping import entry_state, join
+from .sms_mapping import Mapper, join
 
 CONVERGENCE_ROUNDS = 8
 GAP_PASSES = 8
@@ -75,13 +75,13 @@ class Budget:
         self.note("analysis entry seed limit exhausted")
         return dict(sorted(entries.items())[:self.limits.entries])
 
-    def qualify(self, found, size):
+    def qualify(self, found, model: Mapper):
         if not self.exhausted:
             return
         # Missing callers/rounds cannot establish a complete incoming mapper context. Retain the
         # coordinates of conditional entries, without exporting singleton cross-window facts.
         for flat, (cpu, _why) in found.starts.items():
-            found.entered[flat] = {join((*found.entered.get(flat, ()), entry_state(flat, cpu, size)))}
+            found.entered[flat] = {join((*found.entered.get(flat, ()), model.entry(flat, cpu)))}
             found.exhausted.setdefault(flat, set()).update(self.exhausted)
         found.switchers.clear()
         found.with_hl.clear()
@@ -118,10 +118,10 @@ class Session:
         self.last = tracer, found
         return self.last
 
-    def report(self, found, size, output_limit):
+    def report(self, found, model, output_limit):
         if len(found.starts) > output_limit:
             self.budget.note("candidate output limit exhausted")
-        self.budget.qualify(found, size)
+        self.budget.qualify(found, model)
         self._collect(found)
         return {"analysis_limits": {**self.budget.report(), "candidate_output_limit": output_limit,
                                     "convergence_round_limit": CONVERGENCE_ROUNDS, "gap_pass_limit": GAP_PASSES},

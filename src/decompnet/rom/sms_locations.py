@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-from .sms_mapping import BANK, BusState, Mapper, entry_state, rom_coordinate
+from .sms_mapping import BANK, BusState, Mapper, rom_coordinate
 
 
 def coordinate(model: Mapper, flat: int, cpu: int) -> tuple[int, int]:
@@ -23,7 +23,7 @@ def resolve(model: Mapper, text: str, context: tuple[int, int] | None = None) ->
         state = BusState.cartridge_only(control=None)
         if context is not None:
             flat, here = coordinate(model, *context)
-            state = entry_state(flat, here, model.size)
+            state = model.entry(flat, here)
         address = model.resolve(cpu, state)
     else:
         raise ValueError(f"`{text}` is not a function, NN:AAAA (a bank and an address) or an address")
