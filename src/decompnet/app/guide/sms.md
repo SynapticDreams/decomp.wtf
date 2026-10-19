@@ -37,6 +37,15 @@ Ordinary **Save cartridge profile** still refuses mapping changes that would rei
 selecting mapperless directly, preview and apply a resplit if existing coordinates came from Sega paging;
 source acceptance remains blocked while incompatible coordinates remain. The migration API is `/api/resplit` POST
 with `profile: {mapper, variant, reason}`; applying also requires `apply: true` and the preview's `plan` fingerprint.
+
+Resplit previews offer pages of changed routines, overlapping candidates and accepted source awaiting checks.
+Pages contain at most 100 records; long display names are clipped with an explicit flag. They contain no source
+bodies. Inspection recomputes the preview and checks its fingerprint, including any proposed profile; a changed
+input, annotation, setting or proposal requires another preview. The operator API is `/api/resplit` POST with the
+preview's `plan` and `inspection: {kind: "changed" | "checks", offset: 0}`; use kind `"overlaps"` with a saved
+`function` ID for its candidate placements. Follow `inspection.next_offset` until null. Inspection cannot apply or
+undo work and does not run source checks. Automatic checks on apply have a 32-function / 30-second budget;
+exhausted checks leave source unresolved and unaccepted, available for manual validation through recovery.
 Experimental build intent is recorded separately from original reconstruction; whole-image equality still
 compares against the frozen original input. The local operator API is `/api/sms/profile` (GET or POST).
 

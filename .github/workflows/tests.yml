@@ -32,6 +32,7 @@ jobs:
       - run: node --check src/decompnet/app/static/sms-profile.js
       - run: node --check src/decompnet/app/static/sms-profile-migration.js
       - run: node --check src/decompnet/app/static/resplit-history.js
+      - run: node --check src/decompnet/app/static/resplit-inspection.js
       - run: node --check src/decompnet/app/static/resplit-archive.js
       # compilers and emulator-side tools aren't installed here: the tests that need them skip themselves
       - run: uv run pytest -q -p no:cacheprovider

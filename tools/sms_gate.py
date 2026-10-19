@@ -24,6 +24,7 @@ TESTS = (
     "tests/test_sms_resplit_dependency_integration.py",
     "tests/test_sms_resplit_undo_validation.py",
     "tests/test_sms_profile_migration.py",
+    "tests/test_sms_resplit_inspection.py",
     "tests/test_sms_documented.py",
     "tests/test_export_sms.py",
 )
@@ -101,6 +102,10 @@ def verify_report(report: Path) -> int:
         'test_old_documented_entry_without_new_model_placement_is_archived_unaccepted'))
     if not required <= migration:
         raise ValueError('SMS gate report is missing actual SMS/GG profile migration checks')
+    inspection = {case.get('name') for case in cases if case.get('classname') == 'tests.test_sms_resplit_inspection'}
+    if not all(f'test_every_changed_check_and_overlap_record_can_be_inspected_without_saving[{platform}-{migrate}]'
+               in inspection for platform in ('sms', 'gg') for migrate in ('False', 'True')):
+        raise ValueError('SMS gate report is missing complete SMS/GG preview inspection checks')
     return len(cases)
 
 

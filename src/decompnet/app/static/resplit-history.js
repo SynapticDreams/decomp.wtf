@@ -72,8 +72,12 @@ window.ResplitHistoryUI = {
     older.onclick = page;
     await page();
   },
-  changes(panel, report) {
+  changes(panel, report, load, current, invalidate) {
     if (!report.changed_work) return;
+    if (report.inspection_available && load) {
+      window.ResplitInspectionUI.render(panel, report, load, current, invalidate);
+      return;
+    }
     const checks = document.createElement("p");
     checks.className = "muted small";
     const result = report.source_revalidation;

@@ -3030,9 +3030,9 @@ async function renderProjectSettings() {
     } catch (e) { toast(esc(e.message), "err"); }
   }, () => api(`/api/sms/profile?slug=${encodeURIComponent(profileSlug)}`), {
     current: () => S.slug === profileSlug,
-    run: async (profile, apply, plan, log) => {
+    run: async (profile, apply, plan, log, inspection) => {
       if (S.slug !== profileSlug) throw new Error("Project changed; open its settings again.");
-      const { job } = await api("/api/resplit", { method: "POST", body: { slug: profileSlug, profile, apply, plan } });
+      const { job } = await api("/api/resplit", { method: "POST", body: { slug: profileSlug, profile, apply, plan, inspection } });
       return followJob(job, log);
     },
     applied: async () => {
@@ -3162,6 +3162,8 @@ $("symRemove").onclick = async () => {
 /* What splitting again would change (or did): a preview first, then the same with "apply". */
 async function resplit(apply) {
   const slug = S.slug;
+  const request = Symbol();
+  S.resplitRequest = request;
   const btn = apply ? $("resplitApply") : $("resplitPreview");
   btn.disabled = true;
   $("resplitLog").hidden = false;
@@ -3169,10 +3171,16 @@ async function resplit(apply) {
     const plan = apply && S.resplitPlan?.slug === slug ? S.resplitPlan.token : null;
     const { job } = await api("/api/resplit", { method: "POST", body: { slug, apply, plan } });
     const r = await followJob(job, $("resplitLog"));
-    if (S.slug !== slug) return;
+    if (S.slug !== slug || S.resplitRequest !== request) return;
     S.resplitPlan = apply ? null : { slug, token: r.plan };
     $("resplitResult").innerHTML = `<div class="notice ${apply ? "room" : ""}"><span>${apply ? "<b>Split again.</b> " : ""}${plural(r.before, "function")} → ${plural(r.after, "function")}: ${r.kept.toLocaleString()} unchanged keep their work, ${r.added.toLocaleString()} new, ${r.removed.toLocaleString()} ${apply ? "gone" : "would go"}; ${r.matched_kept.toLocaleString()} existing C matches ${apply ? "retained" : "pending any required source checks"}${r.notes_moved ? `, notes of ${plural(r.notes_moved, "function")} ${apply ? "moved" : "would move"}` : ""}.${r.data_after || r.data_before ? ` Functions cover ${bytes(r.bytes_before)} → ${bytes(r.bytes_after)}; ${bytes(r.data_after)} ${apply ? "is" : "would be"} shown as data (tables, padding, bytes the code never reaches), not handed out as functions${r.data_before ? ` (${bytes(r.data_before)} before)` : ""}.` : ""}${r.corrections ? ` With ${plural(r.corrections, "correction")} from below.` : ""}</span></div>`;
-    window.ResplitHistoryUI.changes($("resplitResult"), r);
+    const lease = S.resplitPlan;
+    window.ResplitHistoryUI.changes($("resplitResult"), r, async inspection => {
+      if (S.slug !== slug || S.resplitPlan !== lease) throw new Error("Project preview changed.");
+      const { job } = await api("/api/resplit", { method: "POST", body: { slug, plan: r.plan, inspection } });
+      return followJob(job);
+    }, () => S.slug === slug && S.resplitPlan === lease && S.resplitRequest === request,
+    () => { S.resplitPlan = null; $("resplitApply").hidden = true; });
     $("resplitApply").hidden = apply;
     if (apply) { S.ov = await api(`/api/project?slug=${S.slug}`); renderProjectSettings(); poll(false); }
   } catch (e) {

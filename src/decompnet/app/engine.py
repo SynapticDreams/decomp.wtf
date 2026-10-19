@@ -767,11 +767,12 @@ class RomNetwork(Network):
 
         return import_project(self, picked, slug, workdir, log, BASE_HEADER.format(title=picked.info["title"]))
 
-    def resplit_banked(self, slug: str, apply: bool = False, log=print, *, expected_plan: str | None = None, profile: dict | None = None) -> dict:
+    def resplit_banked(self, slug: str, apply: bool = False, log=print, *, expected_plan: str | None = None, profile: dict | None = None,
+                       inspection: dict | None = None) -> dict:
         """Preview or apply a banked ROM resplit, reconciling discovered functions with stored work."""
         from .banked_resplit import resplit
 
-        return resplit(self, slug, apply=apply, log=log, expected_plan=expected_plan, profile=profile)
+        return resplit(self, slug, apply=apply, log=log, expected_plan=expected_plan, profile=profile, inspection=inspection)
 
     def resplit_history(self, slug: str, before_id: int | None = None) -> dict:
         from .banked_resplit_history import list_history

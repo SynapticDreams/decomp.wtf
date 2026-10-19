@@ -15,12 +15,14 @@ from ..rom.symbols import AUTO_NAME
 from . import banked_resplit_checks as checks, sms_resplit_revalidate as revalidate
 from .banked_resplit_changes import describe, plan_digest
 from .banked_resplit_layout import reconcile
+from . import banked_resplit_inspection as inspection_pages
 from .sms_resplit_profile import propose
 from . import banked_resplit_history as history, banked_resplit_state as snapshots
 from .banked_import import BANKED_TOOLS, segments, with_edges
 
 
-def resplit(net, slug: str, apply: bool = False, log=print, *, expected_plan: str | None = None, profile: dict | None = None) -> dict:
+def resplit(net, slug: str, apply: bool = False, log=print, *, expected_plan: str | None = None, profile: dict | None = None,
+            inspection: dict | None = None) -> dict:
     """Split a Game Boy, Master System or NES game again with this version's splitter, keeping the work done on
     it: a function whose start, address and bytes don't change keeps its row (name, status, attempts, notes);
     SMS/GG changed accepted source is revalidated; other lanes protect matched ranges. Notes on a function
@@ -35,6 +37,9 @@ def resplit(net, slug: str, apply: bool = False, log=print, *, expected_plan: st
         raise NetworkError("invalid resplit preview fingerprint")
     if expected_plan is not None and arch != "z80":
         raise NetworkError("resplit preview fingerprints are currently supported for SMS/GG")
+    selection = inspection_pages.parse(inspection, arch=arch, apply=apply, expected_plan=expected_plan)
+    if selection is not None and (cfg.get('platform') not in ('sms', 'gg') or cfg.get('kind') != 'rom' or cfg.get('link')):
+        raise NetworkError('preview inspection is for local SMS/GG ROM projects')
     if arch not in BANKED_TOOLS or net.fork_slug(slug):
         raise NetworkError("splitting again is for Game Boy, Master System and NES projects")
     if slug in net.links:
@@ -63,12 +68,16 @@ def resplit(net, slug: str, apply: bool = False, log=print, *, expected_plan: st
     by_off, kept, fresh = layout.by_offset, layout.kept, layout.fresh
     gone, noted, regions, out = layout.gone, layout.noted, layout.regions, layout.summary
     if before is not None:
+        out["plan"] = plan_digest(before_digest, fns, report, proposed=next_cfg if profile is not None else None)
+        if expected_plan is not None and expected_plan != out["plan"]:
+            raise NetworkError("resplit preview is stale; preview again before applying")
+        if selection is not None:
+            return {'plan': out['plan'], 'inspection': inspection_pages.inspect(
+                selection, before, fns, kept, source_state, regions, force=profile is not None)}
         out.update(describe(before, fns, kept))
         out.update(profile_report)
         out.update(revalidate.preview(source_state, fns, regions, force=profile is not None))
-        out["plan"] = plan_digest(before_digest, fns, report, proposed=next_cfg if profile is not None else None)
-        if apply and expected_plan is not None and expected_plan != out["plan"]:
-            raise NetworkError("resplit preview is stale; preview again before applying")
+        out['inspection_available'] = not apply
     proposed_names = revalidate.names_for(old, fns, kept) if before is not None else {}
     if not apply:
         return out
