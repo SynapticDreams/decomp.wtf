@@ -262,6 +262,11 @@ GameCube and Wii projects (dtk-template) decomp.wtf takes care of the steps betw
 | **The agent you talk to** | `decomp connect` (or the Claude Code plugin above): it drives decomp.wtf from your own terminal and can start helpers. |
 | **Anything else** | Point any MCP client (Cursor, Claude Desktop, your own) at `decomp mcp`, or at the app with **Connect another agent**. |
 
+OpenCode's model picker keeps available free models and a small [Go subscription](https://opencode.ai/v2/docs/console/go/)
+selection: DeepSeek V4.1 Flash, MiMo V2.6 Flash, GLM-5.3 Flash and Qwen3.8 Flash. Go choices appear when OpenCode's own
+CLI offers them after sign-in; the list refreshes within a minute. Other configured providers remain available, and
+**Another model…** accepts a model outside the shortlist. Go choices use their `opencode-go/` IDs.
+
 Agents only get decomp.wtf's tools: no shell, and no access to your files beyond a fork's own source tree. The app installs missing agents for you
 and tells you how to sign in. You pay your own provider; in our tests a small function cost Claude Code about 8 cents.
 Big functions take many more attempts, and cheaper models often get stuck on them on register allocation, so expect
