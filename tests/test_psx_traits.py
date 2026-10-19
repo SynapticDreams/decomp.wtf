@@ -83,7 +83,7 @@ def test_real_function_brief_retains_unit_recipe_and_table_method(tmp_path):
     with net.store.tx() as db:
         db.execute("UPDATE functions SET seed='',asm='',target=?,size=16,n_insns=4,relocs=? WHERE unit='main'",
                    (target, json.dumps([[0, 5, 0x80010010]])))
-        db.execute("INSERT INTO symbols VALUES(1,'jtbl_80010010',2147549200,16,'jtbl',NULL)")
+        db.execute("INSERT INTO symbols(project_id,name,address,size,kind,preview) VALUES(1,'jtbl_80010010',2147549200,16,'jtbl',NULL)")
     text = net.get_function('func_80010000', 'synthetic')
     assert 'PS1 instruction evidence' in text and '0x1F801810' in text
     assert 'compiler gcc-2.7.2-psx' in text and '-G0' in text

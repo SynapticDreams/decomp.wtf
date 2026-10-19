@@ -6,12 +6,17 @@ import pytest
 from tools import sms_gate
 
 
-def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True, revalidation=True, archive=True, dependencies=True, undo=True, migration=True, inspection=True, project_archive=True, legacy=True, verification=True, progress=True, export_state=True, c_reference=True, progress_routes=True, artifacts=True, wla=True, symbol_imports=True, adjacent=True):
+def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True, revalidation=True, archive=True, dependencies=True, undo=True, migration=True, inspection=True, project_archive=True, legacy=True, verification=True, progress=True, export_state=True, c_reference=True, progress_routes=True, artifacts=True, wla=True, symbol_imports=True, adjacent=True, annotations=True):
     suite = ET.Element("testsuite")
     modules = sms_gate.TESTS[:-1] if missing_module else sms_gate.TESTS
     for name in modules:
         extra = None
-        if name.endswith('test_sms_symbol_adjacent.py') and adjacent:
+        if name.endswith('test_sms_annotation_storage.py') and annotations:
+            extra = [f'test_actual_accepted_work_and_old_pending_undo_survive_annotation_migration[{p}-{kind}]'
+                     for p in ('sms', 'gg') for kind in ('c', 'asm')]
+            extra += [f'test_tagged_corrections_cannot_override_actual_accepted_code_before_qualified_consumption[{p}-{state}-{field}]'
+                      for p in ('sms', 'gg') for state in ('supported', 'future', 'invalid') for field in ('annotation', 'evidence')]
+        elif name.endswith('test_sms_symbol_adjacent.py') and adjacent:
             extra = [f'test_initial_sidecar_import_preserves_bytes_and_never_guesses_nonuniform_geometry[{p}-{mode}]'
                      for p in ('sms', 'gg') for mode in ('declared', 'missing', 'malformed', 'different_revision', 'invalid_geometry',
                                                         'null', 'new_version', 'wrong_crc', 'oversized', 'bad_source', 'future_symbols')]
@@ -171,7 +176,7 @@ def test_gate_rejects_an_install_manifest_without_binaries(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("kwargs", [{"skipped": True}, {"failed": True}, {"missing_module": True}, {"gg": False},
-                                    {"mapper_matrix": False}, {"recovery": False}, {"revalidation": False}, {"archive": False}, {"dependencies": False}, {"undo": False}, {"migration": False}, {"inspection": False}, {"project_archive": False}, {"legacy": False}, {"verification": False}, {"progress": False}, {"export_state": False}, {"c_reference": False}, {"progress_routes": False}, {"artifacts": False}, {"wla": False}, {"symbol_imports": False}, {"adjacent": False}])
+                                    {"mapper_matrix": False}, {"recovery": False}, {"revalidation": False}, {"archive": False}, {"dependencies": False}, {"undo": False}, {"migration": False}, {"inspection": False}, {"project_archive": False}, {"legacy": False}, {"verification": False}, {"progress": False}, {"export_state": False}, {"c_reference": False}, {"progress_routes": False}, {"artifacts": False}, {"wla": False}, {"symbol_imports": False}, {"adjacent": False}, {"annotations": False}])
 def test_gate_rejects_incomplete_or_unsuccessful_execution(tmp_path, kwargs):
     with pytest.raises(ValueError):
         sms_gate.verify_report(report(tmp_path, **kwargs))
@@ -184,7 +189,7 @@ def test_gate_requires_a_valid_report_with_executed_tests(tmp_path):
     path.write_text("<testsuite />")
     with pytest.raises(ValueError, match="executed, passing tests"):
         sms_gate.verify_report(path)
-    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 143
+    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 158
 
 
 def test_gate_rejects_gbdk_from_path_without_the_pinned_install(monkeypatch):

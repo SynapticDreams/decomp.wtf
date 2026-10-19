@@ -7,6 +7,7 @@ from ..rom import sms_identity
 from ..rom.export_sms_report import identity
 from ..rom.physical_ranges import union, length
 from ..rom.export_sms_artifacts import fingerprint as artifact_fingerprint, read_regular
+from ..store_annotations import snapshot_row
 
 
 def stamp(net, proj):
@@ -29,7 +30,7 @@ def stamp(net, proj):
             for label, sql in queries.items():
                 digest.update(label.encode())
                 for row in db.execute(sql, (proj['id'],) * sql.count('?')):
-                    digest.update(json.dumps(dict(row), sort_keys=True, default=blob).encode())
+                    digest.update(json.dumps(snapshot_row(label, row), sort_keys=True, default=blob).encode())
             return digest.hexdigest()
         if net.store.conn.in_transaction:
             return read(net.store.conn)

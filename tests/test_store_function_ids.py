@@ -107,7 +107,11 @@ def test_upgrade_seeds_beyond_legacy_orphan_references_without_reattributing_the
     conn.close()
     store = Store(path)
     fresh = function(store.conn, pid, 'AfterUpgrade')
-    assert fresh > 256 and [dict(row) for row in store.conn.execute(f'SELECT * FROM {related}')] == before
+    current = [dict(row) for row in store.conn.execute(f'SELECT * FROM {related}')]
+    assert fresh > 256
+    assert [{key: row[key] for key in before[0]} for row in current] == before
+    if related == 'notes':
+        assert all(row['annotation'] is None and row['evidence'] is None for row in current)
     assert not store.conn.execute(f'SELECT 1 FROM {related} WHERE function_id=?', (fresh,)).fetchone()
     store.conn.close()
 

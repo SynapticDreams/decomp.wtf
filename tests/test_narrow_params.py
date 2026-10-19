@@ -111,7 +111,7 @@ def test_worker_rom_jobs_use_canonical_relocations_and_link_verdict(tmp_path, mo
     with net.store.tx() as db:
         db.execute("UPDATE functions SET best_source='int f(void){return 0;}',best_score=10,relocs=? WHERE unit='main'",
                    (json.dumps([[0, 5, 0x80010040]]),))
-        db.execute("INSERT INTO symbols VALUES(1,'global_value',2147549248,4,'data',NULL)")
+        db.execute("INSERT INTO symbols(project_id,name,address,size,kind,preview) VALUES(1,'global_value',2147549248,4,'data',NULL)")
     agent, _ = net.local_agent('worker')
     job = jobs.next_job(net, agent)
     assert len(job['target']['relocs'][0]) == 4 and job['target']['relocs'][0][2] == 'global_value'

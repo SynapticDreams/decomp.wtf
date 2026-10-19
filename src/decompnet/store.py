@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from .store_ids import upgrade as upgrade_function_ids
+from .store_annotations import upgrade as upgrade_annotation_metadata
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agents(
@@ -106,6 +107,7 @@ class Store:
             cols = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
             if column not in cols:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        upgrade_annotation_metadata(self.conn)
         upgrade_function_ids(self.conn)
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_attempts_agent_time ON attempts(agent_id, created_at)")
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_functions_unit ON functions(project_id, unit, status)")

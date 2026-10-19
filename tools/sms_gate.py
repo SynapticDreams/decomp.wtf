@@ -12,6 +12,9 @@ from decompnet import toolchains
 
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = (
+    "tests/test_annotation_schema.py",
+    "tests/test_store_annotations.py",
+    "tests/test_sms_annotation_storage.py",
     "tests/test_sms_asm.py",
     "tests/test_sms_asm_mapping.py",
     "tests/test_sms_mapper_integration.py",
@@ -197,6 +200,13 @@ def verify_report(report: Path) -> int:
                     'test_legacy_layout_uncertainty_preserves_actual_accepted_source_and_recovery',
                     'test_stored_inspection_cannot_mix_mapper_contexts_with_the_same_source_bytes')} <= adjacent:
         raise ValueError('SMS gate report is missing declared/pending adjacent-source and legacy recovery checks')
+    metadata = {case.get('name') for case in cases if case.get('classname') == 'tests.test_sms_annotation_storage'}
+    if not {f'test_actual_accepted_work_and_old_pending_undo_survive_annotation_migration[{p}-{kind}]'
+            for p in ('sms', 'gg') for kind in ('c', 'asm')} <= metadata or not {
+                f'test_tagged_corrections_cannot_override_actual_accepted_code_before_qualified_consumption[{p}-{state}-{field}]'
+                for p in ('sms', 'gg') for state in ('supported', 'future', 'invalid')
+                for field in ('annotation', 'evidence')} <= metadata:
+        raise ValueError('SMS gate report is missing actual SMS/GG annotation migration and inactive-metadata checks')
     return len(cases)
 
 
