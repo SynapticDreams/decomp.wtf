@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ..network import NetworkError
 from ..rom.symbols import AUTO_NAME
+from . import banked_resplit_checks as checks
 from .banked_import import BANKED_TOOLS, segments, with_edges
 
 
@@ -34,8 +35,11 @@ def resplit(net, slug: str, apply: bool = False, log=print) -> dict:
     if not rom_path.is_file():
         raise NetworkError(f"the project's copy of the game ({cfg['rom']['file']}) isn't in its folder any more")
     lane = sms if arch == "z80" else nes if arch == "mos6502" else gb
+    checks.verify_input(arch, rom_path, cfg)
     report: dict = {}
     fns = lane.split(rom_path, root, log=log, report=report, hints=net._hints(proj))
+    checks.verify_input(arch, rom_path, cfg)
+    checks.verify_settings(cfg, net.cfg(net._project(slug)))
     old = net.store.all("SELECT * FROM functions WHERE project_id=?", proj["id"])
     by_off = {r["rom_offset"]: r for r in old if r["rom_offset"] is not None}
     kept, fresh = set(), []
@@ -76,6 +80,11 @@ def resplit(net, slug: str, apply: bool = False, log=print) -> dict:
     # address is still the routine's), or those matches would stop compiling
     used = "\n".join(r["matched_source"] or "" for r in old if r["status"] in ("matched", "documented"))
     with net.store.tx() as db:
+        current = db.execute("SELECT config FROM projects WHERE id=?", (proj["id"],)).fetchone()
+        if current is None:
+            raise NetworkError("the project was removed during resplit")
+        checks.verify_settings(cfg, json.loads(current["config"]))
+        checks.verify_input(arch, rom_path, cfg)
         for r in gone:
             db.execute("DELETE FROM claims WHERE function_id=?", (r["id"],))
             db.execute("DELETE FROM twin_misses WHERE function_id=?", (r["id"],))
@@ -115,6 +124,7 @@ def resplit(net, slug: str, apply: bool = False, log=print) -> dict:
 
         cfg["built_with"] = fingerprint.identify(cfg.get("platform", ""), rom_path.read_bytes())
         cfg["splitter"] = report.get("splitter", cfg.get("splitter"))
+        checks.verify_input(arch, rom_path, cfg)  # failure rolls back preceding function/region updates
         db.execute("UPDATE projects SET config=? WHERE id=?", (json.dumps(cfg), proj["id"]))
         net._event(db, proj["id"], None, "split", f"split again: {out['kept']} functions unchanged, {out['added']} "
                     f"new, {out['removed']} gone ({out['matched_kept']} matched kept)")
