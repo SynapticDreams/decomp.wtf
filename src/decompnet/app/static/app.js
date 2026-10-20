@@ -2082,6 +2082,7 @@ function eventHtml(ev) {
     case "merge": return `${who} joined ${esc(d)}`;
     case "review": return `${who} set ${esc(d)} aside for a person to review`;
     case "documented": return `<span class="ok">✓</span> ${who} documented ${fnLink(d)} in assembly`;
+    case "documentation_review": return `${who} saved an AI review of ${fnLink(d)}`;
     case "reviewed": return `you looked over ${esc(d)}`;
     case "correction": return `${who} corrected the split: ${esc(d)}`;
     case "files": return `${who ? who + " " : ""}gave code without a source file one: ${esc(d)}`;

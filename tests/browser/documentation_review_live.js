@@ -34,6 +34,8 @@
     assert(document.getElementById('fnStatus').textContent.includes('look it over') && !document.getElementById('fnLooksRight').hidden,
       'AI report never clears human-review flag');
     assert(S.st.settings.review_helper && !S.st.settings.pin_helper, 'review helper preferences are separate');
+    assert(eventHtml({kind:'documentation_review', agent:'Authored helper', detail:'First'}).includes('saved an AI review'),
+      'activity uses plain-language review feedback');
     document.getElementById('report').textContent = 'PASS: production review launch, helper report, evidence, escaped text and human flag retained';
   } catch (e) { document.getElementById('report').textContent = 'FAIL: ' + e.stack; }
 })();
