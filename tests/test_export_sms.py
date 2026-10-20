@@ -152,3 +152,29 @@ def test_legacy_export_keeps_byte_verification_separate_from_mapping_declaration
     result = net.export_rom(slug, log=lambda *_: None)
     assert result["identical"] and result["documented"] == 1
     assert result["sms_profile"]["status"] == "legacy" and not result["sms_profile"]["supported"]
+
+
+@pytest.mark.parametrize("platform", ["sms", "gg"])
+def test_ram_operands_and_the_header_are_spelled_by_name_in_the_same_bytes(tmp_path, platform):
+    net = RomNetwork(tmp_path / "d.db", tmp_path / "ws")
+    rom = tmp_path / f"game.{platform}"
+    # ld a,($c0a2) · ld ($d010),hl · ld hl,($fffc) · ld ($dfff),a · jr $   (the project names only $c0a2)
+    rom.write_bytes(make_rom(size=0x8000, region=6 if platform == "gg" else 4, code={
+        0x0000: bytes.fromhex("c30001"), 0x0100: bytes.fromhex("3aa2c0" "2210d0" "2afcff" "32ffdf" "18fe")}))
+    slug = net.import_rom(rom, confirmed=True, log=lambda *_: None)
+    net.sms.configure(slug, "sega", "annotated-original", "The authored fixture specifies Sega cartridge mapping.")
+    pid = net.project_row(slug)["id"]
+    with net.store.tx() as db:
+        db.execute("INSERT INTO symbols(project_id,name,address,size,kind) VALUES(?,?,?,?,?)", (pid, "wMenuOpen", 0xC0A2, 0, "data"))
+    out = Path(net.export_rom(slug, log=lambda *_: None)["path"])
+    (out / "documented").mkdir(exist_ok=True)  # (a name the person adds by hand, as build.py says they may)
+    (out / "documented" / "names.inc").write_text(".DEFINE wMenuOpen $C0A2\n", encoding="utf-8")
+    run = subprocess.run([sys.executable, "build.py"], cwd=out, capture_output=True, text=True)
+    assert run.returncode == 0 and "identical" in run.stdout, run.stdout + run.stderr
+    folder = out / "build" / "disassembly"
+    bank0, bank1 = (folder / "bank_000.asm").read_text(), (folder / "bank_001.asm").read_text()
+    assert "ld a, (wMenuOpen)" in bank0 and "ld (_RAM_D010_), hl" in bank0 and "ld (_RAM_DFFF_), a" in bank0
+    assert "ld hl, (MapperControl)" in bank0  # (a mapper register, not RAM, under the Sega model)
+    assert (folder / "ram.inc").read_text() == ".DEFINE _RAM_D010_ $D010\n.DEFINE _RAM_DFFF_ $DFFF\n"
+    assert '.INCLUDE "ram.inc"' in (folder / "game.asm").read_text()
+    assert '    .db "TMR SEGA"' in bank1 and "; checksum (as the original has it)" in bank1

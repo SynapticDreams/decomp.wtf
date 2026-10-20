@@ -444,7 +444,7 @@
           <button data-symbol="more" class="ghost small-btn" type="button" hidden>Next 50 records</button>
         </div>
         <h3 class="sub" id="covHead">Coverage from an emulator</h3>
-        <p class="muted small" id="covText">Play your copy of the game in an emulator that logs what runs, then import the log: a Mesen2 code/data log (<code>.cdl</code>, from its Code/Data Logger; FCEUX's too, for an NES game) or an execution trace (<code>bank:address</code> lines; Game Boy and Master System). Splitting the game again follows the code it saw run, and shows what it saw read as data. The more of the game you play, the more it finds.</p>
+        <p class="muted small" id="covText">Play your copy of the game in an emulator that logs what runs, then import the log: a Mesen2 code/data log (<code>.cdl</code>, from its Code/Data Logger; FCEUX's too, for an NES game) or an execution trace (<code>bank:address</code> lines; Game Boy and Master System; on the Master System and Game Gear, a Gearsystem trace log with its bank column on). Splitting the game again follows the code it saw run, and shows what it saw read as data. The more of the game you play, the more it finds.</p>
         <div class="row" id="covRow"><label class="ghost small-btn file-btn">Import coverage…<input type="file" id="covFile" accept=".cdl,.trace,.txt,.log" hidden></label><span class="muted small grow" id="covStatus"></span><button class="ghost small-btn" id="covRemove" type="button" hidden>Remove it</button></div>
       </div>
     </section>

@@ -36,6 +36,9 @@ def build(module, argv):
         disassembly.decode()
         disassembly.name_targets()
         disassembly.used_names()
+        names = (root / 'documented' / 'names.inc').read_text(encoding='utf-8') if (root / 'documented' / 'names.inc').exists() else ''
+        disassembly.taken = set(module.DEFINED.findall(names + (root / 'include' / 'hardware.inc').read_text(encoding='utf-8')))
+        disassembly.ram_names = module.project_ram_names(names)
         notes = module.comments()
         banks = [disassembly.bank(bank, notes) for bank in range(disassembly.banks)]
         left = {name for name, _ in disassembly.left}
@@ -45,14 +48,14 @@ def build(module, argv):
         report.sources(disassembly, disabled='--no-documented' in argv)
         for name, why in disassembly.left:
             print(f'left as bytes: {name}: {why}')
-        names = (root / 'documented' / 'names.inc').read_text(encoding='utf-8') if (root / 'documented' / 'names.inc').exists() else ''
         names += ''.join(f'.DEFINE {name} ${value:04X}\n' for name, value in sorted(disassembly.defines.items()))
         (folder / 'names.inc').write_text(names, encoding='utf-8')
         shutil.copyfile(root / 'include' / 'hardware.inc', folder / 'hardware.inc')
+        (folder / 'ram.inc').write_text(module.ram_include(disassembly.ram), encoding='utf-8')
         size = min(module.BANK, len(data))
         game = ['.MEMORYMAP', 'DEFAULTSLOT 0', 'SLOT 0 $0000 $4000', 'SLOT 1 $4000 $4000', 'SLOT 2 $8000 $4000', '.ENDME',
                 '.ROMBANKMAP', f'BANKSTOTAL {disassembly.banks}', f'BANKSIZE ${size:04X}', f'BANKS {disassembly.banks}', '.ENDRO',
-                '.INCLUDE "hardware.inc"', '.INCLUDE "names.inc"']
+                '.INCLUDE "hardware.inc"', '.INCLUDE "ram.inc"', '.INCLUDE "names.inc"']
         for bank, text in enumerate(banks):
             (folder / f'bank_{bank:03d}.asm').write_text(text, encoding='utf-8')
             game.append(f'.INCLUDE "bank_{bank:03d}.asm"')

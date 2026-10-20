@@ -1,6 +1,14 @@
 "use strict";
 /* A small project-settings component. Supplied metadata is rendered as text. */
 window.SMSProfileUI = {
+  catalogText(catalog) {
+    if (!catalog) return "";
+    if (!catalog.available) return catalog.message || "";
+    const boards = (catalog.matches || []).map(m => `${m.list} list, ${m.board} board (models: ${(m.models || []).join(" or ")})` +
+      (m.sms_mode ? ", wired for Master System mode" : "") + (m.battery ? ", battery-backed RAM" : "")).join("; ");
+    const source = catalog.source ? ` Source: ${catalog.source.source}, ${catalog.source.license}.` : "";
+    return (boards ? `Software-list catalog: ${boards}. ` : "") + catalog.message + source;
+  },
   render(panel, view, save, inspect, migration) {
     const token = Symbol();
     panel.profileToken = token;
@@ -20,8 +28,11 @@ window.SMSProfileUI = {
       button.textContent = "Inspect mapper evidence";
       const evidence = document.createElement("p");
       evidence.className = "muted small";
+      const catalog = document.createElement("p");
+      catalog.className = "muted small";
       button.onclick = async () => {
         button.disabled = true;
+        catalog.textContent = "";
         try {
           const report = (await inspect()).suggestions;
           const candidates = (report.candidates || []).map(c => c.mapper).join(", ") || "none";
@@ -29,10 +40,11 @@ window.SMSProfileUI = {
           evidence.textContent = report.available ? `Low confidence suggestions: ${candidates}. ` +
             `Scanned ${report.scan_bytes} of ${report.total_bytes} bytes; showing ${report.evidence.length} of ` +
             `${report.pattern_count} patterns. ${report.message} ${offsets}` : report.message;
+          catalog.textContent = SMSProfileUI.catalogText(report.catalog);
         } catch (error) { evidence.textContent = error.message; }
         finally { button.disabled = false; }
       };
-      body.append(button, evidence);
+      body.append(button, evidence, catalog);
     }
     const profile = view.profile || {};
     const select = (label, choices, value) => {

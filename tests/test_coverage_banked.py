@@ -61,6 +61,17 @@ def test_a_master_system_trace_starts_functions_where_code_ran(tmp_path):
     assert 0x0700 in _starts(net, slug)
 
 
+def test_a_gearsystem_trace_log_starts_functions_where_code_ran(tmp_path):
+    net, slug = _project(tmp_path, "game.sms", sms_rom(size=0x20000, code=CODE))
+    net.sms.configure(slug, "sega", "annotated-original", "The authored fixture specifies Sega cartridge mapping.")
+    log = ("@000000001000                [IO] MEMORY CONTROL Port:$3E <- $AB\n"
+           "@000000001004 +4            [CPU] 000:0700  AF:0000 ld a,$03   3E 03 \n"
+           "@000000001011 +7            [CPU] 000:0702  AF:0300 ret        C9 \n")
+    assert net.import_coverage(slug, log.encode(), "gearsystem.log")["code"] == 3
+    net.resplit_banked(slug, apply=True, log=lambda *_: None)
+    assert 0x0700 in _starts(net, slug)
+
+
 def test_unresolved_sms_trace_import_restores_the_previous_log(tmp_path):
     data = sms_rom(size=0x20000, code=CODE)
     net, slug = _project(tmp_path, "input.gg", data)

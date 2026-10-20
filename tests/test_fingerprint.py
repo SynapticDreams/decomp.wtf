@@ -115,3 +115,25 @@ def test_the_import_says_what_built_a_game(tmp_path):
     other.write_bytes(sms_rom(size=0x8000, code={0x0000: H("c30001"), 0x0100: H("18fe")}))
     slug2 = net.import_rom(other, confirmed=True, log=lines.append)
     assert net.overview(slug2)["built_with"] is None and any("hand-written assembly" in line for line in lines)
+
+
+def test_a_devkitsms_import_starts_with_unsigned_char_and_a_gbdk_one_keeps_signed(tmp_path):
+    net = RomNetwork(tmp_path / "d.db", tmp_path / "ws")
+    devkit = tmp_path / "devkit.sms"
+    devkit.write_bytes(sms_rom(size=0x8000, code={0x0000: H("f3ed5631f0df1821"), 0x005A: b"devkitSMS"}))
+    compiler = net.cfg(net.project_row(net.import_rom(devkit, confirmed=True, log=lambda *_: None)))["compiler"]
+    assert compiler["flags"] == [] and "without --fsigned-char" in compiler["note"]
+    gbdk = tmp_path / "gbdk.sms"
+    gbdk.write_bytes(sms_rom(size=0x8000, code={0x0000: H("f3ed56c38000"), 0x0080: H("31f0df76")}))
+    assert net.cfg(net.project_row(net.import_rom(gbdk, confirmed=True, log=lambda *_: None)))["compiler"]["flags"] == \
+        ["--fsigned-char"]
+
+
+@pytest.mark.skipif(not _LCC.exists(), reason="needs GBDK-2020")
+def test_char_signedness_changes_what_sdcc_writes():
+    from decompnet.rom import gb_build
+
+    source = "char half(char c) { return c >> 1; }\n"
+    signed = gb_build.compile_function(source, "half", arch="z80", opt=["--fsigned-char"]).code
+    unsigned = gb_build.compile_function(source, "half", arch="z80", opt=[]).code
+    assert (signed, unsigned) == (H("cb2fc9"), H("cb3fc9"))  # sra a / srl a
