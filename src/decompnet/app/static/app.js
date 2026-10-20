@@ -2327,7 +2327,7 @@ async function refreshFn(first) {
     };
     // a documented routine picked for review: a person says it's right, or sends it back with what's wrong
     const guest = (S.ov.room || {}).role === "guest";
-    const reviewing = S.sessions.some((s) => s.track === "asm_review" && s.pin === d.name && ["starting", "working", "waiting"].includes(s.state));
+    const reviewing = S.sessions.some((s) => ["asm_review","asm_comment_fix"].includes(s.track) && s.pin === d.name && ["starting", "working", "waiting"].includes(s.state));
     $("fnAIReview").hidden = d.status !== "documented" || guest || S.ov.kind === "fork";
     $("fnAIReview").disabled = held || reviewing;
     $("fnAIReview").textContent = reviewing ? "AI review running…" : "Ask AI to review";

@@ -144,6 +144,10 @@ class ReviewBatches:
     def guard(self, batch, control, session=None):
         if control['stop'].is_set():
             raise BatchPaused('Stopped. Saved work is retained; resume to continue.')
+        if digest(self.net.cfg(self.project(batch['slug'])).get('rom')) != batch['input']:
+            if session:
+                self.manager.stop(session.id)
+            raise BatchPaused('Project input changed. Start a new batch for the current input.')
         if time.time() - batch['started_at'] >= batch['limits']['minutes'] * 60:
             if session:
                 self.manager.stop(session.id)

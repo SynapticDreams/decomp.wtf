@@ -348,3 +348,21 @@ def test_restarted_manager_does_not_reuse_the_comment_authors_identity_for_revie
     monkeypatch.setattr(manager,'_run',lambda session:None)
     sid,=manager.start('claude','authored',options={'pin':'First','track':'asm_review'})
     assert manager.sessions[sid].agent_name=='review-claude-2'
+
+
+def test_changed_input_stops_the_old_batch_without_reusing_its_progress(documented,tmp_path,monkeypatch):
+    net,_,_=documented
+    manager,_=manager_for(documented,tmp_path,monkeypatch)
+    entered=threading.Event()
+    def blocked(session,token,workdir):
+        entered.set();session.stop.wait(5);return True
+    monkeypatch.setattr(manager,'_run_cli',blocked)
+    manager.review_batches.start('authored',REVIEWER,WRITER)
+    assert entered.wait(5)
+    with net.store.tx() as db:
+        cfg=net.cfg(net._project('authored'));cfg['rom']['size']+=1
+        db.execute('UPDATE projects SET config=?',(json.dumps(cfg),))
+    assert wait_batch(manager) is None
+    saved=json.loads(net.store.one("SELECT value FROM settings WHERE key LIKE 'review_batch:%'")['value'])
+    assert saved['state']=='paused' and 'input changed' in saved['reason']
+    assert all(s.stop.is_set() for s in manager.sessions.values())
