@@ -190,7 +190,7 @@ class ReviewBatches:
     def followup(self, proj, fn, receipt, message=None):
         kind = 'layout' if receipt.get('followup') == 'layout' else 'evidence'
         text = message or '\n'.join([receipt['summary'], *receipt.get('concerns', [])])
-        token = digest([receipt['context'], receipt.get('at'), receipt.get('candidate'), text])
+        token = digest([receipt['context'], receipt.get('at'), receipt.get('candidate')])
         with self.net.store.tx() as db:
             row = db.execute('SELECT * FROM functions WHERE id=?', (fn['id'],)).fetchone()
             project = db.execute('SELECT * FROM projects WHERE id=?', (proj['id'],)).fetchone()
@@ -217,7 +217,8 @@ class ReviewBatches:
         latest = self.net.documentation_review.latest(proj, fn)
         receipt = latest if latest and latest['current'] else None
         proposal = json.loads(fn['meta'] or '{}').get('comment_revision') or {}
-        if proposal and proposal.get('base') == self.net.documentation_review.context(proj, fn) and not item.get('proposal_reviewed'):
+        already_reviewed = receipt and receipt.get('candidate') == proposal.get('token')
+        if proposal and proposal.get('base') == self.net.documentation_review.context(proj, fn) and not item.get('proposal_reviewed') and not already_reviewed:
             item['status'] = 'checking'; self.save(batch)
             self.launch(batch, control, item, batch['reviewer'], 'asm_review', proposal['token'])
             item['proposal_reviewed'] = True

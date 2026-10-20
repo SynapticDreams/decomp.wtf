@@ -185,6 +185,8 @@ def test_unsupported_candidate_keeps_original_source_and_saves_concerns(document
     assert net._function('First','authored')['matched_source'] == before
     receipt = net.function_detail('authored','First')['documentation_reviews'][0]
     assert receipt['candidate'] and not receipt.get('applied') and receipt['current']
+    manager.review_batches.start('authored',REVIEWER,WRITER);wait_batch(manager)
+    assert len(calls)==3 and net.store.one('SELECT COUNT(*) AS n FROM notes')['n']==1
 
 
 def test_session_limit_pauses_then_resume_reuses_saved_work(documented,tmp_path,monkeypatch):
