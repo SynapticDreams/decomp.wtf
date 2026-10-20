@@ -320,8 +320,12 @@ Status of this group:
 - **12: partly done.** The Korean board (`$A000`) is modelled, from MAME and Gearsystem. 4 PAK,
   MSX/Nemesis and Janggun remain open. The 8 KiB-bank boards need a wider change to the 16 KiB
   bank model.
-- **11, 13 and 14 remain open.** Runtime parity needs an emulator this environment can't run.
-  Library and driver signatures and decompressor recognition are the next candidates.
+- **13: partly done.** SDCC library recognition is in place. Signatures come from the installed
+  GBDK-2020 libraries and any SDCC `.lib`/`.rel` files a person adds (for example devkitSMS's
+  SMSlib). Relocated bytes are wildcards, and only unique hits count. Checked against GBDK's own link
+  map for SMS and GG builds. Sound-driver signatures remain open.
+- **11 and 14 remain open.** Runtime parity needs an emulator this environment can't run.
+  Decompressor recognition is the next candidate.
 
 11. **Runtime parity.** Drive original and rebuilt images through identical inputs in a headless
     emulator: Gearsystem MCP, MesenCE `--testRunner`, or MAME. Compare per-frame frame-buffer

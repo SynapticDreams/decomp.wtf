@@ -3608,6 +3608,13 @@ class RomNetwork(Network):
         log(f"PSY-Q signatures: {len(signatures)} usable, {len(report['hits'])} labels, {report['applied']} functions recognized")
         return report
 
+    def identify_sdcc_libraries(self, slug: str, files: list[dict] | None = None, apply: bool = False,
+                                log=print) -> dict:
+        """SMS/GG: name SDCC library functions from GBDK's installed libraries and added ones (app/sdcc_libraries.py)."""
+        from .sdcc_libraries import identify
+
+        return identify(self, slug, files, apply, log)
+
     def probe_compiler(self, slug: str, unit: str | None = None, expanded: bool = False, log=print) -> dict:
         from ..rom import psx_probe
 

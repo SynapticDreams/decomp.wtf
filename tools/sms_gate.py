@@ -65,6 +65,7 @@ TESTS = (
     "tests/test_z80.py",
     "tests/test_sms.py",
     "tests/test_sms_fixture_zexall.py",
+    "tests/test_sdcc_libs.py",
     "tests/test_export_sms.py",
 )
 # The pinned assembler and compiler checks those modules otherwise skip: every Z80 encoding round-trips through
@@ -77,6 +78,11 @@ TOOLCHAIN_CASES = {
                        "test_an_rst_call_matches_through_the_app"},
     # a real program with published source, built at a pinned commit (tools/sms_fixtures.py)
     "tests.test_sms_fixture_zexall": {"test_zexall_rebuilds_and_every_routine_its_source_calls_is_found"},
+    # SDCC library recognition against the pinned GBDK's own link map and project workflow
+    "tests.test_sdcc_libs": {"test_gbdk_libraries_name_what_its_own_link_map_says[sms]",
+                             "test_gbdk_libraries_name_what_its_own_link_map_says[gg]",
+                             "test_apply_names_and_sets_aside_only_unsettled_library_functions",
+                             "test_added_library_files_are_validated_cached_and_reused"},
 }
 
 

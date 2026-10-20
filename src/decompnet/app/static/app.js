@@ -3320,6 +3320,8 @@ function fillCompilerSettings() {
   showCompilerProbe(c.probe);
   $("psyqPanel").hidden = S.ov.platform !== "psx";
   showPsyqLibraries(c.libraries);
+  $("sdccLibPanel").hidden = !["sms", "gg"].includes(S.ov.platform);
+  showSdccLibraries(c.sdcc_libraries);
   $("psxDebugPanel").hidden = S.ov.platform !== "psx";
   $("smallDataPanel").hidden = S.ov.platform !== "psx";
   showSmallData(c.small_data);
@@ -3374,6 +3376,33 @@ async function scanPsyqLibraries(apply, files) {
     if (apply) poll(false);
   } catch (e) { toast(esc(e.message), "err"); } finally { $("psyqScan").disabled = false; $("psyqApply").disabled = false; }
 }
+function showSdccLibraries(report) {
+  const box = $("sdccLibResult");
+  if (!report) { box.innerHTML = ""; return; }
+  box.innerHTML = `<p class="muted small">${report.patterns} usable patterns from ${report.libraries.length} libraries · ${report.weak_skipped} too short to match safely · ${report.label_count} labels · ${report.conflict_count} conflicts · ${report.applied} functions recognized${report.truncated ? " · incomplete scan; nothing applied" : ""}</p><p class="muted small">${esc(report.note)}</p>`
+    + (report.hits.length ? `<table class="small"><thead><tr><th>ROM offset</th><th>Library function</th><th>Library</th></tr></thead><tbody>${report.hits.slice(0, 100).map((h) => `<tr><td>${hex8(h.rom_offset)}</td><td>${esc(h.name)}</td><td>${esc(h.libraries.join(", "))}</td></tr>`).join("")}</tbody></table>` : "");
+}
+async function scanSdccLibraries(apply, files) {
+  $("sdccLibScan").disabled = true; $("sdccLibApply").disabled = true;
+  $("sdccLibLog").hidden = false;
+  try {
+    const { job } = await api("/api/libraries/sdcc", { method: "POST", body: { slug: S.slug, files, apply } });
+    const result = await followJob(job, $("sdccLibLog"));
+    S.ov.compiler.sdcc_libraries = result;
+    showSdccLibraries(result);
+    if (apply) poll(false);
+  } catch (e) { toast(esc(e.message), "err"); } finally { $("sdccLibScan").disabled = false; $("sdccLibApply").disabled = false; }
+}
+$("sdccLibScan").onclick = () => scanSdccLibraries(false);
+$("sdccLibApply").onclick = () => scanSdccLibraries(true);
+$("sdccLibFiles").onchange = async () => {
+  const files = Array.from($("sdccLibFiles").files);
+  $("sdccLibFiles").value = "";
+  if (!files.length) return;
+  if (files.length > 16 || files.reduce((n, f) => n + f.size, 0) > 32 * 1024 * 1024) { toast("Choose at most 16 files, up to 32 MiB total.", "err"); return; }
+  const encode = async (f) => { const bytes = new Uint8Array(await f.arrayBuffer()); let text = ""; for (let i = 0; i < bytes.length; i += 32768) text += String.fromCharCode(...bytes.subarray(i, i + 32768)); return btoa(text); };
+  await scanSdccLibraries(false, await Promise.all(files.map(async (f) => ({ name: f.name, data: await encode(f) }))));
+};
 $("psyqScan").onclick = () => scanPsyqLibraries(false);
 $("psyqApply").onclick = () => scanPsyqLibraries(true);
 $("psyqFiles").onchange = async () => {

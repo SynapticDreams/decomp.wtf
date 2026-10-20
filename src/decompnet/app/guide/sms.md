@@ -325,6 +325,19 @@ does not silently become an assembly acceptance contract. Stored source is retai
   `--max-allocs-per-node 100000` there (SMSlib's own setting); external peephole files stay unqualified for revalidation. z88dk's sccz80 code won't match SDCC at all. An SDSC tag alone says homebrew, not which tool:
   assemblers write one too. A game none of them built is most likely assembly, for the assembly track.
 
+## Library functions in C-built games
+
+Settings → Compiler → **SDCC libraries** (also `/api/libraries/sdcc` POST with `slug`, optional `files` of
+`{name, data}` base64 `.lib`/`.rel` files, and `apply`) recognizes library functions from the installed GBDK-2020's
+Z80 libraries (`z80.lib`, and `sms.lib` or `gg.lib`) and any SDCC libraries you add, such as devkitSMS's `SMSlib.lib`.
+Added files are checked, then kept in the workspace's local cache; nothing is bundled. Each library object's relocated
+bytes are wildcards, so a function matches wherever it was linked; a pattern shorter than 16 bytes, with fewer than
+12 concrete bytes, or matching more than once is not used. Names one module defines at the same place are aliases;
+different modules claiming one place are conflicts and are left alone. **Apply recognized libraries** names a
+function only when a unique hit covers its whole recorded body and it still has its split name, then sets it aside
+from agents with the library as the reason; claimed, matched, documented and explicitly reopened work is left as it
+is. A library match says which library version's code is in the ROM, not which compiler built the game's own code.
+
 ## Hand-written routines
 
 Most Master System and Game Gear games are assembly. A routine set aside as hand-written is documented instead of
