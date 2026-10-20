@@ -117,12 +117,26 @@ not a documentation or matching task. Use only the available decomp tools; do no
    not semantic accuracy. Mapper declarations and existing symbol names do not prove runtime mapping or meaning.
    If a relationship or game-specific purpose cannot be established, say so.
 3. submit_documentation_review(function="{name}", review_context=the supplied token, verdict=...,
-   summary=..., evidence=[...], concerns=[...]). Use supported only if the name and explanation are supported
+   summary=..., evidence=[...], concerns=[...], followup=...). Use supported only if the name and explanation are supported
    with no outstanding concerns; needs_changes for specific contradictions; uncertain for missing evidence.
    Explain what it does in plain English for someone who cannot read assembly. Cite concrete instruction
    addresses, register/data flow and caller evidence. State exactly what needs fixing or checking next.
-   Do not invent execution tests or claim a person approved it. No source or human-review flag is changed.
+   Do not invent execution tests or claim a person approved it. Do not edit source or human-review flags yourself.
+   Set followup="none" for supported; "comments" ONLY for a specific comment-only correction supported by the
+   instructions; "evidence" for missing caller/data/runtime evidence; "layout" for boundaries, overlaps or mapping.
+   A low-level explanation need not invent a game-specific purpose. Distinguish missing higher-level evidence
+   from an incorrect description. If reviewing a proposed correction, judge that source independently.
 4. After saving the report, stop. Never approve your own previous work or automatically send it back.
+"""
+
+COMMENT_PROMPT = """\
+Correct only the comments for {name}, following its independent review.
+Call get_documentation_review() for the accepted source, review_context and review_findings. Read relevant
+functions/data if needed. Preserve every instruction, label, definition, string and operand exactly.
+Do not claim work, rename anything, change layout/mapping, or invent a higher-level purpose. Submit the whole
+comment-corrected source with submit_comment_revision(function="{name}", review_context=the token, source=...).
+The app validates all assembly checks and keeps the proposal separate until an independent reviewer supports
+it. If the finding needs more evidence, do not guess. After saving a proposal, stop.
 """
 
 WORK_PROMPT = """\
@@ -282,6 +296,7 @@ def _explain(net, agent, slug, function, left, right):
 HANDLERS: dict[str, Callable[..., str]] = {
     "get_documentation_review": lambda net, agent, slug: net.documentation_review.inputs(agent, slug),
     "submit_documentation_review": lambda net, agent, slug, **args: net.documentation_review.submit(agent, slug, **args),
+    "submit_comment_revision": lambda net, agent, slug, **args: net.documentation_review.propose_comments(agent, slug, **args),
     "project_info": lambda net, agent, slug: project_info(net, slug),
     "explain_difference": lambda net, agent, slug, function, left, right: _explain(net, agent, slug, function, left, right),
     "probe_compiler": lambda net, agent, slug, unit="", expanded=False: json.dumps(
@@ -330,12 +345,12 @@ ROM_ONLY = {"defer_documentation", "get_context", "edit_context", "rename_symbol
 FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file"}
 
 
-def tool_names(fork: bool, review: bool = False) -> list[str]:
+def tool_names(fork: bool, review: bool = False, comments: bool = False) -> list[str]:
     """The tools that make sense for a project: forks and ROM projects share the core loop."""
-    from .documentation_review import READ_TOOLS
+    from .documentation_review import READ_TOOLS, COMMENT_TOOLS
     if review:
-        return [n for n in HANDLERS if n in READ_TOOLS]
-    skip = (ROM_ONLY if fork else FORK_ONLY) | {"get_documentation_review", "submit_documentation_review"}
+        return [n for n in HANDLERS if n in (COMMENT_TOOLS if comments else READ_TOOLS)]
+    skip = (ROM_ONLY if fork else FORK_ONLY) | {"get_documentation_review", "submit_documentation_review", "submit_comment_revision"}
     return [n for n in HANDLERS if n not in skip]
 
 
@@ -361,11 +376,10 @@ def call(net: RomNetwork, agent: Agent, slug: str, name: str, args: dict) -> str
 
 def dispatch(net, agent, slug, name, args):
     """Enforce review restrictions for both direct API tools and MCP calls, including hidden tools."""
-    from .documentation_review import READ_TOOLS
     args = _named(net, agent, slug, args)
     if net.documentation_review.is_reviewer(agent):
         net.documentation_review.session(agent, slug)
-        if name not in READ_TOOLS:
+        if name not in net.documentation_review.allowed_tools(agent):
             raise NetworkError("AI documentation review is read-only; submit a review report instead")
         if name == "get_function":
             return net.documentation_review.read_function(agent, slug, **args)
@@ -398,10 +412,15 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def submit_documentation_review(ctx: Context, function: str, review_context: str, verdict: str,
-                                          summary: str, evidence: list[str], concerns: list[str]) -> str:
+                                          summary: str, evidence: list[str], concerns: list[str], followup: str = "") -> str:
         """Save an independent plain-English assessment: supported, needs_changes or uncertain. No human approval."""
         return await run(ctx, "submit_documentation_review", function=function, review_context=review_context,
-                         verdict=verdict, summary=summary, evidence=evidence, concerns=concerns)
+                         verdict=verdict, summary=summary, evidence=evidence, concerns=concerns, followup=followup)
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def submit_comment_revision(ctx: Context, function: str, review_context: str, source: str) -> str:
+        """Propose comment-only corrections. Validated first; accepted only after independent review."""
+        return await run(ctx, "submit_comment_revision", function=function, review_context=review_context, source=source)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def project_info(ctx: Context) -> str:

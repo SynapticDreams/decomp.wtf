@@ -18,6 +18,7 @@ else:
 
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = (
+    "tests/test_review_batches.py",
     "tests/test_store_subjects.py",
     "tests/test_sms_annotation_subjects.py",
     "tests/test_sms_symbol_evidence_lifecycle.py",

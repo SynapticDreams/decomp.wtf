@@ -292,8 +292,10 @@
     <div class="list-tools">
       <input id="fnSearch" class="search" type="search" placeholder="Find a function, address or file  ( / )" aria-label="Find a function" autocomplete="off" spellcheck="false">
       <div class="seg" id="fnFilter" role="radiogroup" aria-label="Show"></div>
+      <button type="button" class="ghost small-btn" id="fnReviewBatch" hidden>Review remaining…</button>
       <label class="check inline" id="fnHideAsmBox" title="Assembly no compiler makes, and data the split took for code: out of agents' way" hidden><input type="checkbox" id="fnHideAsm" checked><span>Hide assembly and data<span id="fnHideAsmN"></span></span></label>
     </div>
+    <section id="reviewBatchPanel" class="pad-x" aria-label="Batch AI review" hidden></section>
     <div class="fn-table-wrap">
       <table class="fn-table">
         <thead><tr>
@@ -575,6 +577,7 @@
 <script src="/assets/resplit-history.js"></script>
 <script src="/assets/resplit-inspection.js"></script>
 <script src="/assets/assembly-work.js"></script>
+<script src="/assets/review-batch.js"></script>
 <script src="/assets/app.js"></script>
 </body>
 </html>

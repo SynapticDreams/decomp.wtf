@@ -811,6 +811,8 @@ class Manager:
         self.paused: dict[str, float] = {}
         self.paused_why: dict[str, str] = {}
         self.backoff: dict[str, int] = {}
+        from .review_batches import ReviewBatches
+        self.review_batches = ReviewBatches(self)
         if net is not None:
             net.run_info = self.run_info  # each attempt says which helper setup made it
 
@@ -854,9 +856,13 @@ class Manager:
             options["per_session"] = 1  # one function per session: the next claim gets its own model
             options.pop("effort", None)  # the tier picks the effort with the model
         ids = []
-        review = options.get("track") == "asm_review"
+        review = options.get("track") in ("asm_review", "asm_comment_fix")
+        excluded_reviewers = set()
         if review:
-            self.net.documentation_review.target(slug, options.get("pin") or "")
+            _, review_function = self.net.documentation_review.target(slug, options.get("pin") or "")
+            excluded_reviewers.add(review_function['matched_agent_id'])
+            if options.get('review_candidate'):
+                excluded_reviewers.add((json.loads(review_function['meta'] or '{}').get('comment_revision') or {}).get('writer_id'))
             if options.get("lean") or options.get("model") == TIERED:
                 raise ValueError("AI review uses one model's tool loop")
             options.update(polish=False, per_session=1, max_steps=60)
@@ -864,13 +870,14 @@ class Manager:
             self._prepare(slug)
         with self._lock:
             if review and any(s.slug == slug and s.options.get("pin") == options["pin"]
-                              and s.options.get("track") == "asm_review" and not s.stop.is_set()
+                              and s.options.get("track") in ("asm_review", "asm_comment_fix") and not s.stop.is_set()
                               for s in self.sessions.values()):
                 raise ValueError("an AI review is already running for this routine")
             for _ in range(max(1, min(int(count), 8))):
                 n = 1 + sum(1 for s in self.sessions.values() if s.kind == kind)
                 sid = f"{kind}-{n}"
-                while sid in self.sessions:
+                while sid in self.sessions or (review and (prior := self.net.store.one(
+                        'SELECT id FROM agents WHERE name=?', f'review-{sid}')) and prior['id'] in excluded_reviewers):
                     n += 1
                     sid = f"{kind}-{n}"
                 if kind == "api":  # numbered per endpoint: "gpu-box #2" says which machine it runs on
@@ -924,10 +931,12 @@ class Manager:
     def running(self) -> list[dict]:
         """The helpers that should keep working: resumed by the server after the app restarts."""
         return [{"kind": s.kind, "slug": s.slug, "options": {k: v for k, v in s.options.items() if k not in ("api_key", "escalate")}}
-                for s in self.sessions.values() if s.state in ("starting", "working", "waiting") and not s.stop.is_set()]
+                for s in self.sessions.values() if s.state in ("starting", "working", "waiting") and not s.stop.is_set() and not s.options.get("review_batch")]
 
     def stop(self, sid: str | None = None) -> None:
         """Stop one helper (for good) or all of them (the app is quitting: they resume next time)."""
+        if sid is None:
+            self.review_batches.stop_all()
         for s in list(self.sessions.values()):
             if sid in (None, s.id):
                 s.stop.set()
@@ -1012,7 +1021,7 @@ class Manager:
 
     def _run(self, s: Session) -> None:
         agent, token = self.net.local_agent(s.agent_name)
-        if s.options.get("track") == "asm_review":
+        if s.options.get("track") in ("asm_review", "asm_comment_fix"):
             self._run_review(s, agent, token)
             return
         only_starred = bool(s.options.get("only_starred"))
@@ -1174,7 +1183,9 @@ class Manager:
         workdir.mkdir(parents=True, exist_ok=True)
         try:
             self.net.documentation_review.begin(agent, s.slug, s.options["pin"], kind=s.kind,
-                                                 model=s.options.get("model") or "default")
+                                                 model=s.options.get("model") or "default",
+                                                 comments=s.options.get("track") == "asm_comment_fix",
+                                                 candidate=s.options.get("review_candidate") or "", stop=s.stop)
             while not s.stop.is_set():
                 if (cap := self.over_budget(s.slug)) is not None:
                     raise Fatal(f"the project's ${cap:.2f} budget is used up")
@@ -1192,7 +1203,7 @@ class Manager:
                     self.pause(s, e.until, f"the plan's usage limit is used up ({e.said[:120]})")
                     continue
                 if self.net.documentation_review.active[agent.id]["done"]:
-                    s.push("info", "AI review saved; human review is still outstanding")
+                    s.push("info", "Comment proposal saved" if s.options.get("track") == "asm_comment_fix" else "AI review saved; human review is still outstanding")
                     break
                 if s.stop.is_set():
                     break
@@ -1389,7 +1400,7 @@ class Manager:
 
     def prompt(self, s: Session) -> str:
         text = self._prompt(s)
-        if s.options.get("track") == "asm_review":
+        if s.options.get("track") in ("asm_review", "asm_comment_fix"):
             text += "\n" + tools._guide("asm")
             if (wish := self.net.instructions(s.slug)):
                 text += f"\nThe user's instructions for this project:\n{wish}\n"
@@ -1415,8 +1426,8 @@ class Manager:
         return text + s.resume_note
 
     def _prompt(self, s: Session) -> str:
-        if s.options.get("track") == "asm_review":
-            return tools.REVIEW_PROMPT.format(name=s.options["pin"])
+        if s.options.get("track") in ("asm_review", "asm_comment_fix"):
+            return (tools.COMMENT_PROMPT if s.options.get("track") == "asm_comment_fix" else tools.REVIEW_PROMPT).format(name=s.options["pin"])
         ov = self.net.overview(s.slug)
         if s.options.get("pin") and s.options.get("track") == "asm":
             return (tools.ASM_PROMPT.format(title=ov["title"], count=1, **tools.asm_words(ov.get("platform") or ""))
@@ -1721,8 +1732,8 @@ class Manager:
         headers = {"Content-Type": "application/json"}
         if s.options.get("api_key"):
             headers["Authorization"] = f"Bearer {s.options['api_key']}"
-        review = s.options.get("track") == "asm_review"
-        schema = api_tool_schemas(fork=bool(self.net.fork_slug(s.slug)), review=review)
+        review = s.options.get("track") in ("asm_review", "asm_comment_fix")
+        schema = api_tool_schemas(fork=bool(self.net.fork_slug(s.slug)), review=review, comments=s.options.get("track") == "asm_comment_fix")
         messages = [{"role": "system", "content": "Independently assess assembly documentation using read-only tools." if review else tools.INSTRUCTIONS},
                     {"role": "user", "content": self.prompt(s)}]
         used_tool = False
@@ -1942,7 +1953,7 @@ def context_window(client, base: str, options: dict) -> int:
     return 128000
 
 
-def api_tool_schemas(fork: bool = False, review: bool = False) -> list[dict]:
+def api_tool_schemas(fork: bool = False, review: bool = False, comments: bool = False) -> list[dict]:
     """OpenAI-style tool definitions for the built-in agent, from the same tools CLI agents get."""
     from . import correction_tools, annotation_tools
 
@@ -1951,12 +1962,15 @@ def api_tool_schemas(fork: bool = False, review: bool = False) -> list[dict]:
     it = lambda desc: {"type": "integer", "description": desc}
     defs = {
         "get_documentation_review": ("Get the accepted source, target assembly, callers and review_context token.", s()),
-        "submit_documentation_review": ("Save an independent AI assessment; never approves or edits source.",
+        "submit_documentation_review": ("Save an independent AI assessment; never grants human approval.",
             s(function=st("reviewed function", True), review_context=st("token from get_documentation_review", True),
               verdict={"type": "string", "enum": ["supported", "needs_changes", "uncertain"], "req": True},
               summary=st("plain-English explanation and assessment", True),
               evidence={"type": "array", "items": {"type": "string"}, "req": True},
-              concerns={"type": "array", "items": {"type": "string"}, "req": True})),
+              concerns={"type": "array", "items": {"type": "string"}, "req": True},
+              followup={"type": "string", "enum": ["none", "comments", "evidence", "layout"]})),
+        "submit_comment_revision": ("Propose comment-only corrections for independent review; no source acceptance.",
+            s(function=st("function", True), review_context=st("current context token", True), source=st("whole source, comments changed only", True))),
         "project_info": ("Which game, compiler and progress.", s()),
         "claim_function": ("Claim the next function (or one by name/address). Returns assembly, data, best attempt, "
                            "notes and a draft. count > 1: a batch of small functions to judge together.",
@@ -2017,7 +2031,7 @@ def api_tool_schemas(fork: bool = False, review: bool = False) -> list[dict]:
         defs["compile_and_diff"] = ("Write one complete function definition into its source file, build it and diff "
                                     "with objdiff. 100% / score 0 = matched.",
                                     s(function=st("function name", True), source=st("the function definition", True)))
-    names = set(tools.tool_names(fork, review))
+    names = set(tools.tool_names(fork, review, comments))
     return [{"type": "function", "function": {"name": n, "description": d, "parameters": p}}
             for n, (d, p) in defs.items() if n in names]
 
