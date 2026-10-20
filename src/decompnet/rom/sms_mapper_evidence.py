@@ -1,5 +1,11 @@
-"""Bounded byte-pattern suggestions, never mapper selection or executed-instruction evidence."""
+"""Bounded byte-pattern suggestions, never mapper selection or executed-instruction evidence.
+
+The report also carries the software-list catalog's record for a known dump (rom/sms_mapper_db.py), kept apart
+from the byte-pattern candidates: both are suggestions, and neither changes the declaration.
+"""
 from __future__ import annotations
+
+from . import sms_mapper_db
 
 SCAN_BYTES = 0x10000
 RECORDS = 32
@@ -26,6 +32,6 @@ def inspect(image: bytes) -> dict:
     return {"available": True, "confidence": "low", "ambiguous": True, "requires_declaration": True,
             "scan_bytes": scanned, "total_bytes": len(image), "scan_truncated": scanned < len(image),
             "record_limit": RECORDS, "pattern_count": total, "records_truncated": total > len(records),
-            "candidates": candidates, "evidence": records,
+            "candidates": candidates, "evidence": records, "catalog": sms_mapper_db.lookup(image),
             "message": "Byte patterns can be data or patched code; size and missing patterns prove no mapper. "
                        "Review independent wiring evidence before declaring a model."}

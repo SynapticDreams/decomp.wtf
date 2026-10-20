@@ -99,3 +99,60 @@ def test_mapperless_coordinates_must_match_flat_wiring():
 def test_unqualified_models_are_not_silently_interpreted_as_sega(mapper):
     with pytest.raises(CoverageError, match="declared supported model"):
         read("00:0100", mapper=mapper)
+
+
+# Gearsystem trace logs, as its trace_logger_formatter.cpp writes them (cycle prefix, bank column on)
+def gs(cycle, text, delta=4):
+    return f"@{cycle:012d} +{delta:<12d} {text}"
+
+
+CALLS = image({0x100: bytes.fromhex("cd0080"), 0x14000: bytes.fromhex("3e05c9")})
+
+
+def test_gearsystem_instruction_lines_are_read_with_their_bank_column():
+    log = "\n".join([f"@{0:012d}                [CPU] 000:0100  AF:0000 BC:0000 call $8000             CD 00 80 ",
+                     gs(17, "[CPU] 005:8000  AF:0000 BC:0000 ld a,$05                3E 05 "),
+                     gs(24, "[VDP] VINT FLAG Status:$00->$80 Line:192 H:12"),
+                     gs(31, "[CPU] 005:8002  ret                      C9 ")])
+    cov = read(log, CALLS)
+    assert cov.entries == {0x14000} and cov.code[0x14000:0x14003] == b"\x01" * 3
+
+
+def test_a_device_event_between_a_call_and_its_target_is_not_bridged():
+    log = "\n".join([gs(0, "[CPU] 000:0100  call $8000  CD 00 80"), gs(4, "[CPU] IRQ PC:$8000 -> $0038"),
+                     gs(8, "[CPU] 005:8000  ld a,$05  3E 05")])
+    assert read(log, CALLS).entries == set()
+
+
+@pytest.mark.parametrize("value, counted", [("AB", True), ("A8", True), ("EB", False), ("E3", False), ("2B", False)])
+def test_only_a_cartridge_alone_memory_control_write_lets_instructions_count(value, counted):
+    log = "\n".join([gs(0, f"[IO] MEMORY CONTROL Port:$3E <- ${value}"), gs(4, "[CPU] 000:0100  call $8000  CD 00 80"),
+                     gs(21, "[CPU] 005:8000  ld a,$05  3E 05")])
+    if counted:
+        assert read(log, CALLS).entries == {0x14000}
+    else:
+        with pytest.raises(CoverageError, match="no valid cartridge-ROM"):
+            read(log, CALLS)
+
+
+def test_after_a_logged_reset_nothing_counts_until_the_cartridge_is_enabled():
+    log = "\n".join([gs(400, "[CPU] 000:0100  call $8000  CD 00 80"),
+                     f"@{0:012d} RESET          [CPU] 000:0000  di  F3",  # (the BIOS could be running now)
+                     "@000000000004 +4            [CPU] 000:0100  call $8000  CD 00 80",
+                     "@000000000021 +17           [CPU] 005:8000  ld a,$05  3E 05",
+                     gs(30, "[IO] MEMORY CONTROL Port:$3E <- $AB"),
+                     gs(34, "[CPU] 000:0103  jr $0103  18 FE")])
+    cov = read(log, CALLS)
+    assert cov.entries == set() and cov.code[0x0100] == 1 and cov.code[0x0103] == 1
+    assert cov.code[0x14000] == 0 and cov.code[0x0000] == 0
+
+
+def test_a_log_without_the_bank_column_says_so():
+    with pytest.raises(CoverageError, match="bank column"):
+        read(gs(0, "[CPU] 0100  call $8000  CD 00 80"), CALLS)
+
+
+def test_gearsystem_slot_zero_bank_column_is_validated_against_the_fixed_first_kib():
+    # Gearsystem prints slot 0's selected bank for $0000-$03FF too; the first KiB is bank 0 on a Sega cartridge
+    cov = read("\n".join([gs(0, "[CPU] 000:0100  call $8000  CD 00 80"), gs(4, "[CPU] 004:0103  jr $0103  18 FE")]), CALLS)
+    assert cov.code[0x0103] == 0 and cov.code[0x10103] == 0

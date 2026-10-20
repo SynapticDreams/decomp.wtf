@@ -265,6 +265,20 @@ evaluated return lands the same distance past the call) rather than ported from 
 
 ### Medium term
 
+Status of this group:
+
+- **6: done for MAME.** The CC0 SMS/GG lists are extracted by `tools/sms_softlist.py`, keeping hashes,
+  board and `pin_42`/`battery` features only. The MEKA extract was not added.
+- **7: partly done.** Gearsystem trace logs are read directly, with port `$3E` tracking. The
+  versioned JSONL session format and a MesenCE producer remain open: neither could be run against a
+  real emulator here.
+- **8: partly done.** RAM operands now have names, and header fields are spelled out; the build
+  already wrote a `.sym` file. `.dw` tables and the shiftability check remain open.
+- **9: deferred.** No discovery consumer gains from BIOS-left RAM values yet. Port `$3E` writes stay
+  unresolved whatever their value.
+- **10: partly done.** devkitSMS projects start without `--fsigned-char`. A multi-version SDCC
+  matrix remains open.
+
 6. **Hash-database mapper evidence.** Ship a CC0 extract of the MAME softlists, plus an optional
    attributed MEKA extract, keyed by normalized-ROM CRC32/SHA-1. Show board, slot feature and notes
    under **Inspect mapper evidence**. It suggests only, like the existing scan.

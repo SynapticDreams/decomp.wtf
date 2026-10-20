@@ -223,7 +223,9 @@ reconstruction independently of those mapping and naming limits.
 | `tools/`, `build.py`, `build.json` | Decoder, revision/mapper helpers, build orchestration, verification receipt and input manifest. |
 
 `build/disassembly/` is made from your copy on every build, so keep your work in `layout.json`, `comments.txt` and
-`documented/`. To change the game itself, copy `build/disassembly/` elsewhere and edit it there (`game.asm` is the
+`documented/`. Memory operands in work RAM ($C000-$FFFB) are spelled by name in the same bytes: a name
+`documented/names.inc` gives that address (when it gives exactly one), else `_RAM_XXXX_` from the generated
+`ram.inc`. The Sega header's 16 bytes are written out as its fields. To change the game itself, copy `build/disassembly/` elsewhere and edit it there (`game.asm` is the
 file to assemble); the header's checksum then needs updating, which WLA-DX's `.COMPUTESMSCHECKSUM` does.
 
 The game's code and data belong to their rights holder, and the documented routines are its code written out:

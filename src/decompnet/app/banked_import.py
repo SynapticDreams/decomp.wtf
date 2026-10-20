@@ -84,6 +84,10 @@ def import_project(net, picked, slug: str, workdir: Path, log, context_header: s
     from ..rom import fingerprint
 
     built = fingerprint.identify(picked.platform, (workdir / picked.filename).read_bytes())
+    if built and built["tool"] == "devkitSMS":
+        # devkitSMS builds with SDCC's own default, unsigned char (no --fsigned-char as GBDK's lcc passes)
+        compiler["flags"] = []
+        compiler["note"] += "; flags start without --fsigned-char, as devkitSMS builds"
     if built:
         log(f"built with {built['tool']}{' ' + built['version'] if built['version'] else ''}"
             + (f" ({built['language']})" if built["language"] else "") + (f": {built['note']}" if built["note"] else ""))

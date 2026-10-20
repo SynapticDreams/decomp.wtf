@@ -54,6 +54,10 @@ NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 GLOBAL = re.compile(r"^\s*([A-Za-z][A-Za-z0-9_]*):", re.M)
 WORD = re.compile(r"(?<![.@\w])[A-Za-z_]\w*")
 RELATIVE = re.compile(r"^\s*(?:@*[A-Za-z_]\w*:\s*)*(?:jr|djnz)\b[^;]*?\b([A-Za-z_]\w*)\s*(?:;|$)", re.M)
+DEFINED = re.compile(r"^\s*\.DEFINE\s+([A-Za-z_]\w*)", re.M | re.I)
+VALUE = re.compile(r"^\s*\.DEFINE\s+([A-Za-z_]\w*)\s+\$([0-9A-Fa-f]{4})\s*$", re.M | re.I)
+RAM = range(0xC000, 0xFFFC)  # work RAM and its mirror, below the Sega mapper registers
+HEADER = b"TMR SEGA"
 
 
 def fail(msg: str) -> None:
@@ -129,6 +133,10 @@ class Disassembly:
         self.placed = 0  # documented routines in place of their bytes
         self.done: dict[int, bool] = {}
         self.source_hashes: dict[int, str] = {}
+        self.ram: set[int] = set()  # work RAM addresses memory operands name (ram.inc defines them)
+        self.taken: set[str] = set()  # names hardware.inc and documented/names.inc already define
+        self.ram_names: dict[int, str] = {}  # the project's own name for a RAM address, when it has exactly one
+        self.header = next((at for at in (0x7FF0, 0x3FF0, 0x1FF0) if image[at:at + 8] == HEADER), None)
 
     def at(self, flat: int) -> int:
         """The address the byte at `flat` has in the build (its bank's slot)."""
@@ -213,6 +221,12 @@ class Disassembly:
             name = HW_MAPPER.get((kind, cpu)) if kind == "sega" or write else None
             if name:
                 return text.replace(m.group(0), f"({name})", 1)
+        if (m := MEMORY.search(text)) and (cpu := int(m.group(1), 16)) in RAM:
+            if (name := self.ram_names.get(cpu)) is None:
+                if (name := ram_name(cpu)) in self.taken:
+                    return text  # (a generated name something else already defines: left as a number)
+                self.ram.add(cpu)
+            return text.replace(m.group(0), f"({name})", 1)  # (the same bytes: only the operand is spelled)
         if text.startswith("db "):
             return "." + text
         return text
@@ -246,6 +260,11 @@ class Disassembly:
                 lines.append("    .db " + ", ".join(f"${v:02x}" for v in pending[k:k + 16]))
             pending.clear()
         while p < hi:
+            if p == self.header and not self.header_used(p):
+                flush()
+                lines += self.header_lines(p)
+                p += 16
+                continue
             if p in self.documented and (body := self.substitute(p, self.documented[p])) is not None:
                 flush()
                 lines += [f"; {t}" for t in notes.get(self.documented[p]["name"], [])] + body
@@ -265,6 +284,21 @@ class Disassembly:
         flush()
         return "\n".join(lines + [".ENDS", ""])
 
+    def header_used(self, p: int) -> bool:
+        """Whether code, a label or a documented routine claims any of the header's bytes."""
+        span = range(p, p + 16)
+        return any(a in self.emitted or a in self.inside or a in self.labels for a in span) or \
+            any(flat < p + 16 and p < flat + e["size"] for flat, e in self.documented.items())
+
+    def header_lines(self, p: int) -> list[str]:
+        """The Sega header's fields, spelled out (the same 16 bytes)."""
+        h = self.image[p:p + 16]
+        return ["; Sega ROM header: TMR SEGA, reserved, checksum, product code and version, region and size",
+                '    .db "TMR SEGA"', f"    .db ${h[8]:02x}, ${h[9]:02x}",
+                f"    .dw ${h[10] | h[11] << 8:04x}  ; checksum (as the original has it)",
+                f"    .db ${h[12]:02x}, ${h[13]:02x}, ${h[14]:02x}  ; product code (BCD) and version",
+                f"    .db ${h[15]:02x}  ; region and ROM size codes"]
+
     def used_names(self) -> None:
         """Names a documented routine uses that no label here gives: by number (jp and call reach them that way)."""
         placed = set(self.labels.values())
@@ -281,6 +315,24 @@ class Disassembly:
             self.defines.update({n: functions[n] for n in missing})
             keep[flat] = e
         self.documented = keep
+
+
+def ram_name(cpu: int) -> str:
+    return f"_RAM_{cpu:04X}_"
+
+
+def project_ram_names(names: str) -> dict[int, str]:
+    """{address: name} for work RAM addresses documented/names.inc gives exactly one name."""
+    found: dict[int, set[str]] = {}
+    for name, value in VALUE.findall(names):
+        if int(value, 16) in RAM:
+            found.setdefault(int(value, 16), set()).add(name)
+    return {cpu: next(iter(names)) for cpu, names in found.items() if len(names) == 1}
+
+
+def ram_include(addresses: set[int]) -> str:
+    """ram.inc: the work RAM addresses the disassembly names, numbered as they are; rename them in your sources."""
+    return "".join(f".DEFINE {ram_name(cpu)} ${cpu:04X}\n" for cpu in sorted(addresses))
 
 
 HW_PORTS: dict[tuple[int, bool], str] = {}

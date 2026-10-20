@@ -303,10 +303,17 @@ does not silently become an assembly acceptance contract. Stored source is retai
   readable without a mapper declaration.
   A Sega code/data log supplies physical ROM offsets without CPU windows. New placements need a symbol, an
   explicit entry correction or another established CPU context; section defaults cannot fill that gap.
+  A Gearsystem trace log is read the same way when its bank column is on: its `[CPU] BBB:PPPP` lines are the
+  instructions, and any other event line breaks entry adjacency. Its bank column is slot 0's selected bank even in
+  the fixed first KiB, so such lines are rejected rather than reattributed. With memory-control (I/O) events logged,
+  instructions count only while the last port $3E write enables the cartridge alone; after a logged reset nothing
+  counts until one does. Without those events BIOS execution can't be told from the cartridge's: start the log
+  after the game is running, or run without a BIOS.
 
 - The import reads which toolchain built the game from its start-up code: GBDK-2020's, devkitSMS's or z88dk's
   classic one (C). devkitSMS builds use unsigned `char` and often their own peephole rules, unlike the pinned
-  GBDK profile; z88dk's sccz80 code won't match SDCC at all. An SDSC tag alone says homebrew, not which tool:
+  GBDK profile, so a devkitSMS project starts with compiler flags without `--fsigned-char`. If code still differs, try
+  `--max-allocs-per-node 100000` there (SMSlib's own setting); external peephole files stay unqualified for revalidation. z88dk's sccz80 code won't match SDCC at all. An SDSC tag alone says homebrew, not which tool:
   assemblers write one too. A game none of them built is most likely assembly, for the assembly track.
 
 ## Hand-written routines
@@ -314,7 +321,9 @@ does not silently become an assembly acceptance contract. Stored source is retai
 Most Master System and Game Gear games are assembly. A routine set aside as hand-written is documented instead of
 matched: WLA-DX assembly that rebuilds its bytes, with names, comments and constants (`claim_function(track="asm")`,
 guide `asm`). The project's export is a WLA-DX disassembly made from the user's copy. It attempts to insert the
-documented routines, reports omissions and checks the rebuilt image byte for byte.
+documented routines, reports omissions and checks the rebuilt image byte for byte. Its disassembly spells work RAM
+memory operands by name (a single name `documented/names.inc` gives an address, else `_RAM_XXXX_` from a generated
+`ram.inc`) and writes the Sega header out as its fields, in the same bytes.
 
 ## The matching lane
 
