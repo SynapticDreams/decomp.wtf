@@ -206,6 +206,8 @@ class RomNetwork(Network):
         self.sms = SMSProjects(self)
         from .assembly_work import AssemblyWork
         self.assembly = AssemblyWork(self)
+        from .documentation_review import DocumentationReview
+        self.documentation_review = DocumentationReview(self)
 
     # ------------------------------------------------------------------ basics
 
@@ -3227,6 +3229,7 @@ class RomNetwork(Network):
                            "draft" if fn["seed"] else None,
             "track": track,
             "assembly_work": self.assembly.view(proj, fn) if track or fn["status"] == "documented" and proj["arch"] in ASM_ARCHS else None,
+            "documentation_reviews": self.documentation_review.view(proj, fn) if proj["arch"] in ASM_ARCHS else [],
             "sample": fn["status"] == "documented" and bool(json.loads(fn["meta"] or "{}").get("sample")),
             "scores": [{"score": a["score"], "t": a["created_at"], "agent": a["agent"]} for a in attempts],
             "notes": [dict(n) for n in notes],

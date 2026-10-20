@@ -1,6 +1,43 @@
 /* The last submitted assembly's mechanical checks, distinct from semantic approval. */
 "use strict";
 window.AssemblyWorkUI = {
+  renderReview(panel, detail, running = false) {
+    panel.replaceChildren();
+    const reports = detail.documentation_reviews || [];
+    panel.hidden = detail.status !== "documented" && !reports.length;
+    if (panel.hidden) return;
+    const line = (parent, text, cls = "small") => {
+      const p = document.createElement("p"); p.className = cls; p.textContent = text; parent.append(p);
+    };
+    line(panel, "Independent AI review", "col-title");
+    line(panel, detail.sample ? "Human review pending. You can leave this flag in place if you cannot assess the assembly." :
+      "AI assessments are separate from human review and byte-matching checks.");
+    if (running) line(panel, "Review in progress. The report will appear here when the helper saves it.");
+    if (!reports.length) {
+      if (!running) line(panel, "Ask AI to review for a plain-English explanation, supporting evidence and anything uncertain.");
+      return;
+    }
+    const outcomes = { supported: "Explanation supported", needs_changes: "Changes recommended", uncertain: "Uncertain" };
+    reports.forEach((report, i) => {
+      let box = panel;
+      if (i) {
+        box = document.createElement("details");
+        const title = document.createElement("summary"); title.textContent = "Earlier AI review"; box.append(title); panel.append(box);
+      }
+      line(box, `AI assessment: ${outcomes[report.verdict] || "Uncertain"}.`);
+      if (!report.current) line(box, "Previous version: source or supporting context changed. Ask for a fresh review before using this assessment.");
+      line(box, report.summary);
+      for (const [key, title] of [["evidence", "Supporting evidence"], ["concerns", "What needs attention"]]) {
+        if (!(report[key] || []).length) continue;
+        line(box, title, "col-title");
+        const list = document.createElement("ul");
+        for (const text of report[key]) { const li = document.createElement("li"); li.textContent = text; list.append(li); }
+        box.append(list);
+      }
+      line(box, `${report.reviewer || "AI helper"} · ${report.model || "default model"} · ${new Date(report.at * 1000).toLocaleString()}`, "muted small");
+    });
+    line(panel, "An AI assessment is advice, not human approval. A report never edits the source or clears the review flag.");
+  },
   render(panel, detail) {
     panel.replaceChildren();
     const work = detail?.assembly_work;

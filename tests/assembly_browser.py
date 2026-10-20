@@ -17,13 +17,14 @@ from decompnet.app.server import build
 from .browser_async import run
 
 
-def live(net, tmp_path, monkeypatch):
+def live(net, tmp_path, monkeypatch, *, script_name='assembly_work_live.js', run_helper=False):
     browser = shutil.which('google-chrome') or shutil.which('chromium') or shutil.which('chromium-browser')
     if not browser:
         pytest.skip('requires Chromium for the production assembly drawer')
     sock = socket.socket(); sock.bind(('127.0.0.1', 0))
     port = sock.getsockname()[1]
-    monkeypatch.setattr(agents.Manager, '_run', lambda self, session: None)
+    if not run_helper:
+        monkeypatch.setattr(agents.Manager, '_run', lambda self, session: None)
     mcp, manager, security = build(net, tmp_path / '.decomp', port, 'authored-browser-session')
     app = mcp.streamable_http_app(transport_security=security, host='127.0.0.1')
     root = Path(__file__).resolve().parents[1]
@@ -34,7 +35,7 @@ def live(net, tmp_path, monkeypatch):
     script = re.sub(r'setTimeout\(\(\) => checkUpdate\(false, true\), 4000\);', '', script)
     script = re.sub(r'setInterval\(\(\) => checkUpdate\(false, true\), 10 \* 60 \* 1000\);', '', script)
     content = content.replace('/assets/app.js', '/assembly-fixture-app.js')
-    fixture = (root / 'tests/browser/assembly_work_live.js').read_text()
+    fixture = (root / 'tests/browser' / script_name).read_text()
     content = content.replace('</body>', '<pre id="report">RUNNING</pre><script src="/assembly-fixture-test.js"></script></body>')
 
     async def fixture_app(_request):

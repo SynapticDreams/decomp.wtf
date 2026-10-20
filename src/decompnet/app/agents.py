@@ -854,8 +854,19 @@ class Manager:
             options["per_session"] = 1  # one function per session: the next claim gets its own model
             options.pop("effort", None)  # the tier picks the effort with the model
         ids = []
-        self._prepare(slug)
+        review = options.get("track") == "asm_review"
+        if review:
+            self.net.documentation_review.target(slug, options.get("pin") or "")
+            if options.get("lean") or options.get("model") == TIERED:
+                raise ValueError("AI review uses one model's tool loop")
+            options.update(polish=False, per_session=1, max_steps=60)
+        else:
+            self._prepare(slug)
         with self._lock:
+            if review and any(s.slug == slug and s.options.get("pin") == options["pin"]
+                              and s.options.get("track") == "asm_review" and not s.stop.is_set()
+                              for s in self.sessions.values()):
+                raise ValueError("an AI review is already running for this routine")
             for _ in range(max(1, min(int(count), 8))):
                 n = 1 + sum(1 for s in self.sessions.values() if s.kind == kind)
                 sid = f"{kind}-{n}"
@@ -869,7 +880,7 @@ class Manager:
                     label = f"{name} #{k}"
                 else:
                     label = f"{KINDS[kind].name} #{n}"
-                s = Session(sid, kind, label, slug, sid, dict(options))
+                s = Session(sid, kind, label, slug, f"review-{sid}" if review else sid, dict(options))
                 self.sessions[sid] = s
                 threading.Thread(target=self._run, args=(s,), daemon=True, name=f"agent-{sid}").start()
                 ids.append(sid)
@@ -1001,6 +1012,9 @@ class Manager:
 
     def _run(self, s: Session) -> None:
         agent, token = self.net.local_agent(s.agent_name)
+        if s.options.get("track") == "asm_review":
+            self._run_review(s, agent, token)
+            return
         only_starred = bool(s.options.get("only_starred"))
         if only_starred:
             self.net.starred_only[agent.id] = s.started_at
@@ -1152,6 +1166,51 @@ class Manager:
         self.net.starred_only.pop(agent.id, None)
         self.net.focus.pop(agent.id, None)
         self.net.pinned.pop(agent.id, None)
+
+    def _run_review(self, s, agent, token):
+        """One fresh tool session, no preparation, claims, compilation, permuter or documentation retries."""
+        self.assignments[agent.id], s.agent_id = s.slug, agent.id
+        workdir = self.home / "agents" / s.id
+        workdir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.net.documentation_review.begin(agent, s.slug, s.options["pin"], kind=s.kind,
+                                                 model=s.options.get("model") or "default")
+            while not s.stop.is_set():
+                if (cap := self.over_budget(s.slug)) is not None:
+                    raise Fatal(f"the project's ${cap:.2f} budget is used up")
+                until = self.paused.get(self.account(s), 0.0)
+                if until > time.time():
+                    s.state, s.wait_until, s.wait_why = "waiting", until, self.paused_why.get(self.account(s), "")
+                    s.stop.wait(min(60, until - time.time()))
+                    continue
+                s.wait_until, s.wait_why = 0.0, ""
+                s.state = "working"
+                s.runs += 1
+                try:
+                    ok = self._run_api(s, agent) if s.kind == "api" else self._run_cli(s, token, workdir)
+                except PlanLimit as e:
+                    self.pause(s, e.until, f"the plan's usage limit is used up ({e.said[:120]})")
+                    continue
+                if self.net.documentation_review.active[agent.id]["done"]:
+                    s.push("info", "AI review saved; human review is still outstanding")
+                    break
+                if s.stop.is_set():
+                    break
+                if s.throttled and s.runs < 3:
+                    s.throttled = False
+                    self.pause(s, time.time() + 60, "the model's provider says too many requests at once")
+                    continue
+                raise Fatal(s.error or ("the helper finished without saving an AI review; try another helper" if ok else
+                                        "the AI review failed; check the helper's output"))
+        except Exception as e:
+            s.state, s.error = "error", str(e)
+            s.push("error", s.error)
+        finally:
+            if s.state != "error":
+                s.state = "stopped"
+            s.stop.set()
+            self.net.documentation_review.active.pop(agent.id, None)
+            self.persist(self.running())
 
     def account(self, s: Session) -> str:
         """Whose quota and request limits a helper uses: an agent CLI's sign-in on this computer (a lean Codex helper's
@@ -1330,6 +1389,11 @@ class Manager:
 
     def prompt(self, s: Session) -> str:
         text = self._prompt(s)
+        if s.options.get("track") == "asm_review":
+            text += "\n" + tools._guide("asm")
+            if (wish := self.net.instructions(s.slug)):
+                text += f"\nThe user's instructions for this project:\n{wish}\n"
+            return text + s.resume_note
         if s.options.get("only_starred"):
             text += ("\nThis session is for the functions the user marked ★ Next in line, and only those: "
                      "claim_function gives you the next one, and refuses anything else. When it says none is left, "
@@ -1351,6 +1415,8 @@ class Manager:
         return text + s.resume_note
 
     def _prompt(self, s: Session) -> str:
+        if s.options.get("track") == "asm_review":
+            return tools.REVIEW_PROMPT.format(name=s.options["pin"])
         ov = self.net.overview(s.slug)
         if s.options.get("pin") and s.options.get("track") == "asm":
             return (tools.ASM_PROMPT.format(title=ov["title"], count=1, **tools.asm_words(ov.get("platform") or ""))
@@ -1655,8 +1721,9 @@ class Manager:
         headers = {"Content-Type": "application/json"}
         if s.options.get("api_key"):
             headers["Authorization"] = f"Bearer {s.options['api_key']}"
-        schema = api_tool_schemas(fork=bool(self.net.fork_slug(s.slug)))
-        messages = [{"role": "system", "content": tools.INSTRUCTIONS},
+        review = s.options.get("track") == "asm_review"
+        schema = api_tool_schemas(fork=bool(self.net.fork_slug(s.slug)), review=review)
+        messages = [{"role": "system", "content": "Independently assess assembly documentation using read-only tools." if review else tools.INSTRUCTIONS},
                     {"role": "user", "content": self.prompt(s)}]
         used_tool = False
         with httpx.Client(timeout=httpx.Timeout(API_TIMEOUT, connect=15)) as client:
@@ -1707,6 +1774,8 @@ class Manager:
                     s.push("tool", f"{name}({_args_brief(args)})")
                     result = tools.call(self.net, agent, s.slug, name, args)
                     messages.append({"role": "tool", "tool_call_id": c["id"], "content": result})
+                if review and self.net.documentation_review.active[agent.id]["done"]:
+                    return True
                 if len(messages) > 80:  # keep the conversation small: summarize by restarting fresh
                     return True
         return used_tool
@@ -1873,7 +1942,7 @@ def context_window(client, base: str, options: dict) -> int:
     return 128000
 
 
-def api_tool_schemas(fork: bool = False) -> list[dict]:
+def api_tool_schemas(fork: bool = False, review: bool = False) -> list[dict]:
     """OpenAI-style tool definitions for the built-in agent, from the same tools CLI agents get."""
     from . import correction_tools, annotation_tools
 
@@ -1881,6 +1950,13 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
     st = lambda desc, req=False: {"type": "string", "description": desc, "req": req}
     it = lambda desc: {"type": "integer", "description": desc}
     defs = {
+        "get_documentation_review": ("Get the accepted source, target assembly, callers and review_context token.", s()),
+        "submit_documentation_review": ("Save an independent AI assessment; never approves or edits source.",
+            s(function=st("reviewed function", True), review_context=st("token from get_documentation_review", True),
+              verdict={"type": "string", "enum": ["supported", "needs_changes", "uncertain"], "req": True},
+              summary=st("plain-English explanation and assessment", True),
+              evidence={"type": "array", "items": {"type": "string"}, "req": True},
+              concerns={"type": "array", "items": {"type": "string"}, "req": True})),
         "project_info": ("Which game, compiler and progress.", s()),
         "claim_function": ("Claim the next function (or one by name/address). Returns assembly, data, best attempt, "
                            "notes and a draft. count > 1: a batch of small functions to judge together.",
@@ -1941,7 +2017,7 @@ def api_tool_schemas(fork: bool = False) -> list[dict]:
         defs["compile_and_diff"] = ("Write one complete function definition into its source file, build it and diff "
                                     "with objdiff. 100% / score 0 = matched.",
                                     s(function=st("function name", True), source=st("the function definition", True)))
-    names = set(tools.tool_names(fork))
+    names = set(tools.tool_names(fork, review))
     return [{"type": "function", "function": {"name": n, "description": d, "parameters": p}}
             for n, (d, p) in defs.items() if n in names]
 
