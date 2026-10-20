@@ -31,6 +31,24 @@ separate from human approval. Reports become historical when their source or sup
 a fresh review then. If a report identifies a specific error, a person can use **Send back** with that finding in
 the note box. Missing confidence alone is not a reason to reopen documentation.
 
+**Review remaining** on the Functions page runs a batch over flagged documented routines and existing unresolved
+AI findings. Choose a reviewer, comment writer and routine/session/time/reported-token limits. Current supported
+reviews are skipped; current uncertain reviews become saved evidence/layout follow-ups and notes automatically.
+You do not need to copy findings into notes yourself. Results list reviewed, corrected, needs evidence, needs
+layout investigation and failed routines. Human-review flags remain separate.
+
+For a specific comment-only finding, the writer can propose new comments while preserving every instruction,
+operand, label, definition and string. The proposal must pass all assembly checks. It stays separate from the
+accepted source until a fresh independent reviewer supports it; only then are the comments applied. Earlier
+accepted text is retained in bounded comment history. Uncertain/rejected proposals preserve the accepted text.
+Names, layout and cartridge evidence are never changed by this batch. Each routine gets one correction cycle.
+
+**Stop review batch** stops its own helper only. **Resume review batch** grants a new allowance and continues saved
+work; app restarts leave batches paused until explicitly resumed. Token limits depend on provider/CLI reporting,
+may omit unreported CLI tokens and may overshoot within a request. Time limits stop the active helper. Project
+spending limits also apply. Results are marked historical when relevant source/context changes; resume can review
+those results again. Ordinary documentation helpers continue to skip deferred routines.
+
 Use **Defer documentation** for work needing an entry correction, mapping evidence or layout repair. Include what
 must change. Agents can use `defer_documentation(function, reason)` while holding the claim. Deferral releases that
 claim and keeps the routine off automatic and pinned queues; it preserves the source and attempts. Exact-byte

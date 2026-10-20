@@ -589,7 +589,7 @@ $("demoBtn").onclick = () => runImport("demo=1", undefined, "Opening Demo Quest 
 async function openProject(slug, tab = "overview") {
   smsResearch.render(null);
   show("project");
-  S.slug = slug; S.e = 0; S.a = 0; S.seq = {}; S.scores = new Map(); S.flash = new Map(); S.sessions = []; S.claims = [];
+  S.slug = slug; S.e = 0; S.a = 0; S.seq = {}; S.scores = new Map(); S.flash = new Map(); S.sessions = []; S.claims = []; S.reviewBatch = null;
   S.apFeed = null; S.stats = null; S.map = []; S.mapSig = null; geo = null;
   $("activity").innerHTML = ""; $("thoughts").innerHTML = ""; setHtml($("now"), ""); $("expLog").hidden = true; $("expResult").innerHTML = ""; $("teamBox").innerHTML = "";
   try {
@@ -723,9 +723,11 @@ async function poll(first) {
     addActivity(live.events, live.attempts, first);
     S.claims = live.claims;
     if (!first) toastStopped(S.sessions || [], live.sessions);
-    const reviewState = (sessions) => JSON.stringify(sessions.filter((s) => s.track === "asm_review" && s.pin === S.fn).map((s) => [s.id, s.state]));
+    const reviewState = (sessions) => JSON.stringify(sessions.filter((s) => ["asm_review","asm_comment_fix"].includes(s.track) && s.pin === S.fn).map((s) => [s.id, s.state]));
     const reviewChanged = reviewState(S.sessions) !== reviewState(live.sessions);
     S.sessions = live.sessions;
+    S.reviewBatch = live.review_batch || null;
+    renderReviewBatch();
     for (const s of live.sessions) {
       if (s.feed.length) S.seq[s.id] = s.feed[s.feed.length - 1].seq;
     }
@@ -1779,7 +1781,7 @@ function renderSessions(sessions) {
     const quiet = live && s.last_output ? Math.floor((Date.now() / 1000 - s.last_output) / 60) : 0;  // the watchdog ends it at 15
     const facts = [s.model ? esc(s.model) : "default model", s.runs ? `session ${s.runs}` : "", quiet >= 3 ? `<b class="warn-text">silent ${quiet} min</b>` : "", b && b.matched ? `<b class="ok">${b.matched} matched</b>` : "", b ? plural(b.compiles, "compile") : "",
       s.usd ? money(s.usd) : s.tokens ? `${(s.tokens / 1000).toFixed(0)}k tokens` : "", s.started_at ? `since ${clock(s.started_at).slice(0, 5)}` : ""].filter(Boolean);
-    return `<div class="session"><div class="session-top"><span class="dot ${dot}"></span><b>${esc(s.label)}</b>${s.only_starred ? `<span class="tag">only ★</span>` : ""}${s.pin ? `<span class="tag" title="${s.lean ? `the lean loop: ${esc(LEAN_NAME[s.lean] || s.lean)}` : "pinned to one function"}">on ${esc(s.pin)}${s.lean ? " · lean" : ""}</span>` : s.lean ? `<span class="tag" title="the lean loop: ${esc(LEAN_NAME[s.lean] || s.lean)}, function after function">lean</span>` : ""}${s.focus ? `<span class="tag">${esc((FOCUS.find((f) => f.id === s.focus) || {}).name || s.focus)}</span>` : ""}${s.track === "asm_review" ? `<span class="tag" title="independent assessment of assembly documentation">AI review</span>` : s.track === "asm" ? `<span class="tag" title="documenting hand-written routines in assembly">assembly</span>` : ""}
+    return `<div class="session"><div class="session-top"><span class="dot ${dot}"></span><b>${esc(s.label)}</b>${s.only_starred ? `<span class="tag">only ★</span>` : ""}${s.pin ? `<span class="tag" title="${s.lean ? `the lean loop: ${esc(LEAN_NAME[s.lean] || s.lean)}` : "pinned to one function"}">on ${esc(s.pin)}${s.lean ? " · lean" : ""}</span>` : s.lean ? `<span class="tag" title="the lean loop: ${esc(LEAN_NAME[s.lean] || s.lean)}, function after function">lean</span>` : ""}${s.focus ? `<span class="tag">${esc((FOCUS.find((f) => f.id === s.focus) || {}).name || s.focus)}</span>` : ""}${s.track === "asm_comment_fix" ? `<span class="tag">comment correction</span>` : s.track === "asm_review" ? `<span class="tag" title="independent assessment of assembly documentation">AI review</span>` : s.track === "asm" ? `<span class="tag" title="documenting hand-written routines in assembly">assembly</span>` : ""}
         <span class="state ${s.state === "error" ? "err" : ""}">${esc(STATE_TEXT[s.state] || s.state)}</span>
         <button class="ghost" data-stop="${esc(s.id)}" data-remove="${live ? "" : "1"}" type="button">${live ? "Stop" : "Remove"}</button></div>
       <span class="facts-line">${facts.join(" · ")}</span>
@@ -2083,6 +2085,8 @@ function eventHtml(ev) {
     case "review": return `${who} set ${esc(d)} aside for a person to review`;
     case "documented": return `<span class="ok">✓</span> ${who} documented ${fnLink(d)} in assembly`;
     case "documentation_review": return `${who} saved an AI review of ${fnLink(d)}`;
+    case "comment_proposal": return `${who} proposed validated comment corrections for ${fnLink(d)}`;
+    case "review_followup": return `saved an AI review follow-up for ${fnLink(d)}`;
     case "reviewed": return `you looked over ${esc(d)}`;
     case "correction": return `${who} corrected the split: ${esc(d)}`;
     case "files": return `${who ? who + " " : ""}gave code without a source file one: ${esc(d)}`;
@@ -2323,7 +2327,7 @@ async function refreshFn(first) {
     };
     // a documented routine picked for review: a person says it's right, or sends it back with what's wrong
     const guest = (S.ov.room || {}).role === "guest";
-    const reviewing = S.sessions.some((s) => s.track === "asm_review" && s.pin === d.name && ["starting", "working", "waiting"].includes(s.state));
+    const reviewing = S.sessions.some((s) => ["asm_review","asm_comment_fix"].includes(s.track) && s.pin === d.name && ["starting", "working", "waiting"].includes(s.state));
     $("fnAIReview").hidden = d.status !== "documented" || guest || S.ov.kind === "fork";
     $("fnAIReview").disabled = held || reviewing;
     $("fnAIReview").textContent = reviewing ? "AI review running…" : "Ask AI to review";
@@ -2559,6 +2563,7 @@ const inFilter = (f, k) => (k === "document" ? fnState(f) === "asm" && f.track :
 
 function renderList() {
   if (!S.map.length || S.tab !== "functions") return;
+  renderReviewBatch();
   const counts = { all: S.map.length, open: 0, working: 0, tried: 0, matched: 0, asm: 0, review: 0, documented: 0, document: 0, lookover: 0, deferred: 0 };
   for (const f of S.map) { counts[fnState(f)]++; if (inFilter(f, "document")) counts.document++; if (inFilter(f, "lookover")) counts.lookover++; }
   if (L.hideAsm) counts.all -= counts.asm;
@@ -2681,6 +2686,19 @@ function wireCopies(root) {
    only back, one version per call, several, or both in turn to compare them. Claude Code, Codex and the rest work in
    their own loop, a fresh session per run. Either stops at a match, or when it stops getting closer. */
 const LEAN_NAME = { one: "one version per call", several: "several versions per call", both: "one and several per call in turn" };
+
+function renderReviewBatch() {
+  const supported = S.ov && !S.ov.kind?.includes("fork") && S.ov.room?.role !== "guest" && ["sms","gg","gb","gbc","nes"].includes(S.ov.platform);
+  $("fnReviewBatch").hidden = !supported;
+  $("fnReviewBatch").disabled = S.reviewBatch?.state === "running";
+  const open = (resume = false) => window.ReviewBatchUI.open({slug:S.slug,state:resume?S.reviewBatch:null,settings:S.st?.settings || {},
+    agents:S.st?.agents || [],models:modelOptions,efforts:effortOptions,dialog,api,resume,onUpdate:(batch)=>{S.reviewBatch=batch;renderReviewBatch();}});
+  $("fnReviewBatch").onclick = () => open();
+  window.ReviewBatchUI.render($("reviewBatchPanel"), supported?S.reviewBatch:null, openFn, () => open(true), async () => {
+    try { S.reviewBatch = await api("/api/documented/batch",{method:"POST",body:{slug:S.slug,action:"stop"}}); renderReviewBatch(); }
+    catch (e) { toast(esc(e.message),"err"); }
+  });
+}
 
 function openPinHelper(name, assembly = false, review = false) {
   const toolsOnly = assembly || review;

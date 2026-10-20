@@ -29,6 +29,7 @@ jobs:
       # real problems only (see pyproject.toml): undefined or unused names, syntax errors
       - run: uvx ruff@0.14.0 check src tests
       - run: node --check src/decompnet/app/static/assembly-work.js
+      - run: node --check src/decompnet/app/static/review-batch.js
       - run: node --check src/decompnet/app/static/app.js
       - run: node --check src/decompnet/app/static/sms-profile.js
       - run: node --check src/decompnet/app/static/sms-progress.js

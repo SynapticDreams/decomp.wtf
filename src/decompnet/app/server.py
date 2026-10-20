@@ -340,6 +340,18 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
     manager = agents.Manager(net, home, mcp_url)
     jobs = Jobs(home / "logs" / "decomp.log")
     settings = Settings(home / "settings.json")
+    def resolve_review_role(role):
+        kind = role['kind']
+        options = {k: role[k] for k in ('model', 'effort') if role.get(k)}
+        if kind == 'api':
+            endpoint = settings.endpoint(role.get('endpoint') or '')
+            if endpoint is None:
+                raise NetworkError('the selected API endpoint is no longer saved')
+            options = _session_options(endpoint)
+        elif agents._which(agents.KINDS[kind].command) is None:
+            raise NetworkError('install the selected helper in Agents & models first')
+        return {'kind': kind, 'options': options}
+    manager.review_batches.resolve = resolve_review_role
     manager.budget = lambda: float(settings.data.get("budget_usd") or 0)
 
     def remember(running: list[dict]) -> None:
@@ -399,7 +411,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         if net.is_chat(agent):
             return ListToolsResult(tools=everything)
         slug = manager.project_of(agent.id) or settings.data.get("last_project")
-        keep = set(tools.tool_names(bool(slug and net.fork_slug(slug)), net.documentation_review.is_reviewer(agent)))
+        keep = set(tools.tool_names(bool(slug and net.fork_slug(slug)), net.documentation_review.is_reviewer(agent),
+                                   net.documentation_review.active.get(agent.id, {}).get('comments', False)))
         return ListToolsResult(tools=[t for t in everything if t.name in keep])
 
     mcp._lowlevel_server.add_request_handler("tools/list", PaginatedRequestParams, scoped_tools)
@@ -672,9 +685,21 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         except ValueError:
             since = {}
         out["sessions"] = [s for s in manager.snapshot(since) if s["slug"] == slug]
+        out['review_batch'] = manager.review_batches.view(slug) if net.project_row(slug)['arch'] in ASM_ARCHS and not net.fork_slug(slug) and slug not in net.links else None
         for s in out["sessions"]:
             s.update(net.session_counts(slug, s["agent"], s["started_at"]))
         return out
+
+    def p_review_batch(slug, request, data):
+        if request.method == 'GET':
+            return manager.review_batches.view(slug)
+        action = data.get('action', 'start')
+        if action not in ('start', 'resume', 'stop'):
+            raise NetworkError('batch action must be start, resume or stop')
+        if action == 'stop':
+            return manager.review_batches.stop(slug)
+        return manager.review_batches.start(slug, data.get('reviewer'), data.get('writer'),
+            limits=data.get('limits'), fix_comments=data.get('fix_comments') is True, resume=action == 'resume')
 
     def p_compiler(slug, request, data):
         if data.get("unit"):
@@ -740,6 +765,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         if undo is not None and (apply or data.get("profile") is not None or data.get('inspection') is not None):
             raise NetworkError("choose either resplit apply/profile migration or undo")
         if apply or undo is not None:
+            if manager.review_batches.running(slug):
+                raise NetworkError('stop this project\'s review batch before changing its layout')
             if any(s.slug == slug and s.state in ("starting", "working", "waiting") and not s.stop.is_set()
                    for s in manager.sessions.values()):
                 raise NetworkError("stop this project's helpers first: splitting again changes the functions they hold")
@@ -847,6 +874,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/resplit/archive": (p_resplit_archive, ["GET"]),
         "/api/assembly/queue": (lambda s, r, d: net.assembly.change(
             s, str(d.get("function", "")), reason=d.get("reason"), resume=d.get("resume") is True), ["POST"]),
+        "/api/documented/batch": (p_review_batch, ['GET', 'POST']),
         "/api/give_back": (lambda s, r, d: net.give_to_agents(s, str(d.get("function", ""))), ["POST"]),
         "/api/corrections": (lambda s, r, d: correction_routes.handle(net, s, r, d), ["GET", "POST"]),
         "/api/corrections/undo": (lambda s, r, d: net.undo_correction(s, d.get("id")), ["POST"]),
@@ -1327,7 +1355,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
                 continue
             try:
                 st = updater.status()
-                busy = any(s.state in ("starting", "working") for s in manager.sessions.values())
+                busy = bool(manager.review_batches.active) or any(s.state in ("starting", "working") for s in manager.sessions.values())
                 if st.get("available") and st.get("can_apply") and settings.data.get("auto_update") and not busy:
                     updater.apply()
             except (ValueError, OSError):

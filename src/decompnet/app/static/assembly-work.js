@@ -25,6 +25,8 @@ window.AssemblyWorkUI = {
         const title = document.createElement("summary"); title.textContent = "Earlier AI review"; box.append(title); panel.append(box);
       }
       line(box, `AI assessment: ${outcomes[report.verdict] || "Uncertain"}.`);
+      if (report.candidate && !report.applied) line(box, "Review of proposed comments. Accepted source is unchanged.");
+      if (report.applied) line(box, "Comment correction applied after assembly validation and independent review.");
       if (!report.current) line(box, "Previous version: source or supporting context changed. Ask for a fresh review before using this assessment.");
       line(box, report.summary);
       for (const [key, title] of [["evidence", "Supporting evidence"], ["concerns", "What needs attention"]]) {
@@ -36,7 +38,13 @@ window.AssemblyWorkUI = {
       }
       line(box, `${report.reviewer || "AI helper"} · ${report.model || "default model"} · ${new Date(report.at * 1000).toLocaleString()}`, "muted small");
     });
-    line(panel, "An AI assessment is advice, not human approval. A report never edits the source or clears the review flag.");
+    line(panel, "An AI assessment is advice, not human approval. Human-review flags are never cleared by a report.");
+    if (detail.documentation_followup) {
+      const followup = detail.documentation_followup;
+      line(panel, `Saved follow-up: ${followup.kind === "layout" ? "layout investigation" : "evidence needed"}`, "col-title");
+      if (!followup.current) line(panel,"Previous context: check this follow-up against the current source.");
+      line(panel,followup.text);
+    }
   },
   render(panel, detail) {
     panel.replaceChildren();
