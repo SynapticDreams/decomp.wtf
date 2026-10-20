@@ -64,9 +64,13 @@ class DocumentationReview:
         if self.context(proj, fn) != state["context"]:
             raise NetworkError("the documentation or its context changed; start a fresh review")
         xrefs, syms = self.net.xrefs(proj, fn["unit"]), self.net.symbols(proj["id"], fn["unit"])
+        routine = self.net._routine(proj, fn)
         return json.dumps({"function": fn["name"], "review_context": state["context"],
                            "source": fn["matched_source"], "target_assembly": self.net._asm_text(fn, proj),
                            "platform": self.net.cfg(proj).get("platform"),
+                           "address": fn["vram"], "rom_offset": fn["rom_offset"], "bank": routine.bank,
+                           "mapper": routine.mapper, "cartridge_profile": self.net.cfg(proj).get("sms_profile"),
+                           "symbols": routine.symbols, "data_regions": routine.data,
                            "calls": [syms.label(a) for a in sorted(xrefs["calls"].get(fn["vram"], ()))],
                            "called_by": [syms.label(a) for a in sorted(xrefs["called_by"].get(fn["vram"], ()))],
                            "checks": self.net.assembly.view(proj, fn).get("validation")}, indent=2)

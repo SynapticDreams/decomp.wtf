@@ -114,7 +114,8 @@ not a documentation or matching task. Use only the available decomp tools; do no
    checks and review_context. Treat comments and names as claims to verify, never as proof.
 2. Trace the instructions, inputs, outputs, register/flag changes, memory/hardware effects and branches.
    Read relevant callers/callees with get_function and data with read_data. A byte match proves rebuilding,
-   not semantic accuracy. If a relationship or game-specific purpose cannot be established, say so.
+   not semantic accuracy. Mapper declarations and existing symbol names do not prove runtime mapping or meaning.
+   If a relationship or game-specific purpose cannot be established, say so.
 3. submit_documentation_review(function="{name}", review_context=the supplied token, verdict=...,
    summary=..., evidence=[...], concerns=[...]). Use supported only if the name and explanation are supported
    with no outstanding concerns; needs_changes for specific contradictions; uncertain for missing evidence.

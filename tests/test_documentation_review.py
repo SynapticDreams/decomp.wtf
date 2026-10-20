@@ -74,6 +74,7 @@ def test_review_inputs_support_every_assembly_platform(documented, platform, arc
         db.execute('UPDATE projects SET arch=?,config=?', (arch, json.dumps(cfg)))
     inputs = begin(documented)
     assert inputs['platform'] == platform and inputs['source'] and inputs['target_assembly']
+    assert inputs['mapper'] is not None and inputs['address'] == 0x100 and inputs['symbols']['First'] == 0x100
 
 
 @pytest.mark.parametrize('name,args', [
