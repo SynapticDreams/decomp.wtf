@@ -12,6 +12,8 @@
     document.getElementById('drawer').hidden = false;
     await refreshFn(true);
     assert(!document.getElementById('fnAIReview').hidden, 'documented routines offer AI review');
+    const header = document.querySelector('#drawer .drawer-head');
+    assert(header.scrollWidth <= header.clientWidth, 'review controls fit the function drawer');
     assert(document.getElementById('fnDocumentationReview').textContent.includes('Human review pending'), 'non-assembly users can leave flags pending');
     document.getElementById('fnAIReview').onclick();
     assert(document.getElementById('dialogTitle').textContent === 'Review First', 'review has its own dialog');
