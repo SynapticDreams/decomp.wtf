@@ -48,6 +48,39 @@ def test_master_system_and_nes_builds():
                                         0x6000: b"Someone\x00", 0x6010: b"A Game\x00"})
     found = fingerprint.identify("sms", tagged)
     assert (found["tool"], found["version"], found["author"], found["name"]) == ("SDSC tag", "1.05", "Someone", "A Game")
+    assert found["language"] == "" and "WLA-DX" in found["note"]  # assemblers write the tag too: not evidence of C
+
+
+SDSC = {0x7FE0: b"SDSC" + H("0105") + H("18102026") + H("0060") + H("1060") + H("ffff"),
+        0x6000: b"Someone\x00", 0x6010: b"A Game\x00"}
+RST08 = H("0ebff3ed69ed61fbc9")  # ld c,$bf · di · out (c),l · out (c),h · ei · ret
+
+
+@pytest.mark.parametrize("platform", ["sms", "gg"])
+@pytest.mark.parametrize("marks", [{0x005A: b"devkitSMS"}, {0x0008: RST08}, {0x0008: RST08, 0x005A: b"devkitSMS"}])
+def test_devkitsms_start_up_code(platform, marks):
+    rom = sms_rom(size=0x8000, region=4 if platform == "sms" else 7, code={0x0000: H("f3ed5631f0df1821"), **marks})
+    found = fingerprint.identify(platform, rom)
+    assert (found["tool"], found["language"], found["pinned"]) == ("devkitSMS", "C", False)
+    assert "unsigned char" in found["note"] and "author" not in found
+    named = fingerprint.identify(platform, sms_rom(size=0x8000, code={0x0000: H("f3ed5631f0df1821"), **marks, **SDSC}))
+    assert (named["tool"], named["version"], named["author"], named["name"]) == ("devkitSMS", "", "Someone", "A Game")
+
+
+def test_z88dk_classic_start_up_code():
+    rom = sms_rom(size=0x8000, code={0x0000: H("c30001"), 0x0008: RST08 + b"Z88DK", 0x0100: H("18fe")})
+    found = fingerprint.identify("sms", rom)
+    assert (found["tool"], found["language"], found["pinned"]) == ("z88dk", "C", False)
+
+
+@pytest.mark.parametrize("code", [
+    {0x0000: H("f3ed5631f0df1821")},  # devkitSMS's first instructions alone: many games set the stack this way
+    {0x0000: H("f3ed5631f0dfc30001"), 0x005A: b"devkitSMS"},  # not its `jr` to the rest of its start-up
+    {0x0000: H("c30001"), 0x0008: RST08},  # z88dk's RST $08 body without its name after it
+    {0x0000: H("f3ed5631f0df1821"), 0x0070: b"devkitSMS"},  # the name somewhere else
+])
+def test_partial_start_up_code_is_not_a_toolchain(code):
+    assert fingerprint.identify("sms", sms_rom(size=0x8000, code=code)) is None
     cc65 = nes_rom(prg_units=2, code={0x100: H("a001b102aa88b102e602f005e602f00360e602e60360")}, vectors=(0x8000,) * 3)
     found = fingerprint.identify("nes", cc65)
     assert found["tool"] == "cc65" and not found["pinned"] and "assembly" in found["note"]

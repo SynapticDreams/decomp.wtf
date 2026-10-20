@@ -62,8 +62,19 @@ TESTS = (
     "tests/test_sms_symbol_preservation.py",
     "tests/test_sms_symbol_adjacent.py",
     "tests/test_sms_documented.py",
+    "tests/test_z80.py",
+    "tests/test_sms.py",
     "tests/test_export_sms.py",
 )
+# The pinned assembler and compiler checks those modules otherwise skip: every Z80 encoding round-trips through
+# sdasz80, and SDCC's own output is found and matched through the app on both consoles.
+TOOLCHAIN_CASES = {
+    "tests.test_z80": {"test_every_encoding_round_trips_through_sdasz80", "test_relative_jumps_agree_with_sdasz80"},
+    "tests.test_sms": {"test_functions_compiled_by_sdcc_are_found_and_matched_by_the_app[4-sms-game.sms]",
+                       "test_functions_compiled_by_sdcc_are_found_and_matched_by_the_app[6-gg-game.gg]",
+                       "test_a_projects_compiler_flags_reach_sdcc", "test_a_shortcall_rst_with_its_byte_builds[z80]",
+                       "test_an_rst_call_matches_through_the_app"},
+}
 
 
 def require_tools(tid: str = "wla-dx") -> str:
@@ -101,6 +112,9 @@ def verify_report(report: Path) -> int:
     if not any(case.get("classname") == "tests.test_export_sms" and "[gg]" in case.get("name", "")
                for case in cases):
         raise ValueError("SMS gate report is missing Game Gear export checks")
+    for module, required in TOOLCHAIN_CASES.items():
+        if not required <= {case.get("name") for case in cases if case.get("classname") == module}:
+            raise ValueError(f"SMS gate report is missing pinned Z80 assembler/compiler checks: {module}")
     matrix = {case.get("name") for case in cases if case.get("classname") == "tests.test_sms_mapper_integration"}
     if not all(f"test_declared_models_agree_across_project_consumers[{mapper}-{platform}]" in matrix
                for mapper in ("sega", "mapperless", "codemasters") for platform in ("sms", "gg")):

@@ -50,17 +50,21 @@ def memory_writes(text: str, values: dict | None = None) -> tuple[Write, ...]:
     return ()
 
 
-def port_may_change_source(text: str, bc: int | None = None) -> bool:
+def port_may_change_source(text: str, bc: int | None = None, *, game_gear: bool = False) -> bool:
     """Stop on memory-control writes, possible mirrors and unknown output ports.
 
     Hardware/mode-specific enables and mirror exceptions are unqualified, so even a known value
     does not establish a new bus source. Known VDP/PSG/I/O-control outputs preserve mapper facts.
+    `game_gear`: a Game Gear cartridge in its own mode, where ports $00-$06 are the console's registers
+    (Start/region, link, PSG stereo) and never reach memory control. Other even ports stay possible mirrors.
     """
     if match := re.match(r"^out \((\$[0-9a-f]{2}|c)\),", text):
         port = int(match[1][1:], 16) if match[1].startswith("$") else bc
     elif text in ("outi", "outd", "otir", "otdr"):
         port = bc
     else:
+        return False
+    if port is not None and game_gear and port & 0xFF <= 0x06:
         return False
     return port is None or (port & 0xC1) == 0
 

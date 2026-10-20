@@ -49,6 +49,13 @@ def resolve(target: int, here_flat: int, here_cpu: int, s1, s2, size: int, s0=0,
     return Mapper(mapper, size).resolve(target, mapping).rom_offset
 
 
+def inferred_inline(found: Found) -> dict[int, int]:
+    """{routine: bytes} for routines every evaluated unconditional call came back the same nonzero number of bytes
+    past: operands they read after their call. A declared `operands` correction takes precedence over this."""
+    return {flat: next(iter(past)) for flat, past in sorted(found.returned_past.items())
+            if len(past) == 1 and 0 not in past}
+
+
 class Tracer:
     def __init__(self, data: bytes, paged: set[int] | None = None, hints: dict | None = None, *,
                  mapper: str = "sega", reset: BusState | None = None, limits: Limits | None = None,
@@ -70,6 +77,7 @@ class Tracer:
         self.model = Mapper(mapper, self.size)
         self.reset = reset if reset is not None else self.model.reset()
         self.mapper = mapper != "mapperless"
+        self.game_gear = self.hints.get("platform") == "gg"  # (its own mode: ports $00-$06 are the console's)
         self.limits = limits or Limits()
         self.budget = budget or Budget()
         self.calls = sms_calls.Evaluator(data, self.model, hints=self.hints, in_data=self.in_data,
@@ -96,6 +104,7 @@ class Tracer:
             more = {**self._far_jumps(), **self._tables()}
             now = (frozenset(self.found.starts.items()), frozenset(self.found.switchers.items()),
                    frozenset(self.found.returns), frozenset(self.found.takes_return), frozenset(more),
+                   frozenset((flat, frozenset(past)) for flat, past in self.found.returned_past.items()),
                    frozenset((flat, frozenset(states)) for flat, states in self.found.entered.items()))
             if now == before:
                 break
@@ -111,7 +120,7 @@ class Tracer:
     def _round(self, seeds: dict[int, tuple[int, str]]) -> None:
         f = self.found
         prev, f.entered, f.starts, f.with_hl, f.jumps, f.anchors = f.entered, {}, {}, [], [], set()
-        f.indexed, f.tails, f.code = [], {}, {}
+        f.indexed, f.tails, f.code, f.returned_past = [], {}, {}, {}
         queue = [(flat, cpu, why, self.reset if (flat, cpu, why) == (0, 0, "vector") else None)
                  for flat, (cpu, why) in sorted(seeds.items(), reverse=True)]  # reset before isolated entries
         for flat, _cpu, _why, m in queue:
@@ -192,7 +201,7 @@ class Tracer:
                     break
                 # Device writes select banks and also write WRAM. WRAM aliases never select a bank.
                 writes = sms_effects.memory_writes(text, {"a": st.a, "hl": st.hl, "de": st.de, "bc": st.bc})
-                source_change = sms_effects.port_may_change_source(text, st.bc)
+                source_change = sms_effects.port_may_change_source(text, st.bc, game_gear=self.game_gear)
                 if reason := sms_stack.write_alias(st, writes):
                     self._unresolved(entry, reason)
                     break
@@ -270,14 +279,15 @@ class Tracer:
                     if kind == "call":
                         conditional = "," in text
                         skip = (self.hints.get("inline") or {}).get(tflat, 0) if not conditional else 0
-                        st = self._call(entry, target, tflat, st, (cpu + ln) & 65535, out,
-                                        skip=skip, conditional=conditional)
+                        st, past = self._call(entry, target, tflat, st, (cpu + ln) & 65535, out,
+                                              skip=skip, conditional=conditional)
                         if st is None:
                             break
+                        skip += past  # operands the callee was found to read and return past
                 if kind != "call":
                     self._registers(st, text)
                 if computed is not None:  # back from the computed call: on at the address it pushed
-                    st = self._call(entry, to, tflat, st, computed, out, already_pushed=True)
+                    st, _ = self._call(entry, to, tflat, st, computed, out, already_pushed=True)
                     if st is None:
                         break
                     back = self.model.resolve(computed, st.mapping).rom_offset
@@ -319,14 +329,21 @@ class Tracer:
             self.found.exhausted.setdefault(entry, set()).add(reason)
 
     def _call(self, entry, target, flat, state, return_cpu, entries, *, skip=0, conditional=False, already_pushed=False):
+        """(The caller's state after the call or None when it never returns, and how many bytes past the call it
+        comes back when the callee was found to read undeclared operands there.)"""
         result = sms_calls.Result() if self._no_return(flat) else \
             self.calls.evaluate(target, state, return_cpu, skip=skip, already_pushed=already_pushed)
+        if result.inline and conditional:
+            result.reasons.add("conditional inline continuation is unqualified")
+        if flat is not None and not result.reasons and not skip and not already_pushed and not conditional \
+                and (result.returns or result.inline):
+            self.found.returned_past.setdefault(flat, set()).add(result.inline)
         for reason in result.reasons:
             self._unresolved(entry, reason)
         nested = result.entries[1:] if result.entries and result.entries[0][:2] == (flat, target) else result.entries
         entries.extend((at, pc, self.model.entry(at, pc) if result.reasons else mapping, "call")
                        for at, pc, mapping in nested)
-        return result.resume(state, conditional=conditional)
+        return result.resume(state, conditional=conditional), 0 if result.reasons else result.inline
 
     def _branch(self, st: State, text: str) -> State:
         out = st.copy()

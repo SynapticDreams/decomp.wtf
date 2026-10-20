@@ -74,10 +74,13 @@ def test_computed_callee_effects_apply_before_the_pushed_continuation():
     assert 0x18000 in found.starts and 0x14000 not in found.starts
 
 
-def test_inline_return_address_adjustment_requires_its_declared_continuation():
-    callee = "e1 23 e5 c9"
-    assert 0x14000 not in follow(callee, after="00 cd0080").starts
+def test_inline_return_address_adjustment_requires_agreed_paths_or_its_declared_continuation():
+    callee = "e1 23 e5 c9"  # every path returns one byte past the call
+    assert 0x14000 in follow(callee, after="00 cd0080").starts
     assert 0x14000 in follow(callee, after="00 cd0080", hints={"inline": {0x200: 1}}).starts
+    maybe = "e1 b7 2801 23 e5 c9"  # one byte past only on a path the flags choose
+    assert 0x14000 not in follow(maybe, after="00 cd0080").starts
+    assert 0x14000 not in follow(callee, after="00 cd0080", hints={"inline": {0x200: 2}}).starts
 
 
 def test_explicit_noreturn_correction_stops_a_returning_synthetic_callee():

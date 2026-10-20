@@ -49,6 +49,8 @@ class Found:
     entered: dict[int, set[BusState]] = field(default_factory=dict)  # flat -> incoming bus contexts
     returns: set[int] = field(default_factory=set)  # functions a path of which reaches a return
     takes_return: set[int] = field(default_factory=set)  # functions that pop their return address (a table follows)
+    # callee -> how far past each evaluated unconditional call it returned (0: to the call's next instruction)
+    returned_past: dict[int, set[int]] = field(default_factory=dict)
     switchers: dict[int, int] = field(default_factory=dict)  # function -> the slot it maps the A it's given into
     dispatchers: set[int] = field(default_factory=set)  # functions that jump through HL to an address they read
     # calls and tail jumps made with a known address in HL: (from flat, from cpu, HL, the slots then, to flat, the

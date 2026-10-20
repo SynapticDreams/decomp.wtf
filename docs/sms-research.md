@@ -162,8 +162,10 @@ Public WLA-DX disassemblies converge on a few habits:
 - **Game Gear ports.** Ports `$00`-`$06` are GG registers in GG mode: Start button and region at
   `$00`, link at `$01`-`$05`, PSG stereo at `$06`. `src/decompnet/rom/sms_effects.py:65` treats any
   output port with `(port & 0xC1) == 0` as a possible `$3E` memory-control mirror, which includes
-  these ports. On GG projects, `out ($06),a` therefore discards mapping facts. That is conservative
-  but avoidable once GG mode is part of the declaration.
+  these ports. On GG projects, `out ($06),a` therefore discarded mapping facts. Gearsystem and MAME
+  agree that `$00`-`$06` never reach memory control in GG mode, but disagree about mirrors at
+  `$08`-`$3C`, so only `$00`-`$06` are exempted now. A GG cartridge with an SMS header runs in SMS
+  mode and is already classified as `sms`.
 - **Header quirks.** *(unverified)* Japanese and GG ROMs often carry wrong checksums. The size code
   often understates the real ROM size, and some early ROMs have no header. The SDSC tag and the
   Codemasters header both live at `$7FE0`, so detection must tell them apart.
@@ -243,6 +245,9 @@ corroborates the existing pattern scan.
 Ordered by value for the effort and by how well each item fits the existing evidence model.
 
 ### Near term (small, contained)
+
+Items 1-5 are implemented. Inline operands are inferred from the existing callee evaluator (every
+evaluated return lands the same distance past the call) rather than ported from the GB shape matcher.
 
 1. **Gate the existing Z80 and SDCC suites.** Add `tests/test_z80.py` and `tests/test_sms.py` to
    `tools/sms_gate.py`'s list, so the sdasz80 round-trip and SDCC matching checks run with pinned

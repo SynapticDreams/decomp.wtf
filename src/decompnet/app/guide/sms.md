@@ -72,7 +72,11 @@ Explicit byte/word stores, memory read-modify-write operations, block transfers/
 port writes now invalidate affected facts. Word stores apply both bytes in CPU order, including address wrap;
 RAM aliases still do not select a mapper bank. An unknown destination discards sparse RAM and virtual-stack values.
 Known VDP/PSG/I/O-control output ports preserve mapping; unknown outputs and possible memory-control mirrors
-leave bus sources unresolved. Hardware/mode-specific port enable values are not interpreted as a new mapping.
+leave bus sources unresolved. A Game Gear cartridge in its own mode (a Game Gear header, or the project's `gg`
+platform) also preserves mapping through ports $00-$06: Start/region, link and PSG stereo registers there never
+reach memory control. A Game Gear cartridge with a Master System header runs in Master System mode and keeps the
+Master System decoding; other even ports up to $3E stay possible mirrors on both consoles.
+Hardware/mode-specific port enable values are not interpreted as a new mapping.
 An explicit SP is tracked through ordinary pushes, pops and calls. Known physical stack accesses require
 unambiguous work RAM away from mapper registers; active stack aliases, including RAM mirrors, are guarded
 within a 512-byte window. Writes into that active storage, unqualified destinations and tracking exhaustion
@@ -88,6 +92,10 @@ the uncalled path, and returned mapping/RAM facts are joined across all known re
 unqualified writes or returns, SP changes, interrupt returns, EI/HALT and exhausted budgets leave caller effects
 unresolved. `analysis_unresolved` reports caller entry offsets and reasons in split logs and resplit results.
 Computed continuations with known pushed addresses and declared inline-return adjustments use the same evaluator.
+When every path of an unconditional call's callee returns the same 1 to 32 bytes past the call, with nothing else
+unresolved, those bytes are its operands: discovery resumes after them. A routine every such call agrees on lists
+its operands as bytes (`inline` regions, and `inline_inferred` in split reports); calls that disagree, conditional
+calls and paths that depend on unknown flags or data stay unresolved. A declared `operands` correction overrides it.
 EI and interrupt returns are reported as unqualified boundaries on directly followed paths as well as in callees.
 HALT stops discovery until a wake-up context is qualified. An interrupted save/change/restore sequence therefore
 remains conditional, even when its uninterrupted stack/bank restoration can be followed. DI does not establish
@@ -234,7 +242,9 @@ does not silently become an assembly acceptance contract. Stored source is retai
   `ld hl,table / add hl,de / ... / jp (hl)`, as many entries as a `cp n / jr nc` before it allows), plus a sweep for
   `call`s in the banks that hold code and code that starts right where a function ends. The following also keeps
   slot 0 paged by 0xFFFD, a bank kept in RAM or saved on the stack and mapped again, and a computed call
-  (`ld de,.next / push de / jp (hl)`), which comes back to `.next`. Symbol sources contribute names and entry
+  (`ld de,.next / push de / jp (hl)`), which comes back to `.next`. A call (or `rst`) to a routine that pops its
+  return address, reads bytes through it and returns past them resumes after those bytes when every evaluated
+  path agrees how many there are. Symbol sources contribute names and entry
   seeds only through declared assembler geometry; automatic labels seed entries without establishing semantic
   names. Code reached only through pointers kept in RAM may still be missing; undocumented bytes inside a
   routine can remain ambiguous.
@@ -284,8 +294,8 @@ does not silently become an assembly acceptance contract. Stored source is retai
 - A person can also import what an emulator saw while they played (Settings, a Mesen2 code/data log or a
   `bank:address` trace): splitting the game again then starts functions where calls entered and where code ran that
   wasn't reached, and keeps what was only read as data out of functions.
-  SMS/GG text traces describe physical cartridge-ROM banks and CPU instruction addresses. Declare Sega or mapperless
-  mapping in Settings before interpreting them; RAM/BIOS execution needs a richer format. Invalid coordinates and
+  SMS/GG text traces describe physical cartridge-ROM banks and CPU instruction addresses. Declare a supported
+  mapping (Sega, mapperless or Codemasters) in Settings before interpreting them; RAM/BIOS execution needs a richer format. Invalid coordinates and
   explicit gaps break entry evidence. Entry candidates require adjacent call/target records; a target appearing
   elsewhere in the log is insufficient. Observed CPU windows are retained, including paged slot 0; multiple windows
   for one physical entry remain ambiguous. The format has no session identity or loss accounting, so it does not
@@ -294,8 +304,10 @@ does not silently become an assembly acceptance contract. Stored source is retai
   A Sega code/data log supplies physical ROM offsets without CPU windows. New placements need a symbol, an
   explicit entry correction or another established CPU context; section defaults cannot fill that gap.
 
-- The import reads which toolchain built the game: GBDK-2020's start-up code (C), or an SDSC tag (homebrew,
-  not which tool). A game none of them built is most likely assembly, for the assembly track.
+- The import reads which toolchain built the game from its start-up code: GBDK-2020's, devkitSMS's or z88dk's
+  classic one (C). devkitSMS builds use unsigned `char` and often their own peephole rules, unlike the pinned
+  GBDK profile; z88dk's sccz80 code won't match SDCC at all. An SDSC tag alone says homebrew, not which tool:
+  assemblers write one too. A game none of them built is most likely assembly, for the assembly track.
 
 ## Hand-written routines
 

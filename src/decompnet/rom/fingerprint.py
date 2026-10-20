@@ -6,8 +6,11 @@ track's. What's read:
 
 - Game Boy: GBDK's start-up code (crt0), version by version. The checks are a port of gbtoolsid's GBDK ones
   (bbbbbr/gbtoolsid, The Unlicense: src/sig_gbdk.c and src/entry_names_gbdk.h).
-- Master System, Game Gear: GBDK-2020's crt0 (`di / im 1 / jp $0080`, then `ld sp, $dff0` there), and the SDSC tag
-  homebrew carries at $7FE0 (its program's name and author: homebrew, though not which tool).
+- Master System, Game Gear: GBDK-2020's crt0 (`di / im 1 / jp $0080`, then `ld sp, $dff0` there), devkitSMS's
+  (`di / im 1 / ld sp, $dff0 / jr`, with its own name between $0038 and $0066 or its RST $08 VDP write), z88dk's
+  classic one (`jp` at $0000, the same RST $08 body followed by "Z88DK"), and the SDSC tag homebrew carries at $7FE0
+  (its program's name and author: homebrew, though not which tool; WLA-DX writes one for assembly too). The start-up
+  files read are sverx/devkitSMS crt0/src/crt0_sms.s and z88dk lib/target/sms/classic/sms_crt0.asm.
 - NES: GBDK-2020's start-up code at the reset vector, and cc65's runtime (popax and incsp2, wherever they were
   linked, with its own zero-page stack pointer).
 
@@ -63,6 +66,7 @@ def gbdk_version(rom: bytes) -> str | None:
     return None
 
 
+_SMS_RST08 = bytes.fromhex("0ebff3ed69ed61fbc9")  # ld c,$bf · di · out (c),l · out (c),h · ei · ret (devkitSMS, z88dk)
 _CC65 = re.compile(rb"\xa0\x01\xb1(.)\xaa\x88\xb1\1\xe6\1\xf0\x05\xe6\1\xf0\x03\x60\xe6\1\xe6(.)\x60", re.S)
 
 
@@ -81,11 +85,20 @@ def identify(platform: str, data: bytes) -> dict | None:
     if platform in ("sms", "gg"):
         if _at(data, 0, bytes.fromhex("f3ed56c38000")) and _at(data, 0x80, bytes.fromhex("31f0df")):
             return {"tool": "GBDK-2020", "version": "", "language": "C", "pinned": True, "note": ""}
-        for at in (0x7FE0, 0x3FE0, 0x1FE0):
-            if _at(data, at, b"SDSC"):
-                return {"tool": "SDSC tag", "version": f"{data[at + 4]:x}.{data[at + 5]:02x}", "language": "",
-                        "pinned": False, "author": _sdsc_text(data, at + 0x0A), "name": _sdsc_text(data, at + 0x0C),
-                        "note": "homebrew (an SDSC tag): built with devkitSMS, SDCC or an assembler, not told which"}
+        tag = _sdsc(data)
+        if _at(data, 0, bytes.fromhex("f3ed5631f0df18")) and (b"devkitSMS" in data[0x38:0x66] or _at(data, 8, _SMS_RST08)):
+            return {"tool": "devkitSMS", "version": "", "language": "C", "pinned": False, **_named(tag),
+                    "note": "built with devkitSMS (SDCC and SMSlib): its builds use unsigned char and often their own "
+                            "peephole rules and --max-allocs-per-node, so a C match may need the project's compiler "
+                            "flags changed; SMSlib and PSGlib routines come from a prebuilt library"}
+        if _at(data, 0, b"\xc3") and _at(data, 8, _SMS_RST08) and _at(data, 8 + len(_SMS_RST08), b"Z88DK"):
+            return {"tool": "z88dk", "version": "", "language": "C", "pinned": False, **_named(tag),
+                    "note": "built with z88dk (its classic start-up code): sccz80's code won't match the pinned SDCC, "
+                            "and zsdcc's needs its own library and options; document such routines in assembly"}
+        if tag:
+            return {"tool": "SDSC tag", "language": "", "pinned": False, **tag,
+                    "note": "homebrew (an SDSC tag): devkitSMS, SDCC and WLA-DX all write one, so it doesn't say which "
+                            "tool, or that the game is C"}
         return None
     if platform == "nes":
         from . import nes
@@ -108,6 +121,20 @@ def identify(platform: str, data: bytes) -> dict | None:
                 return {"tool": "GBDK-2020", "version": "", "language": "C", "pinned": True, "note": ""}
         return None
     return None
+
+
+def _sdsc(data: bytes) -> dict:
+    """{"version", "author", "name"} from an SDSC tag, or {} when there's none."""
+    for at in (0x7FE0, 0x3FE0, 0x1FE0):
+        if _at(data, at, b"SDSC"):
+            return {"version": f"{data[at + 4]:x}.{data[at + 5]:02x}", "author": _sdsc_text(data, at + 0x0A),
+                    "name": _sdsc_text(data, at + 0x0C)}
+    return {}
+
+
+def _named(tag: dict) -> dict:
+    """A tag's program name and author (its version is the tag format's, not the toolchain's)."""
+    return {key: tag[key] for key in ("author", "name") if key in tag}
 
 
 def _sdsc_text(data: bytes, ptr_at: int) -> str:
