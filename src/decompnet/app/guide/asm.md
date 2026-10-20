@@ -22,6 +22,15 @@ The drawer shows the latest submitted source's byte equality and six checks sepa
 when names, layout, mapping or the validator change. **Validate assembly** submits edits through the same judge.
 These mechanical checks do not approve the routine's semantic description.
 
+For accepted assembly, **Ask AI to review** starts a fresh helper session. Choose a helper/model; a different model
+from the writer gives another perspective. Subscription or API usage applies. It reads the documented routine and
+relevant callers/data, then saves a plain-English assessment: **Explanation supported**, **Changes recommended**,
+or **Uncertain**, with evidence and anything needing attention. It does not claim work, edit source, or clear the
+human **look over** flag. You can leave that flag in place if you cannot assess assembly yourself. AI advice is
+separate from human approval. Reports become historical when their source or supporting context changes; request
+a fresh review then. If a report identifies a specific error, a person can use **Send back** with that finding in
+the note box. Missing confidence alone is not a reason to reopen documentation.
+
 Use **Defer documentation** for work needing an entry correction, mapping evidence or layout repair. Include what
 must change. Agents can use `defer_documentation(function, reason)` while holding the claim. Deferral releases that
 claim and keeps the routine off automatic and pinned queues; it preserves the source and attempts. Exact-byte

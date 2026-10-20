@@ -551,6 +551,7 @@ a.ghost, a.primary { text-decoration: none; }
 .drawer-head { flex: none; display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding: 20px 24px; border-bottom: 1px solid var(--line-soft); }
 .drawer-head h2 { font-size: 20px; letter-spacing: -.02em; margin-top: 6px; overflow-wrap: anywhere; }
 .drawer-head .row { flex-wrap: nowrap; gap: 6px; }
+#drawer .drawer-head .row { flex-wrap: wrap; justify-content: flex-end; }
 .drawer-head .badge { margin-right: 6px; }
 .dh-title { min-width: 0; }
 .drawer-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 20px 24px 48px; display: grid; gap: 18px; align-content: start; grid-template-columns: minmax(0, 1fr); grid-auto-rows: max-content; }

@@ -252,6 +252,11 @@ def _pin_options(net, settings: Settings, kind: str, slug: str, given: dict) -> 
         raise ValueError("pinning a helper to one function works on your own ROM projects (not a git project or a "
                          "room's copy) for now")
     fn = net._function(str(given["pin"]), slug)
+    if given.get("track") == "asm_review":
+        net.documentation_review.target(slug, fn["name"])
+        if given.get("lean") or given.get("model") == agents.TIERED:
+            raise ValueError("AI review uses one model's tool loop")
+        return {"pin": fn["name"], "track": "asm_review", "polish": False, "stall": 1, "max_steps": 60}
     if given.get("track") == "asm":
         if given.get("lean"):
             raise ValueError("pinned assembly uses the agent tool loop, not the C lean loop")
@@ -394,7 +399,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         if net.is_chat(agent):
             return ListToolsResult(tools=everything)
         slug = manager.project_of(agent.id) or settings.data.get("last_project")
-        keep = set(tools.tool_names(bool(slug and net.fork_slug(slug))))
+        keep = set(tools.tool_names(bool(slug and net.fork_slug(slug)), net.documentation_review.is_reviewer(agent)))
         return ListToolsResult(tools=[t for t in everything if t.name in keep])
 
     mcp._lowlevel_server.add_request_handler("tools/list", PaginatedRequestParams, scoped_tools)
@@ -1107,6 +1112,8 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         data = await body(request)
         kind, slug = str(data.get("kind", "")), str(data.get("slug", ""))
         given = data.get("options") or {}
+        if given.get("track") == "asm_review" and (not given.get("pin") or given.get("only_starred") or given.get("focus")):
+            return fail(ValueError("AI review works on one documented function; choose it in the function drawer"))
         options = {k: v for k, v in given.items() if k in ("model", "effort", "per_session")}
         if given.get("only_starred") is True:  # ★ Next in line only: the helper ends when those are done
             options["only_starred"] = True
@@ -1163,9 +1170,10 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
             recent = settings.data.setdefault("recent_models", {}).setdefault(kind, [])
             settings.data["recent_models"][kind] = [model] + [m for m in recent if m != model][:7]
         if options.get("pin"):  # the drawer's "Work on this" remembers its own choices, not the launcher's
-            saved = settings.data.get("pin_helper") or {}
+            helper_key = "review_helper" if options.get("track") == "asm_review" else "pin_helper"
+            saved = settings.data.get(helper_key) or {}
             setups = dict(saved.get("setups") or {}) | ({kind: {"model": model, "effort": effort}} if kind != "api" else {})
-            settings.data["pin_helper"] = saved | {
+            settings.data[helper_key] = saved | {
                 "who": f"ep:{picked[0]}" if kind == "api" and picked else f"k:{kind}", "lean": options.get("lean") or "",
                 "variants": options.get("variants") or 0, "escalate": options.get("escalate_endpoint") or "",
                 "polish": bool(options.get("polish")), ("stall_calls" if options.get("lean") else "stall_runs"): options["stall"],

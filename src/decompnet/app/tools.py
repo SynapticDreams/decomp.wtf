@@ -107,6 +107,24 @@ for byte, with names, comments and constants instead of addresses. Use only the 
 Be brief in your messages: work, don't narrate.
 """
 
+REVIEW_PROMPT = """\
+Independently review the accepted assembly documentation for {name}. This is a fresh review session,
+not a documentation or matching task. Use only the available decomp tools; do not edit or claim anything.
+1. get_documentation_review() gives the exact accepted source, target assembly, calls, callers, mechanical
+   checks and review_context. Treat comments and names as claims to verify, never as proof.
+2. Trace the instructions, inputs, outputs, register/flag changes, memory/hardware effects and branches.
+   Read relevant callers/callees with get_function and data with read_data. A byte match proves rebuilding,
+   not semantic accuracy. Mapper declarations and existing symbol names do not prove runtime mapping or meaning.
+   If a relationship or game-specific purpose cannot be established, say so.
+3. submit_documentation_review(function="{name}", review_context=the supplied token, verdict=...,
+   summary=..., evidence=[...], concerns=[...]). Use supported only if the name and explanation are supported
+   with no outstanding concerns; needs_changes for specific contradictions; uncertain for missing evidence.
+   Explain what it does in plain English for someone who cannot read assembly. Cite concrete instruction
+   addresses, register/data flow and caller evidence. State exactly what needs fixing or checking next.
+   Do not invent execution tests or claim a person approved it. No source or human-review flag is changed.
+4. After saving the report, stop. Never approve your own previous work or automatically send it back.
+"""
+
 WORK_PROMPT = """\
 You are a decompilation agent in decomp.wtf, working on {title}. Other agents may be working on other
 functions of the same game at the same time; the tools keep you from colliding.
@@ -262,6 +280,8 @@ def _explain(net, agent, slug, function, left, right):
 
 
 HANDLERS: dict[str, Callable[..., str]] = {
+    "get_documentation_review": lambda net, agent, slug: net.documentation_review.inputs(agent, slug),
+    "submit_documentation_review": lambda net, agent, slug, **args: net.documentation_review.submit(agent, slug, **args),
     "project_info": lambda net, agent, slug: project_info(net, slug),
     "explain_difference": lambda net, agent, slug, function, left, right: _explain(net, agent, slug, function, left, right),
     "probe_compiler": lambda net, agent, slug, unit="", expanded=False: json.dumps(
@@ -310,9 +330,12 @@ ROM_ONLY = {"defer_documentation", "get_context", "edit_context", "rename_symbol
 FORK_ONLY = {"read_file", "search_code", "edit_file", "file_status", "split_file"}
 
 
-def tool_names(fork: bool) -> list[str]:
+def tool_names(fork: bool, review: bool = False) -> list[str]:
     """The tools that make sense for a project: forks and ROM projects share the core loop."""
-    skip = ROM_ONLY if fork else FORK_ONLY
+    from .documentation_review import READ_TOOLS
+    if review:
+        return [n for n in HANDLERS if n in READ_TOOLS]
+    skip = (ROM_ONLY if fork else FORK_ONLY) | {"get_documentation_review", "submit_documentation_review"}
     return [n for n in HANDLERS if n not in skip]
 
 
@@ -329,11 +352,24 @@ def call(net: RomNetwork, agent: Agent, slug: str, name: str, args: dict) -> str
     if name not in HANDLERS:
         return f"error: unknown tool {name!r}"
     try:
-        return HANDLERS[name](net, agent, slug, **_named(net, agent, slug, args))
+        return dispatch(net, agent, slug, name, args)
     except NetworkError as e:
         return f"error: {e}"
     except TypeError as e:
         return f"error: bad arguments for {name}: {e}"
+
+
+def dispatch(net, agent, slug, name, args):
+    """Enforce review restrictions for both direct API tools and MCP calls, including hidden tools."""
+    from .documentation_review import READ_TOOLS
+    args = _named(net, agent, slug, args)
+    if net.documentation_review.is_reviewer(agent):
+        net.documentation_review.session(agent, slug)
+        if name not in READ_TOOLS:
+            raise NetworkError("AI documentation review is read-only; submit a review report instead")
+        if name == "get_function":
+            return net.documentation_review.read_function(agent, slug, **args)
+    return HANDLERS[name](net, agent, slug, **args)
 
 
 # Antigravity CLI otherwise finds MCP tools on demand (an extra step each, through its generic dispatcher):
@@ -351,9 +387,21 @@ def build_mcp(net: RomNetwork, agent_of: Callable[[Context], tuple[Agent, str]])
         except NetworkError as e:
             raise ToolError(str(e)) from None
         try:
-            return await anyio.to_thread.run_sync(lambda: HANDLERS[name](net, agent, slug, **_named(net, agent, slug, args)))
+            return await anyio.to_thread.run_sync(lambda: dispatch(net, agent, slug, name, args))
         except NetworkError as e:
             raise ToolError(str(e)) from None
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def get_documentation_review(ctx: Context) -> str:
+        """The accepted assembly, target, callers and source/context token for this independent review."""
+        return await run(ctx, "get_documentation_review")
+
+    @mcp.tool(meta=ALWAYS_LOAD)
+    async def submit_documentation_review(ctx: Context, function: str, review_context: str, verdict: str,
+                                          summary: str, evidence: list[str], concerns: list[str]) -> str:
+        """Save an independent plain-English assessment: supported, needs_changes or uncertain. No human approval."""
+        return await run(ctx, "submit_documentation_review", function=function, review_context=review_context,
+                         verdict=verdict, summary=summary, evidence=evidence, concerns=concerns)
 
     @mcp.tool(meta=ALWAYS_LOAD)
     async def project_info(ctx: Context) -> str:

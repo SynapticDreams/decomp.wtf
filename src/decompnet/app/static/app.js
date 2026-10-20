@@ -723,6 +723,8 @@ async function poll(first) {
     addActivity(live.events, live.attempts, first);
     S.claims = live.claims;
     if (!first) toastStopped(S.sessions || [], live.sessions);
+    const reviewState = (sessions) => JSON.stringify(sessions.filter((s) => s.track === "asm_review" && s.pin === S.fn).map((s) => [s.id, s.state]));
+    const reviewChanged = reviewState(S.sessions) !== reviewState(live.sessions);
     S.sessions = live.sessions;
     for (const s of live.sessions) {
       if (s.feed.length) S.seq[s.id] = s.feed[s.feed.length - 1].seq;
@@ -739,7 +741,7 @@ async function poll(first) {
     }
     S.claimSig = claimSig;
     if (S.fn && !$("drawer").hidden) {
-      const touched = live.attempts.some((a) => a.function === S.fn) || live.events.some((e) => e.detail === S.fn);
+      const touched = reviewChanged || (mapDirty && (S.fnDetail?.documentation_reviews || []).length) || live.attempts.some((a) => a.function === S.fn) || live.events.some((e) => e.detail === S.fn);
       if (touched) refreshFn(false); else fnBadge();
     }
     $("feedHint").textContent = "";
@@ -1777,7 +1779,7 @@ function renderSessions(sessions) {
     const quiet = live && s.last_output ? Math.floor((Date.now() / 1000 - s.last_output) / 60) : 0;  // the watchdog ends it at 15
     const facts = [s.model ? esc(s.model) : "default model", s.runs ? `session ${s.runs}` : "", quiet >= 3 ? `<b class="warn-text">silent ${quiet} min</b>` : "", b && b.matched ? `<b class="ok">${b.matched} matched</b>` : "", b ? plural(b.compiles, "compile") : "",
       s.usd ? money(s.usd) : s.tokens ? `${(s.tokens / 1000).toFixed(0)}k tokens` : "", s.started_at ? `since ${clock(s.started_at).slice(0, 5)}` : ""].filter(Boolean);
-    return `<div class="session"><div class="session-top"><span class="dot ${dot}"></span><b>${esc(s.label)}</b>${s.only_starred ? `<span class="tag">only ★</span>` : ""}${s.pin ? `<span class="tag" title="${s.lean ? `the lean loop: ${esc(LEAN_NAME[s.lean] || s.lean)}` : "pinned to one function"}">on ${esc(s.pin)}${s.lean ? " · lean" : ""}</span>` : s.lean ? `<span class="tag" title="the lean loop: ${esc(LEAN_NAME[s.lean] || s.lean)}, function after function">lean</span>` : ""}${s.focus ? `<span class="tag">${esc((FOCUS.find((f) => f.id === s.focus) || {}).name || s.focus)}</span>` : ""}${s.track === "asm" ? `<span class="tag" title="documenting hand-written routines in assembly">assembly</span>` : ""}
+    return `<div class="session"><div class="session-top"><span class="dot ${dot}"></span><b>${esc(s.label)}</b>${s.only_starred ? `<span class="tag">only ★</span>` : ""}${s.pin ? `<span class="tag" title="${s.lean ? `the lean loop: ${esc(LEAN_NAME[s.lean] || s.lean)}` : "pinned to one function"}">on ${esc(s.pin)}${s.lean ? " · lean" : ""}</span>` : s.lean ? `<span class="tag" title="the lean loop: ${esc(LEAN_NAME[s.lean] || s.lean)}, function after function">lean</span>` : ""}${s.focus ? `<span class="tag">${esc((FOCUS.find((f) => f.id === s.focus) || {}).name || s.focus)}</span>` : ""}${s.track === "asm_review" ? `<span class="tag" title="independent assessment of assembly documentation">AI review</span>` : s.track === "asm" ? `<span class="tag" title="documenting hand-written routines in assembly">assembly</span>` : ""}
         <span class="state ${s.state === "error" ? "err" : ""}">${esc(STATE_TEXT[s.state] || s.state)}</span>
         <button class="ghost" data-stop="${esc(s.id)}" data-remove="${live ? "" : "1"}" type="button">${live ? "Stop" : "Remove"}</button></div>
       <span class="facts-line">${facts.join(" · ")}</span>
@@ -2080,6 +2082,7 @@ function eventHtml(ev) {
     case "merge": return `${who} joined ${esc(d)}`;
     case "review": return `${who} set ${esc(d)} aside for a person to review`;
     case "documented": return `<span class="ok">✓</span> ${who} documented ${fnLink(d)} in assembly`;
+    case "documentation_review": return `${who} saved an AI review of ${fnLink(d)}`;
     case "reviewed": return `you looked over ${esc(d)}`;
     case "correction": return `${who} corrected the split: ${esc(d)}`;
     case "files": return `${who ? who + " " : ""}gave code without a source file one: ${esc(d)}`;
@@ -2320,6 +2323,12 @@ async function refreshFn(first) {
     };
     // a documented routine picked for review: a person says it's right, or sends it back with what's wrong
     const guest = (S.ov.room || {}).role === "guest";
+    const reviewing = S.sessions.some((s) => s.track === "asm_review" && s.pin === d.name && ["starting", "working", "waiting"].includes(s.state));
+    $("fnAIReview").hidden = d.status !== "documented" || guest || S.ov.kind === "fork";
+    $("fnAIReview").disabled = held || reviewing;
+    $("fnAIReview").textContent = reviewing ? "AI review running…" : "Ask AI to review";
+    $("fnAIReview").onclick = () => openPinHelper(d.name, false, true);
+    window.AssemblyWorkUI.renderReview($("fnDocumentationReview"), d, reviewing);
     $("fnLooksRight").hidden = $("fnSendBack").hidden = !(d.status === "documented" && d.sample) || guest;
     const verdict = async (ok, note = "") => {
       try {
@@ -2673,18 +2682,19 @@ function wireCopies(root) {
    their own loop, a fresh session per run. Either stops at a match, or when it stops getting closer. */
 const LEAN_NAME = { one: "one version per call", several: "several versions per call", both: "one and several per call in turn" };
 
-function openPinHelper(name, assembly = false) {
+function openPinHelper(name, assembly = false, review = false) {
+  const toolsOnly = assembly || review;
   const eps = S.st.settings.endpoints || [];
   const kinds = (S.st.agents || []).filter((a) => a.installed && a.id !== "api");
-  const last = S.st.settings.pin_helper || {};
+  const last = S.st.settings[review ? "review_helper" : "pin_helper"] || {};
   const choices = [...eps.map((e) => ({ key: `ep:${e.id}`, label: `${e.name} · ${e.model}`, ep: e.id })),
     ...kinds.map((a) => ({ key: `k:${a.id}`, label: a.name, kind: a.id, lean: a.id === "codex", agent: a }))];
   if (!choices.length) {
-    dialog(`Work on ${name}`, `<p>Add an API endpoint or install an agent first: <a class="link" href="#/agents" data-close>Agents &amp; models</a>.</p>`);
+    dialog(review ? `Review ${name}` : `Work on ${name}`, `<p>Add an API endpoint or install an agent first: <a class="link" href="#/agents" data-close>Agents &amp; models</a>.</p>`);
     return;
   }
   const pick = choices.find((c) => c.key === last.who) || choices[0];
-  const body = dialog(assembly ? `Document ${name}` : `Work on ${name} until it matches`, `<p class="muted">${assembly ? "One helper documents this routine in assembly. It stops when documented, deferred, or no further progress is made." : "One helper on this function only. Each try starts from the closest version so far; it stops at a match, or when it stops getting closer, and leaves a note with what it tried."}</p>
+  const body = dialog(review ? `Review ${name}` : assembly ? `Document ${name}` : `Work on ${name} until it matches`, `<p class="muted">${review ? "A fresh helper session checks the name and explanation against the assembly and relevant callers. It saves a plain-English assessment with evidence and concerns, then stops. Choose a different model from the writer for another perspective. Your subscription or API usage applies. The source and human-review flag stay as they are." : assembly ? "One helper documents this routine in assembly. It stops when documented, deferred, or no further progress is made." : "One helper on this function only. Each try starts from the closest version so far; it stops at a match, or when it stops getting closer, and leaves a note with what it tried."}</p>
     <label class="field"><span>Helper</span><select id="phWho">${choices.map((c) => `<option value="${esc(c.key)}" ${c === pick ? "selected" : ""}>${esc(c.label)}</option>`).join("")}</select></label>
     <div id="phSetup" class="group">
       <label class="field"><span>Model</span><select id="phModel"></select></label>
@@ -2725,7 +2735,7 @@ function openPinHelper(name, assembly = false) {
     const c = which();
     $("phSetup").hidden = !c.agent;
     if (!c.agent) return;
-    const cur = setupOf(c.kind), opts = modelOptions(c.agent), known = opts.some((o) => o.id === cur.model);
+    const cur = setupOf(c.kind), opts = modelOptions(c.agent).filter((o) => !review || o.id !== "tiered"), known = opts.some((o) => o.id === cur.model);
     $("phModel").innerHTML = opts.map((o) => `<option value="${esc(o.id)}" ${known && o.id === cur.model ? "selected" : ""}>${esc(o.name)}${o.note ? ` — ${esc(o.note)}` : ""}</option>`).join("")
       + `<option value="__other" ${known ? "" : "selected"}>Another model…</option>`;
     $("phCustom").hidden = known;
@@ -2733,17 +2743,18 @@ function openPinHelper(name, assembly = false) {
     $("phCustom").placeholder = `model name, as ${c.agent.name} calls it`;
     fillEffort();
   };
-  const note = () => { $("phEffortNote").hidden = $("phEffortField").hidden || (which().lean && lean()); };  // the lean loop keeps it
+  const note = () => { $("phEffortNote").hidden = review || $("phEffortField").hidden || (which().lean && lean()); };  // the lean loop keeps it
   const fill = () => {  // Codex can also work its own way (tools, a session per run); an API model only lean
     const c = which(), keep = $("phMethod").value || last.lean || "several";
     const opts = c.ep ? METHODS : { ...METHODS, agent: "Its own loop: tools, a fresh session per run" };
     $("phMethod").innerHTML = Object.entries(opts).map(([k, v]) => `<option value="${k}" ${k === keep ? "selected" : ""}>${v}</option>`).join("");
   };
   const sync = () => {
-    const c = which(), on = !assembly && !!(c.ep || c.lean);
+    const c = which(), on = !toolsOnly && !!(c.ep || c.lean);
     $("phLean").hidden = !on;
     $("phEscField").hidden = !c.ep;
-    $("phPolish").closest("label").hidden = assembly;
+    $("phPolish").closest("label").hidden = toolsOnly;
+    $("phStall").closest("label").hidden = review;
     $("phNField").hidden = $("phMethod").value === "one" || !lean();
     const calls = on && lean();
     $("phUnit").textContent = calls ? "calls" : "runs";
@@ -2766,29 +2777,30 @@ function openPinHelper(name, assembly = false) {
   sync();
   body.querySelector("#phGo").onclick = async () => {
     const c = which(), go = $("phGo");
-    const options = { pin: name, stall: Number($("phStall").value) || 0, polish: !assembly && $("phPolish").checked };
+    const options = { pin: name, stall: Number($("phStall").value) || 0, polish: !toolsOnly && $("phPolish").checked };
     if (assembly) options.track = "asm";
+    if (review) options.track = "asm_review";
     let kind = c.kind;
     if (c.ep) {
       kind = "api";
       options.endpoints = [c.ep];
-      if (!assembly) Object.assign(options, { lean: $("phMethod").value, variants: Number($("phN").value) || 3 });
-      if ($("phEsc").value) options.escalate = $("phEsc").value;
+      if (!toolsOnly) Object.assign(options, { lean: $("phMethod").value, variants: Number($("phN").value) || 3 });
+      if (!toolsOnly && $("phEsc").value) options.escalate = $("phEsc").value;
     } else {
       const cur = setupOf(c.kind);
       if (cur.model) options.model = cur.model;
       if (cur.effort && !$("phEffortField").hidden) options.effort = cur.effort;
-      if (!assembly && c.lean && lean()) Object.assign(options, { lean: $("phMethod").value, variants: Number($("phN").value) || 3 });
+      if (!toolsOnly && c.lean && lean()) Object.assign(options, { lean: $("phMethod").value, variants: Number($("phN").value) || 3 });
     }
     go.disabled = true;
     try {
       await api("/api/agents/start", { method: "POST", body: { kind, slug: S.slug, count: 1, options } });
-      S.st.settings.pin_helper = { who: c.key, lean: options.lean, variants: options.variants, escalate: options.escalate || "",
+      S.st.settings[review ? "review_helper" : "pin_helper"] = { who: c.key, lean: options.lean, variants: options.variants, escalate: options.escalate || "",
         polish: options.polish, [options.lean ? "stall_calls" : "stall_runs"]: options.stall,
         setups: { ...(last.setups || {}), ...(c.ep ? {} : { [kind]: { model: options.model || "", effort: options.effort || "" } }) } };
       $("dialog").hidden = true;
       const setup = [options.model && modelName(c.agent, options.model), options.effort && `${options.effort} effort`].filter(Boolean).join(", ");
-      toast(`A helper is on <code>${esc(name)}</code>${setup ? ` (${esc(setup)})` : ""}: watch it in Agents.`, "match");
+      toast(`A helper is ${review ? "reviewing" : "on"} <code>${esc(name)}</code>${setup ? ` (${esc(setup)})` : ""}: watch it in Agents.`, "match");
       poll(false);
     } catch (e) { toast(esc(e.message), "err"); go.disabled = false; }
   };
