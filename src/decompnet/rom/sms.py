@@ -338,20 +338,28 @@ def candidates(data: bytes, limit: int = 4000, labels: dict | None = None,
     for _ in range(GAP_PASSES):
         if budget.stopped:
             break
-        gaps = _after_functions(data, found.starts, hints.get("inline"), mapper=mapper)
+        gaps = _after_functions(data, found.starts, _inline(hints, found), mapper=mapper)
         if not gaps:
             break
         seeds.update(gaps)
         _, found = session.follow(seeds)
         bases = {**bases, **found.bank_base}
     else:
-        if not budget.stopped and _after_functions(data, found.starts, hints.get("inline"), mapper=mapper):
+        if not budget.stopped and _after_functions(data, found.starts, _inline(hints, found), mapper=mapper):
             budget.note("gap discovery pass budget exhausted")
     starts = dict(sorted(found.starts.items())[:limit])
     summary = session.report(found, model, limit)
     if report is not None:
         report.update(summary)
+        declared = hints.get("inline") or {}
+        report["inline_inferred"] = [{"rom_offset": flat, "count": n}
+                                     for flat, n in sms_trace.inferred_inline(found).items() if flat not in declared]
     return starts, bases
+
+
+def _inline(hints: dict, found) -> dict[int, int]:
+    """Operands read after a call: what corrections declare, else what evaluated calls established."""
+    return {**sms_trace.inferred_inline(found), **(hints.get("inline") or {})}
 
 
 def _data_mask(size: int, spans: list[tuple[int, int]]):
@@ -436,7 +444,9 @@ def functions(data: bytes, log=lambda *_: None, labels: dict | None = None,
     same, with the file's automatic names too) say where code starts; `report` gets {"bank_base": {bank: CPU
     address}} for the banks whose code was found running somewhere, and {"regions": [(flat, size, kind, why)]} for
     what isn't code. `hints`: the project's corrections, as engine._hints gives them: {"entries": {flat: cpu},
-    "data": [(flat, count)], "tables": [(flat, count)], "inline": {flat: count}, "noreturn": {flat}}."""
+    "data": [(flat, count)], "tables": [(flat, count)], "inline": {flat: count}, "noreturn": {flat}}, and "platform"
+    ("gg": a Game Gear cartridge in its own mode, whose ports $00-$06 aren't memory control). `report` also gets
+    "inline_inferred": [{"rom_offset", "count"}], routines found to read operands after their calls."""
     hints = hints or {}
     report = report if report is not None else {}
     mapper = mapper if mapper is not None else hints.get("mapper", "sega")
@@ -462,7 +472,9 @@ def functions(data: bytes, log=lambda *_: None, labels: dict | None = None,
     span_starts = [a for a, _n in spans]
     starts = sorted(f for f in found if not in_data(f))
     known = set(starts)
-    inline = hints.get("inline") or {}
+    declared = hints.get("inline") or {}
+    inferred = {row["rom_offset"]: row["count"] for row in report.get("inline_inferred") or []}
+    inline = {**inferred, **declared}
     regions = [(a, n, "hint", "a correction says these bytes aren't code") for a, n in hints.get("data") or []]
     regions += [(a, n, "read", "read as data while the game ran (coverage)") for a, n in read]
     taken: set[str] = set()
@@ -475,7 +487,11 @@ def functions(data: bytes, log=lambda *_: None, labels: dict | None = None,
         steps = list(_walk(data, start, cpu, hard, known, inline, mapper=mapper))
         code = data[start:steps[-1][0] + max(1, steps[-1][2])] if steps else b""
         operands = {cpu + off - start: n for off, text, n in steps if text == "db"}  # (CPU address: length)
-        regions += [(off, n, "inline", "read by the routine called just before") for off, text, n in steps if text == "db"]
+        for (_at, call, _ln), (off, text, n) in zip(steps, steps[1:]):
+            if text == "db":
+                callee = target_flat(z80.flow(call)[1], bank_of(start), size, cpu + _at - start, mapper=mapper)
+                regions.append((off, n, "inline", "read by the routine called just before" if callee in declared else
+                                "read by the routine called just before: each evaluated call returned past them"))
         insns = list(_instructions(code, cpu, operands))
         if not insns:
             continue
@@ -526,4 +542,5 @@ def split(path: Path, workdir: Path, log=lambda *_: None, report: dict | None = 
         log("with the project's corrections")
     if hints and hints.get("coverage") is not None:
         log("with what an emulator saw the game run")
+    hints = {"platform": info["platform"], **(hints or {})}  # (the project's own platform, when it says)
     return functions(data, log=log, labels=labels, report=report, seeds=seeds, hints=hints)

@@ -1952,6 +1952,8 @@ class RomNetwork(Network):
         cfg = self.cfg(proj)
         if (cfg.get("arch") or "").lower() == "z80":
             hints["mapper"] = self.sms.model(proj).kind
+            if cfg.get("platform") in ("sms", "gg"):
+                hints["platform"] = cfg["platform"]
             source = cfg.get('symbol_file')
             if source is not None and (not isinstance(source, dict) or 'format' in source):
                 hints['symbol_source'] = source

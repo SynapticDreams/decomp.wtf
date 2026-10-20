@@ -16,12 +16,16 @@ from .sms_state import State
 from .sms_analysis import Budget
 from .sms_stack import StackWord as StackWord
 
+INLINE_LIMIT = 32  # the most bytes after a call a callee may be found to read and return past
+
+
 
 @dataclass
 class Result:
     returns: list[State] = field(default_factory=list)
     reasons: set[str] = field(default_factory=set)
     entries: list[tuple[int, int, BusState]] = field(default_factory=list)
+    inline: int = 0  # every return path came back this many bytes past the call: operands the callee read
 
     def resume(self, caller: State, *, conditional: bool = False) -> State | None:
         if self.reasons:
@@ -51,6 +55,7 @@ class Evaluator:
             raise ValueError("call depth must be between 1 and 64")
         self.data, self.model = data, model
         self.hints, self.in_data = hints or {}, in_data
+        self.game_gear = self.hints.get("platform") == "gg"
         self.limits, self.depth = limits or Limits(steps=2048), depth
         self.budget = budget
 
@@ -76,6 +81,7 @@ class Evaluator:
             return result
         work, paths = [(target, st)], Paths(self.limits)
         expected = (return_cpu + skip) & 65535
+        shifted: list[tuple[int, State]] = []  # returns past the call (undeclared operands), by how far
         while work:
             cpu, st = work.pop()
             while True:
@@ -105,7 +111,7 @@ class Evaluator:
                 if text.startswith("jp ("):
                     kind, to = "jump", st.hl if text == "jp (hl)" else None
                 writes = sms_effects.memory_writes(text, {"a": st.a, "hl": st.hl, "de": st.de, "bc": st.bc})
-                source_change = sms_effects.port_may_change_source(text, st.bc)
+                source_change = sms_effects.port_may_change_source(text, st.bc, game_gear=self.game_gear)
                 if reasons := sms_trace_writes.limits(writes, self.model):
                     result.reasons.update(reasons)
                     break
@@ -157,6 +163,9 @@ class Evaluator:
                             result.returns.append(returned)
                         elif type(destination) is int and returned.stack:
                             work.append((destination, returned))  # a pushed computed continuation
+                        elif not skip and not already_pushed and type(destination) is int and \
+                                0 < (destination - return_cpu) & 65535 <= INLINE_LIMIT and not returned.stack:
+                            shifted.append(((destination - return_cpu) & 65535, returned))
                         else:
                             result.reasons.add("callee changes or loses the return continuation")
                     if kind == "ret":
@@ -171,12 +180,14 @@ class Evaluator:
                     nested = Result(entries=[(callee, to, st.mapping)]) if callee is not None and \
                         callee in self.hints.get("noreturn", ()) else \
                         self._frame(to, st, next_cpu, inline, depth + 1, fuel)
+                    if nested.inline and conditional:
+                        nested.reasons.add("conditional inline continuation is unqualified")
                     result.reasons.update(nested.reasons)
                     result.entries.extend(nested.entries)
                     st = nested.resume(st, conditional=conditional)
                     if st is None or nested.reasons:
                         break
-                    next_cpu = (next_cpu + inline) & 65535
+                    next_cpu = (next_cpu + inline + nested.inline) & 65535
                 else:
                     sms_registers.apply(st, text, self.model)
                 if kind in ("jump", "cjump"):
@@ -191,4 +202,10 @@ class Evaluator:
                 cpu = next_cpu
         result.reasons.update("call instruction budget exhausted" if reason == "instruction budget exhausted" else reason
                               for reason in paths.exhausted)
+        if shifted:
+            # Undeclared operands only when every path agrees on them and nothing else is unresolved.
+            if len({k for k, _ in shifted}) == 1 and not result.returns and not result.reasons:
+                result.inline, result.returns = shifted[0][0], [state for _, state in shifted]
+            else:
+                result.reasons.add("callee changes or loses the return continuation")
         return result

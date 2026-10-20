@@ -6,7 +6,7 @@ import pytest
 from tools import sms_gate
 
 
-def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True, revalidation=True, archive=True, dependencies=True, undo=True, migration=True, inspection=True, project_archive=True, legacy=True, verification=True, progress=True, export_state=True, c_reference=True, progress_routes=True, artifacts=True, wla=True, symbol_imports=True, adjacent=True, annotations=True, facts=True, research=True):
+def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=True, mapper_matrix=True, recovery=True, revalidation=True, archive=True, dependencies=True, undo=True, migration=True, inspection=True, project_archive=True, legacy=True, verification=True, progress=True, export_state=True, c_reference=True, progress_routes=True, artifacts=True, wla=True, symbol_imports=True, adjacent=True, annotations=True, facts=True, research=True, toolchain=True):
     suite = ET.Element("testsuite")
     modules = sms_gate.TESTS[:-1] if missing_module else sms_gate.TESTS
     for name in modules:
@@ -88,6 +88,8 @@ def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=Tr
                      'test_paths_and_permissions_are_framed_unambiguously']
         elif name.endswith('test_sms_c_reference_export.py') and c_reference:
             extra = [f'test_named_unit_c_reference_keeps_its_header_flags_and_truthful_scope[{p}]' for p in ('sms', 'gg')]
+        elif name[:-3].replace('/', '.') in sms_gate.TOOLCHAIN_CASES and toolchain:
+            extra = sorted(sms_gate.TOOLCHAIN_CASES[name[:-3].replace('/', '.')])
         elif name.endswith('test_sms_progress_routes.py') and progress_routes:
             extra = [f'test_operator_controls_strict_insertion_and_sees_independent_evidence[{p}]' for p in ('sms', 'gg')]
             extra += [f'test_configuration_or_helper_failure_replaces_a_stale_standalone_success[{p}-{file}]'
@@ -198,7 +200,7 @@ def test_gate_rejects_an_install_manifest_without_binaries(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize("kwargs", [{"skipped": True}, {"failed": True}, {"missing_module": True}, {"gg": False},
-                                    {"mapper_matrix": False}, {"recovery": False}, {"revalidation": False}, {"archive": False}, {"dependencies": False}, {"undo": False}, {"migration": False}, {"inspection": False}, {"project_archive": False}, {"legacy": False}, {"verification": False}, {"progress": False}, {"export_state": False}, {"c_reference": False}, {"progress_routes": False}, {"artifacts": False}, {"wla": False}, {"symbol_imports": False}, {"adjacent": False}, {"annotations": False}, {"facts": False}, {"research": False}])
+                                    {"mapper_matrix": False}, {"recovery": False}, {"revalidation": False}, {"archive": False}, {"dependencies": False}, {"undo": False}, {"migration": False}, {"inspection": False}, {"project_archive": False}, {"legacy": False}, {"verification": False}, {"progress": False}, {"export_state": False}, {"c_reference": False}, {"progress_routes": False}, {"artifacts": False}, {"wla": False}, {"symbol_imports": False}, {"adjacent": False}, {"annotations": False}, {"facts": False}, {"research": False}, {"toolchain": False}])
 def test_gate_rejects_incomplete_or_unsuccessful_execution(tmp_path, kwargs):
     with pytest.raises(ValueError):
         sms_gate.verify_report(report(tmp_path, **kwargs))
@@ -211,7 +213,7 @@ def test_gate_requires_a_valid_report_with_executed_tests(tmp_path):
     path.write_text("<testsuite />")
     with pytest.raises(ValueError, match="executed, passing tests"):
         sms_gate.verify_report(path)
-    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 286
+    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 286 + sum(len(cases) - 1 for cases in sms_gate.TOOLCHAIN_CASES.values())
 
 
 def test_gate_rejects_gbdk_from_path_without_the_pinned_install(monkeypatch):

@@ -50,7 +50,11 @@ def _starts(net, slug) -> set[int]:
 def test_splitting_again_uses_the_corrections(game):
     net, slug, agent = game
     before = _starts(net, slug)
-    assert 0x14000 not in before and 0x0250 in before  # inline operands still block the reset path
+    # the callee's evaluated return already steps over its operand; the correction below declares it explicitly
+    assert 0x14000 in before and 0x0250 in before
+    pid = net._project(slug)["id"]
+    assert net.store.one("SELECT why FROM data_regions WHERE project_id=? AND rom_offset=? AND kind='inline'",
+                         pid, 0x0103)["why"].endswith("each evaluated call returned past them")
     net.correct_split(agent, slug, "operands", "00:0300", "it pops its return address, steps over one byte, pushes it",
                       count=1)
     net.resplit_banked(slug, apply=True, log=lambda *_: None)
