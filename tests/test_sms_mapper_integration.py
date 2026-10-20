@@ -16,15 +16,17 @@ CODE = {0: bytes.fromhex("3e01 32ffff cd0002 18fe"), 0x200: bytes.fromhex("cd008
 
 
 @pytest.mark.parametrize("platform,region", [("sms", 4), ("gg", 6)], ids=["sms", "gg"])
-@pytest.mark.parametrize("mapper,flat,value", [("sega", 0x4000, 1), ("mapperless", 0x8000, 2), ("codemasters", 0xC000, 3)],
-                         ids=["sega", "mapperless", "codemasters"])
+@pytest.mark.parametrize("mapper,flat,value", [("sega", 0x4000, 1), ("mapperless", 0x8000, 2), ("codemasters", 0xC000, 3),
+                                               ("korean", 0x14000, 4)],
+                         ids=["sega", "mapperless", "codemasters", "korean"])
 @pytest.mark.skipif(not sms_asm.available(), reason="needs WLA-DX")
 def test_declared_models_agree_across_project_consumers(tmp_path, platform, region, mapper, flat, value):
     net = RomNetwork(tmp_path / "state.db", tmp_path / "projects")
     net.auto_install_tools = False
     code = {**CODE, 0: bytes.fromhex("3e03 320080 cd0002 18fe"), 0xC000: bytes.fromhex("3e03 c9")} \
-        if mapper == "codemasters" else CODE
-    image = make_rom(size=0x10000 if mapper == "codemasters" else 0xC000, region=region, code=code)
+        if mapper == "codemasters" else {**CODE, 0: bytes.fromhex("3e05 3200a0 cd0002 18fe"),
+                                         0x14000: bytes.fromhex("3e04 c9")} if mapper == "korean" else CODE
+    image = make_rom(size={"codemasters": 0x10000, "korean": 0x20000}.get(mapper, 0xC000), region=region, code=code)
     slug = net.import_rom(image, name=f"fixture.{platform}", confirmed=True, log=lambda *_: None)
     proj = net.project_row(slug)
     identity = net.cfg(proj)["rom"]["identity"]

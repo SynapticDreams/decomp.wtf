@@ -350,6 +350,8 @@ def hardware() -> None:
             HW_MAPPER[("sega", v)] = name
         elif name.startswith("CodemastersSlot"):
             HW_MAPPER[("codemasters", v)] = name
+        elif name.startswith("KoreanSlot"):
+            HW_MAPPER[("korean", v)] = name
         elif name.startswith("Port"):
             for write in (False, True):
                 HW_PORTS.setdefault((v, write), name)

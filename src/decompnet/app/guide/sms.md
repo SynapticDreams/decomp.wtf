@@ -6,8 +6,11 @@ encoding. Cartridge mapping and original compiler depend on the project; an SMS/
 
 Choose the cartridge mapping and build intent in project Settings, with the evidence for that choice.
 New imports and legacy projects with no declaration remain readable as provisional Sega-based listings;
-accepting new C or documented assembly requires a supported declaration. Sega, mapperless and qualified Codemasters
-models are supported under the static-analysis limits below and authored synthetic checks. Other mappings can be
+accepting new C or documented assembly requires a supported declaration. Sega, mapperless, qualified Codemasters
+and Korean models are supported under the static-analysis limits below and authored synthetic checks.
+The Korean board wires slots 0 and 1 to banks 0 and 1 and selects slot 2 by a write to exactly $A000
+(`KoreanSlot2`); the selected recipe starts slot 2 at bank 2, as MAME and Gearsystem do, and $FFFC-$FFFF are
+plain RAM there. Its images must be a power of two of at least 32 KiB. Other mappings can be
 recorded but remain unsupported. Mapperless inputs must fit within 48 KiB; undeclared
 small-ROM mirroring remains unresolved. A declaration does not establish hardware accuracy.
 Codemasters qualification currently covers power-of-two inputs from 32 to 512 KiB and canonical writes to
@@ -71,7 +74,11 @@ shift/write-enable bits or raw register latches. Joins keep agreed bits even whe
 Explicit byte/word stores, memory read-modify-write operations, block transfers/input and possible memory-control
 port writes now invalidate affected facts. Word stores apply both bytes in CPU order, including address wrap;
 RAM aliases still do not select a mapper bank. An unknown destination discards sparse RAM and virtual-stack values.
-Known VDP/PSG/I/O-control output ports preserve mapping; unknown outputs and possible memory-control mirrors
+An `ldir`/`lddr` with known DE and BC whose whole destination lies in $C000-$DFFF is a work RAM write: it discards
+RAM facts in that range and checks it against the active stack, without touching mapping; any other block copy
+stays an unknown store.
+`(c)` port I/O decodes C alone, so C is tracked on its own (`ld c, n`, `ld bc, nn`, `pop bc`, `ld c, a` with a known
+A) through B-only changes such as `djnz` and block output. Known VDP/PSG/I/O-control output ports preserve mapping; unknown outputs and possible memory-control mirrors
 leave bus sources unresolved. A Game Gear cartridge in its own mode (a Game Gear header, or the project's `gg`
 platform) also preserves mapping through ports $00-$06: Start/region, link and PSG stereo registers there never
 reach memory control. A Game Gear cartridge with a Master System header runs in Master System mode and keeps the
@@ -90,7 +97,9 @@ Ordinary callees are evaluated with actual incoming registers, mapping and spars
 the uncalled path, and returned mapping/RAM facts are joined across all known return paths. Evaluation has a shared
 2,048-instruction budget across nested calls, depth limit eight and per-address/stack/memory limits. Unknown sources,
 unqualified writes or returns, SP changes, interrupt returns, EI/HALT and exhausted budgets leave caller effects
-unresolved. `analysis_unresolved` reports caller entry offsets and reasons in split logs and resplit results.
+unresolved. Discovery still follows on at the return address under that instruction's own window geometry only, as
+an isolated entry does (in Sega's fixed first KiB, just that KiB); other windows, RAM and stack facts stay unknown.
+A complete evaluation is reused for the same call from the same incoming facts within a trace. `analysis_unresolved` reports caller entry offsets and reasons in split logs and resplit results.
 Computed continuations with known pushed addresses and declared inline-return adjustments use the same evaluator.
 When every path of an unconditional call's callee returns the same 1 to 32 bytes past the call, with nothing else
 unresolved, those bytes are its operands: discovery resumes after them. A routine every such call agrees on lists
@@ -455,6 +464,9 @@ and GBDK. To run that gate locally, install `decompnet toolchain install wla-dx`
 `decompnet toolchain install gbdk-2020`, then run
 `uv run python tools/sms_gate.py` from the repository. It checks SMS and GG exports and fails on missing
 tools, failed comparisons or skipped tests. The default report is `build/sms-tool-tests.xml`.
+The gate also builds a real program with published source at a pinned commit (`tools/sms_fixtures.py`, fetched
+with git, nothing of it kept here): every ROM routine its source calls must be found, within budget, and its
+export must rebuild byte for byte.
 
 - Keep the split's `func_<bank>_<address>` names unless a function's purpose is clear.
 - Helper types and prototypes that several functions share go in the project's shared header

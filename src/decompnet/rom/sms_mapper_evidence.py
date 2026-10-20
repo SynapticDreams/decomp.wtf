@@ -10,7 +10,7 @@ from . import sms_mapper_db
 SCAN_BYTES = 0x10000
 RECORDS = 32
 SELECTORS = {0xFFFC: "sega", 0xFFFD: "sega", 0xFFFE: "sega", 0xFFFF: "sega",
-             0x0000: "codemasters", 0x4000: "codemasters", 0x8000: "codemasters"}
+             0x0000: "codemasters", 0x4000: "codemasters", 0x8000: "codemasters", 0xA000: "korean"}
 
 
 def inspect(image: bytes) -> dict:

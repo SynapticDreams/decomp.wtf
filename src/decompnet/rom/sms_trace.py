@@ -42,7 +42,7 @@ def resolve(target: int, here_flat: int, here_cpu: int, s1, s2, size: int, s0=0,
     """
     if mapping is None:
         banks = [s0, s1, s2]
-        if (0 if mapper == "codemasters" else 0x0400) <= here_cpu < 0xC000 and \
+        if (0 if mapper in ("codemasters", "korean") else 0x0400) <= here_cpu < 0xC000 and \
                 0 <= here_flat < size and here_flat % BANK == here_cpu % BANK:
             banks[here_cpu // BANK] = here_flat // BANK
         mapping = BusState.cartridge_only([v if type(v) is int else None for v in banks])
@@ -201,7 +201,7 @@ class Tracer:
                     break
                 # Device writes select banks and also write WRAM. WRAM aliases never select a bank.
                 writes = sms_effects.memory_writes(text, {"a": st.a, "hl": st.hl, "de": st.de, "bc": st.bc})
-                source_change = sms_effects.port_may_change_source(text, st.bc, game_gear=self.game_gear)
+                source_change = sms_effects.port_may_change_source(text, st.port, game_gear=self.game_gear)
                 if reason := sms_stack.write_alias(st, writes):
                     self._unresolved(entry, reason)
                     break
@@ -279,21 +279,25 @@ class Tracer:
                     if kind == "call":
                         conditional = "," in text
                         skip = (self.hints.get("inline") or {}).get(tflat, 0) if not conditional else 0
-                        st, past = self._call(entry, target, tflat, st, (cpu + ln) & 65535, out,
-                                              skip=skip, conditional=conditional)
+                        st, past, unresolved = self._call(entry, target, tflat, st, (cpu + ln) & 65535, out,
+                                                          skip=skip, conditional=conditional)
                         if st is None:
                             break
                         skip += past  # operands the callee was found to read and return past
+                        if unresolved:
+                            # Following on at the return address assumes this window still maps these bytes:
+                            # that geometry, conditionally, as for an isolated entry. Other facts stay unknown.
+                            st.mapping = self.model.entry(flat + ln + skip, (cpu + ln + skip) & 65535)
                 if kind != "call":
                     self._registers(st, text)
                 if computed is not None:  # back from the computed call: on at the address it pushed
-                    st, _ = self._call(entry, to, tflat, st, computed, out, already_pushed=True)
+                    st, _, _ = self._call(entry, to, tflat, st, computed, out, already_pushed=True)
                     if st is None:
                         break
                     back = self.model.resolve(computed, st.mapping).rom_offset
                     if back is not None and back // BANK == entry // BANK:
                         nxt = st.copy()
-                        nxt.a, nxt.hl, nxt.de, nxt.bc = None, None, None, None
+                        nxt.a, nxt.hl, nxt.de, nxt.bc, nxt.c = None, None, None, None, None
                         work.append((back, computed, nxt))
                     break
                 if kind in ("ret", "jump"):
@@ -329,12 +333,13 @@ class Tracer:
             self.found.exhausted.setdefault(entry, set()).add(reason)
 
     def _call(self, entry, target, flat, state, return_cpu, entries, *, skip=0, conditional=False, already_pushed=False):
-        """(The caller's state after the call or None when it never returns, and how many bytes past the call it
-        comes back when the callee was found to read undeclared operands there.)"""
+        """(The caller's state after the call or None when it never returns, how many bytes past the call it comes
+        back when the callee was found to read undeclared operands there, and whether its effects are unresolved.)"""
         result = sms_calls.Result() if self._no_return(flat) else \
             self.calls.evaluate(target, state, return_cpu, skip=skip, already_pushed=already_pushed)
-        if result.inline and conditional:
-            result.reasons.add("conditional inline continuation is unqualified")
+        if result.inline and conditional:  # (a new result: evaluations are shared, never changed)
+            result = sms_calls.Result(result.returns, result.reasons | {"conditional inline continuation is unqualified"},
+                                      result.entries, result.inline)
         if flat is not None and not result.reasons and not skip and not already_pushed and not conditional \
                 and (result.returns or result.inline):
             self.found.returned_past.setdefault(flat, set()).add(result.inline)
@@ -343,7 +348,7 @@ class Tracer:
         nested = result.entries[1:] if result.entries and result.entries[0][:2] == (flat, target) else result.entries
         entries.extend((at, pc, self.model.entry(at, pc) if result.reasons else mapping, "call")
                        for at, pc, mapping in nested)
-        return result.resume(state, conditional=conditional), 0 if result.reasons else result.inline
+        return result.resume(state, conditional=conditional), 0 if result.reasons else result.inline, bool(result.reasons)
 
     def _branch(self, st: State, text: str) -> State:
         out = st.copy()
@@ -455,7 +460,7 @@ class Tracer:
         """The CPU address each bank's code was found running at: the slot most of its functions run from."""
         votes: dict[int, dict[int, int]] = {}
         for flat, (cpu, _why) in self.found.starts.items():
-            if cpu >= 0x0400 or self.model.kind == "codemasters":
+            if cpu >= 0x0400 or self.model.kind in ("codemasters", "korean"):
                 v = votes.setdefault(flat // BANK, {})
                 v[cpu & ~(BANK - 1)] = v.get(cpu & ~(BANK - 1), 0) + 1
         self.found.bank_base = {b: max(v, key=v.get) for b, v in votes.items()}

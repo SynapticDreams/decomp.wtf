@@ -307,6 +307,22 @@ Status of this group:
 
 ### Longer term
 
+Status of this group:
+
+- **15: done for zexall-sms.** It is built at a pinned commit in the SMS gate: every ROM routine its
+  source calls must be found, within budget, and its export must rebuild byte for byte. The first run
+  found 9 of 37 routines. Four conservative fixes, each with its own tests, brought that to all of
+  them:
+  - C is tracked on its own for `(c)` port I/O;
+  - the continuation keeps only its own window after an unresolved call;
+  - block copies wholly in `$C000`-`$DFFF` are RAM writes;
+  - identical callee evaluations are reused, which kept the shared budget from running out.
+- **12: partly done.** The Korean board (`$A000`) is modelled, from MAME and Gearsystem. 4 PAK,
+  MSX/Nemesis and Janggun remain open. The 8 KiB-bank boards need a wider change to the 16 KiB
+  bank model.
+- **11, 13 and 14 remain open.** Runtime parity needs an emulator this environment can't run.
+  Library and driver signatures and decompressor recognition are the next candidates.
+
 11. **Runtime parity.** Drive original and rebuilt images through identical inputs in a headless
     emulator: Gearsystem MCP, MesenCE `--testRunner`, or MAME. Compare per-frame frame-buffer
     hashes, RAM snapshots and save states. Record the result as a separate evidence dimension next

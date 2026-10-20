@@ -13,7 +13,7 @@ from pathlib import Path
 
 DB = Path(__file__).with_name("smsdb") / "softlist.json"
 # MAME slot boards the analysis models; every other board is recorded, not supported
-MODELS = {"": "sega", "codemasters": "codemasters"}
+MODELS = {"": "sega", "codemasters": "codemasters", "korean": "korean"}
 
 
 @functools.cache

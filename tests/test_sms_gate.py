@@ -166,7 +166,7 @@ def report(tmp_path, *, skipped=False, failed=False, missing_module=False, gg=Tr
                     f"test_changed_documented_source_and_attempts_are_recoverable_and_rebuild_after_undo[{platform}]")
             continue
         if name.endswith("test_sms_mapper_integration.py") and mapper_matrix:
-            for mapper in ("sega", "mapperless", "codemasters"):
+            for mapper in ("sega", "mapperless", "codemasters", "korean"):
                 for platform in ("sms", "gg"):
                     ET.SubElement(suite, "testcase", classname="tests.test_sms_mapper_integration",
                                   name=f"test_declared_models_agree_across_project_consumers[{mapper}-{platform}]")
@@ -213,7 +213,7 @@ def test_gate_requires_a_valid_report_with_executed_tests(tmp_path):
     path.write_text("<testsuite />")
     with pytest.raises(ValueError, match="executed, passing tests"):
         sms_gate.verify_report(path)
-    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 286 + sum(len(cases) - 1 for cases in sms_gate.TOOLCHAIN_CASES.values())
+    assert sms_gate.verify_report(report(tmp_path)) == len(sms_gate.TESTS) + 288 + sum(len(cases) - 1 for cases in sms_gate.TOOLCHAIN_CASES.values())
 
 
 def test_gate_rejects_gbdk_from_path_without_the_pinned_install(monkeypatch):

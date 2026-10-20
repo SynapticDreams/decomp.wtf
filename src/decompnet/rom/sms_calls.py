@@ -43,7 +43,7 @@ class Result:
             for name in ("sp", "stack_top"):
                 values = {getattr(state, name) for state in states}
                 setattr(out, name, next(iter(values)) if len(values) == 1 else None)
-        out.a = out.hl = out.de = out.bc = None
+        out.a = out.hl = out.de = out.bc = out.c = None
         out.cmp = out.low = out.bound = out.index = out.base = None
         return out
 
@@ -58,15 +58,27 @@ class Evaluator:
         self.game_gear = self.hints.get("platform") == "gg"
         self.limits, self.depth = limits or Limits(steps=2048), depth
         self.budget = budget
+        self.cache: dict[tuple, Result] = {}  # complete evaluations by call and incoming facts (read, never changed)
 
     def evaluate(self, target: int, caller: State, return_cpu: int, *, skip: int = 0,
                  already_pushed: bool = False) -> Result:
-        return self._frame(target, caller, return_cpu, skip, 0, [self.limits.steps], already_pushed)
+        # The same call from the same facts evaluates the same way, so later rounds and paths reuse it; an
+        # evaluation the shared analysis budget cut short is not kept.
+        key = (target, return_cpu, skip, already_pushed, caller.mapping, caller.a, caller.hl, caller.de, caller.bc,
+               caller.c, frozenset(caller.mem.items()), caller.sp, caller.stack_top)
+        if (known := self.cache.get(key)) is not None:
+            return known
+        before = (self.budget.stopped, len(self.budget.exhausted)) if self.budget is not None else None
+        result = self._frame(target, caller, return_cpu, skip, 0, [self.limits.steps], already_pushed)
+        if before is None or (self.budget.stopped, len(self.budget.exhausted)) == before:
+            self.cache[key] = result
+        return result
 
     def _frame(self, target, caller, return_cpu, skip, depth, fuel, already_pushed=False):
         result = Result()
         st = State(caller.mapping, caller.a, caller.hl, caller.de, caller.bc,
                    dict(caller.mem), [StackWord("return", return_cpu)], sp=caller.sp, stack_top=caller.stack_top)
+        st.c = caller.c
         reason = sms_stack.pop(st, self.model, apply=False) if already_pushed else sms_stack.push(st, self.model)
         if reason:
             result.reasons.add(reason)
@@ -111,7 +123,7 @@ class Evaluator:
                 if text.startswith("jp ("):
                     kind, to = "jump", st.hl if text == "jp (hl)" else None
                 writes = sms_effects.memory_writes(text, {"a": st.a, "hl": st.hl, "de": st.de, "bc": st.bc})
-                source_change = sms_effects.port_may_change_source(text, st.bc, game_gear=self.game_gear)
+                source_change = sms_effects.port_may_change_source(text, st.port, game_gear=self.game_gear)
                 if reasons := sms_trace_writes.limits(writes, self.model):
                     result.reasons.update(reasons)
                     break
@@ -181,7 +193,8 @@ class Evaluator:
                         callee in self.hints.get("noreturn", ()) else \
                         self._frame(to, st, next_cpu, inline, depth + 1, fuel)
                     if nested.inline and conditional:
-                        nested.reasons.add("conditional inline continuation is unqualified")
+                        nested = Result(nested.returns, nested.reasons | {"conditional inline continuation is unqualified"},
+                                        nested.entries, nested.inline)
                     result.reasons.update(nested.reasons)
                     result.entries.extend(nested.entries)
                     st = nested.resume(st, conditional=conditional)

@@ -32,9 +32,15 @@ class State:
     pushed: bool = False  # whether this path has pushed before inspecting its incoming return address
     sp: int | None = None  # explicit physical SP, otherwise the ordinary virtual-stack assumption
     stack_top: int | None = None  # exclusive upper boundary of the tracked active physical stack
+    c: int | None = None  # C alone, known even when B isn't (`ld c, $bf / otir`): the port `(c)` I/O decodes
 
     def copy(self) -> State:
         return replace(self, mem=dict(self.mem), stack=list(self.stack))
+
+    @property
+    def port(self) -> int | None:
+        """The port an `out (c)`/block output reaches: the console decodes only C."""
+        return self.c if self.c is not None else self.bc & 0xFF if type(self.bc) is int else None
 
     def fresh(self, mark: tuple | None):
         """What a comparison, a bound or a table base says, while it still belongs to what follows it."""

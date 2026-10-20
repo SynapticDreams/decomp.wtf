@@ -64,6 +64,7 @@ TESTS = (
     "tests/test_sms_documented.py",
     "tests/test_z80.py",
     "tests/test_sms.py",
+    "tests/test_sms_fixture_zexall.py",
     "tests/test_export_sms.py",
 )
 # The pinned assembler and compiler checks those modules otherwise skip: every Z80 encoding round-trips through
@@ -74,6 +75,8 @@ TOOLCHAIN_CASES = {
                        "test_functions_compiled_by_sdcc_are_found_and_matched_by_the_app[6-gg-game.gg]",
                        "test_a_projects_compiler_flags_reach_sdcc", "test_a_shortcall_rst_with_its_byte_builds[z80]",
                        "test_an_rst_call_matches_through_the_app"},
+    # a real program with published source, built at a pinned commit (tools/sms_fixtures.py)
+    "tests.test_sms_fixture_zexall": {"test_zexall_rebuilds_and_every_routine_its_source_calls_is_found"},
 }
 
 
@@ -117,7 +120,7 @@ def verify_report(report: Path) -> int:
             raise ValueError(f"SMS gate report is missing pinned Z80 assembler/compiler checks: {module}")
     matrix = {case.get("name") for case in cases if case.get("classname") == "tests.test_sms_mapper_integration"}
     if not all(f"test_declared_models_agree_across_project_consumers[{mapper}-{platform}]" in matrix
-               for mapper in ("sega", "mapperless", "codemasters") for platform in ("sms", "gg")):
+               for mapper in ("sega", "mapperless", "codemasters", "korean") for platform in ("sms", "gg")):
         raise ValueError("SMS gate report is missing the supported-mapper SMS/GG build matrix")
     recovery = {case.get("name") for case in cases if case.get("classname") == "tests.test_sms_resplit_history"}
     if not all(f"test_changed_documented_source_and_attempts_are_recoverable_and_rebuild_after_undo[{platform}]" in recovery
