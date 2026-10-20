@@ -7,9 +7,9 @@ from .sms_identity import VERSION as IDENTITY_VERSION
 from .sms_mapping import Mapper
 
 VERSION = 1
-MAPPERS = ("unknown", "sega", "mapperless", "codemasters", "unsupported")
+MAPPERS = ("unknown", "sega", "mapperless", "codemasters", "korean", "unsupported")
 VARIANTS = ("exact-original", "annotated-original", "experimental")
-SUPPORTED = ("sega", "mapperless", "codemasters")
+SUPPORTED = ("sega", "mapperless", "codemasters", "korean")
 FIELDS = {"version", "mapper", "variant", "origin", "reason", "sha256", "size"}
 
 

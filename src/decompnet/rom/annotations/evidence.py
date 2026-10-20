@@ -42,7 +42,7 @@ def validate(value):
     context = value['context']
     if context is not None:
         fields(context, ('mapper', 'sha256'))
-        choice(context['mapper'], ('sega', 'mapperless', 'codemasters'))
+        choice(context['mapper'], ('sega', 'mapperless', 'codemasters', 'korean'))
         digest(context['sha256'])
     if value['subject_sha256'] is not None:
         digest(value['subject_sha256'])

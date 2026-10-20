@@ -21,6 +21,10 @@ _WRITES_DE = re.compile(r"^(?:ld de,|ld d,|ld e,|pop de|exx|inc de|dec de|inc d$
 _WRITES_BC = re.compile(r"^(?:ld bc,|ld b,|ld c,|pop bc|exx|inc bc|dec bc|inc b$|dec b$|inc c$|dec c$|djnz|ldi|ldd|"
                         r"ldir|lddr|cpi|cpd|cpir|cpdr|ini|ind|inir|indr|outi|outd|otir|otdr|in [bc],|"
                         r"(?:rlc|rrc|rl|rr|sla|sra|sll|srl) [bc]$|(?:res|set) \d, [bc]$)")
+# what changes C itself: B-only changes (`ld b`, `djnz`, block output and input) keep it
+_WRITES_C = re.compile(r"^(?:ld c,|ld bc,|pop bc|exx|inc bc|dec bc|inc c$|dec c$|ldi|ldd|ldir|lddr|cpi|cpd|cpir|cpdr|"
+                       r"in c,|(?:rlc|rrc|rl|rr|sla|sra|sll|srl) c$|(?:res|set) \d, c$)")
+_LD_C_N = re.compile(r"^ld c, \$([0-9a-f]{2})$")
 # what else changes A or HL (so what was known about them isn't any more)
 _WRITES_A = re.compile(r"^(?:ld a,|in a,|inc a$|dec a$|add a,|adc a,|sub |sbc a,|and |xor |or |rlca|rrca|rla|rra|"
                        r"cpl|neg|daa|rrd|rld|pop af|ex af|rlc a|rrc a|rl a|rr a|sla a|sra a|sll a|srl a|res \d, a|set \d, a)")
@@ -54,6 +58,8 @@ def apply(st: State, text: str, model: Mapper) -> None:
         reg = text[4:]
         st.hl, st.de, st.bc = (val if reg == "hl" else st.hl, val if reg == "de" else st.de,
                                val if reg == "bc" else st.bc)
+        if reg == "bc":
+            st.c = val & 0xFF if type(val) is int else None
         return
     if text == "ex de, hl":
         st.de, st.hl = st.hl, st.de
@@ -100,7 +106,16 @@ def apply(st: State, text: str, model: Mapper) -> None:
             st.de = None
         if _WRITES_BC.match(text):
             st.bc = None
+    if m := _LD_C_N.match(text):
+        st.c = int(m.group(1), 16)
+    elif text == "ld c, a" and type(st.a) is int:
+        st.c = st.a
+    elif type(st.bc) is int and text.startswith("ld bc, "):
+        st.c = st.bc & 0xFF
+    elif _WRITES_C.match(text):
+        st.c = None
     if copied := sms_effects.copied_register(text):
         pair = {"b": "bc", "c": "bc", "d": "de", "e": "de", "h": "hl", "l": "hl"}.get(copied, "a")
         setattr(st, pair, None)
+        st.c = None if copied == "c" else st.c
         st.cmp = st.low = st.bound = st.index = st.base = None

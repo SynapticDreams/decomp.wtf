@@ -716,6 +716,10 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         return {"job": jobs.start("PSY-Q libraries", lambda log: net.identify_psyq_libraries(
             slug, data.get("files"), bool(data.get("apply")), log, str(data["unit"]) if data.get("unit") else None))}
 
+    def p_sdcc_libraries(slug, request, data):
+        return {"job": jobs.start("SDCC libraries", lambda log: net.identify_sdcc_libraries(
+            slug, data.get("files"), bool(data.get("apply")), log))}
+
     def p_psx_debug(slug, request, data):
         import base64
 
@@ -869,6 +873,7 @@ def build(net: RomNetwork, home: Path, port: int, secret: str):
         "/api/compiler/probe": (p_compiler_probe, ["POST"]),
         "/api/compiler/small-data": (lambda s, r, d: net.small_data_evidence(s), ["POST"]),
         "/api/libraries/psyq": (p_psyq, ["POST"]),
+        "/api/libraries/sdcc": (p_sdcc_libraries, ["POST"]),
         "/api/debug/psx": (p_psx_debug, ["POST"]),
         "/api/resplit": (p_resplit, ["GET", "POST"]),
         "/api/resplit/archive": (p_resplit_archive, ["GET"]),

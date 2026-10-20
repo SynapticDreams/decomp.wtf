@@ -97,7 +97,8 @@ def write_alias(state: State, writes):
     count = _count(state)
     if count is None:
         return "physical stack tracking budget exhausted"
-    if any(write.cpu is not None and _overlaps(state, write.cpu, count) for write in writes):
+    if any(write.cpu is not None and any(_overlaps(state, at, count) for at in range(write.cpu, write.cpu + write.size))
+           for write in writes):
         return "memory write aliases an active physical stack value"
     return None
 

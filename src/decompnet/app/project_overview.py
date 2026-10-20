@@ -31,6 +31,7 @@ def build(net, slug: str, proj) -> dict:
                      "aspsx": cfg["compiler"].get("aspsx", ""),
                      "probe": cfg.get("compiler_probe"),
                      "libraries": cfg.get("psyq_libraries"),
+                     "sdcc_libraries": cfg.get("sdcc_libraries"),
                      "small_data": cfg.get("small_data"),
                      "units": cfg["compiler"].get("units", {}),
                      "unit_names": [r["unit"] for r in net.store.all(

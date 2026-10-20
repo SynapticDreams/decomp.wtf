@@ -26,6 +26,10 @@ def apply(state: State, writes: tuple[Write, ...], source_change: bool, model: M
             state.mem.clear()
             state.stack.clear()  # an unqualified write can overwrite a saved value
             continue
+        if write.size > 1:  # (memory_writes gives a size only to copies wholly within $C000-$DFFF)
+            for at in range(write.cpu, write.cpu + write.size):
+                state.mem.pop(at, None)
+            continue
         value = write.value
         state.mapping = model.write(state.mapping, write.cpu, value if type(value) is int else None)
         if (alias := wram_address(write.cpu)) is not None:

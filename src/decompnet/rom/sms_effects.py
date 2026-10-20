@@ -13,6 +13,7 @@ import re
 class Write:
     cpu: int | None
     value: object = None
+    size: int = 1  # (a block copy into work RAM: `size` bytes from `cpu`, values unknown)
 
 
 def _value(name, values):
@@ -44,6 +45,11 @@ def memory_writes(text: str, values: dict | None = None) -> tuple[Write, ...]:
         return (Write(values.get("hl")),)
     if text in ("ldi", "ldd", "ini", "ind"):
         return (Write(values.get("de" if text in ("ldi", "ldd") else "hl")),)
+    if text in ("ldir", "lddr"):
+        de, count = values.get("de"), values.get("bc")
+        low = (de if text == "ldir" else de - count + 1) if type(de) is int and type(count) is int and count else None
+        if low is not None and 0xC000 <= low and low + count <= 0xE000:
+            return (Write(low, None, count),)  # wholly in work RAM: no mapper register or ROM byte in reach
     if text in ("ldir", "lddr", "inir", "indr") or text.startswith("ex (sp), "):
         # Multiple unqualified writes may first enable ROM writes and then alter cartridge contents.
         return (Write(None), Write(None))

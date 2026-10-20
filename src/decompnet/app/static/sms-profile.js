@@ -67,6 +67,7 @@ window.SMSProfileUI = {
     const pending = (name) => (view.supported_mappers || []).includes(name) ? "" : " (analysis pending)";
     const mapper = select("Cartridge mapper", [["unknown", "Unresolved"], ["sega", "Sega"],
       ["mapperless", "No mapper" + pending("mapperless")], ["codemasters", "Codemasters" + pending("codemasters")],
+      ["korean", "Korean ($A000)" + pending("korean")],
       ["unsupported", "Other unsupported mapper"]], profile.mapper || "unknown");
     const variant = select("Build intent", [["exact-original", "Original reconstruction"],
       ["annotated-original", "Annotated original"], ["experimental", "Experimental / modification research"]],
