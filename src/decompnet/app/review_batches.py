@@ -182,6 +182,8 @@ class ReviewBatches:
             if session.state == 'error':
                 raise NetworkError(session.error or 'helper failed')
         finally:
+            if not session.stop.is_set():
+                self.manager.stop(session.id)
             batch['tokens'] += session.tokens
             batch['usd'] += session.usd
             batch['helper'] = ''

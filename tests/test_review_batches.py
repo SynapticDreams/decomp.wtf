@@ -368,3 +368,21 @@ def test_changed_input_stops_the_old_batch_without_reusing_its_progress(document
     saved=json.loads(net.store.one("SELECT value FROM settings WHERE key LIKE 'review_batch:%'")['value'])
     assert saved['state']=='paused' and 'input changed' in saved['reason']
     assert all(s.stop.is_set() for s in manager.sessions.values())
+
+
+def test_disappearing_project_does_not_leave_a_batch_helper_running(documented,tmp_path,monkeypatch):
+    net,_,_=documented
+    manager,_=manager_for(documented,tmp_path,monkeypatch)
+    entered=threading.Event()
+    def blocked(session,token,workdir):
+        entered.set();session.stop.wait(5);return True
+    monkeypatch.setattr(manager,'_run_cli',blocked)
+    manager.review_batches.start('authored',REVIEWER,WRITER)
+    assert entered.wait(5)
+    with net.store.tx() as db:
+        db.execute("DELETE FROM projects WHERE slug='authored'")
+    deadline=time.monotonic()+5
+    while manager.review_batches.active and time.monotonic()<deadline:
+        time.sleep(.01)
+    assert not manager.review_batches.active
+    assert all(s.stop.is_set() for s in manager.sessions.values())
